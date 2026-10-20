@@ -47,6 +47,7 @@ import io.github.elgrande73.voicememo.playback.MemoAudioOutput
 import io.github.elgrande73.voicememo.playback.MemoPlaybackSequencer
 import io.github.elgrande73.voicememo.playback.PlaybackCue
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
+import io.github.elgrande73.voicememo.settings.WakePhraseLevel
 import io.github.elgrande73.voicememo.shortcuts.HardwareGesture
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
 import io.github.elgrande73.voicememo.shortcuts.ShortcutConfig
@@ -171,6 +172,21 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     val detectionMode = _detectionMode.asStateFlow()
 
     private val _thresholdDb = MutableStateFlow(prefs.getFloat("thresholdDb", 48.0f))
+
+    // Optional minimum audio level of the wake phrase (dBFS); written by SettingsMigrator for every installation
+    private val _wakePhraseMinLevelEnabled = MutableStateFlow<Boolean>(
+        prefs.getBoolean(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_ENABLED, WakePhraseLevel.DEFAULT_ENABLED)
+    )
+    val wakePhraseMinLevelEnabled: StateFlow<Boolean> = _wakePhraseMinLevelEnabled.asStateFlow()
+
+    private val _wakePhraseMinLevelDbfs = MutableStateFlow<Float>(
+        WakePhraseLevel.clampDbfs(prefs.getFloat(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_DBFS, WakePhraseLevel.DEFAULT_DBFS))
+    )
+    val wakePhraseMinLevelDbfs: StateFlow<Float> = _wakePhraseMinLevelDbfs.asStateFlow()
+
+    /** The level condition as the detector uses it (VAD dB scale), or null when it is off. */
+    private fun wakePhraseMinLevelDb(): Float? =
+        if (_wakePhraseMinLevelEnabled.value) WakePhraseLevel.toDetectorDb(_wakePhraseMinLevelDbfs.value) else null
     val thresholdDb = _thresholdDb.asStateFlow()
 
     private val _minTriggerDurationMs = MutableStateFlow(prefs.getLong("minTriggerDurationMs", 250L))
@@ -397,6 +413,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
             putExtra("maxMemoDurationMs", _maxMemoDurationMs.value)
             putExtra("noiseFilterEnabled", _noiseFilterEnabled.value)
             putExtra(AudioMonitoringService.EXTRA_MATCH_CONFIDENCE_THRESHOLD_PERCENT, _matchConfidenceThresholdPercent.value)
+            putExtra(AudioMonitoringService.EXTRA_WAKE_PHRASE_MIN_LEVEL_DB, wakePhraseMinLevelDb() ?: Float.NaN)
             putExtra("keywordBehavior", _keywordBehavior.value.name)
             putExtra("speechToTextEnabled", _speechToTextEnabled.value)
             putExtra("feedbackSoundsEnabled", _feedbackSoundsEnabled.value)
@@ -1027,7 +1044,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
             frames = frames,
             templates = wakePhraseStore.loadSampleTemplates(),
             matchConfidenceThreshold = MatchConfidenceThreshold.toDetectorConfidence(_matchConfidenceThresholdPercent.value),
-            activationThresholdDb = _thresholdDb.value
+            minLevelDb = wakePhraseMinLevelDb()
         )
         _lastTestEvaluation.value = evaluation
         return evaluation
@@ -1067,6 +1084,19 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     fun setThresholdDb(db: Float) {
         _thresholdDb.value = db
         prefs.edit().putFloat("thresholdDb", db).apply()
+        restartServiceIfRunning()
+    }
+
+    fun setWakePhraseMinLevelEnabled(enabled: Boolean) {
+        _wakePhraseMinLevelEnabled.value = enabled
+        prefs.edit().putBoolean(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_ENABLED, enabled).apply()
+        restartServiceIfRunning()
+    }
+
+    fun setWakePhraseMinLevelDbfs(dbfs: Float) {
+        val clamped = WakePhraseLevel.clampDbfs(dbfs)
+        _wakePhraseMinLevelDbfs.value = clamped
+        prefs.edit().putFloat(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_DBFS, clamped).apply()
         restartServiceIfRunning()
     }
 

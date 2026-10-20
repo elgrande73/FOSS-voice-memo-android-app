@@ -32,6 +32,7 @@ import io.github.elgrande73.voicememo.audio.AmplitudePoint
 import io.github.elgrande73.voicememo.audio.AudioInputDevice
 import io.github.elgrande73.voicememo.audio.AudioInputManager
 import io.github.elgrande73.voicememo.audio.FeedbackSoundPlayer
+import io.github.elgrande73.voicememo.audio.LevelMeter
 import io.github.elgrande73.voicememo.audio.MediaPlaybackDetector
 import io.github.elgrande73.voicememo.audio.MicrophoneArbiter
 import io.github.elgrande73.voicememo.audio.MicrophoneOwner
@@ -106,6 +107,7 @@ class AudioMonitoringService : Service() {
     private var headsetReceiver: BroadcastReceiver? = null
     private val noteNotificationCounter = AtomicInteger(2000)
     private val toggleDebouncer = ToggleDebouncer(RecordingShortcutHandler.MIN_TOGGLE_INTERVAL_MS)
+    private val levelMeter = LevelMeter()
 
     companion object {
         /** Channel of earlier versions (silent, so hidden on most lock screens); deleted on start. */
@@ -129,6 +131,8 @@ class AudioMonitoringService : Service() {
         const val ACTION_RELOAD_TEMPLATE = "${BuildConfig.APPLICATION_ID}.ACTION_RELOAD_TEMPLATE"
         const val ACTION_UPDATE_MATCH_CONFIDENCE_THRESHOLD = "${BuildConfig.APPLICATION_ID}.ACTION_UPDATE_MATCH_CONFIDENCE_THRESHOLD"
         const val EXTRA_MATCH_CONFIDENCE_THRESHOLD_PERCENT = "matchConfidenceThresholdPercent"
+        /** Minimum wake-phrase level on the detector's scale (dBFS + 90); NaN = condition off. */
+        const val EXTRA_WAKE_PHRASE_MIN_LEVEL_DB = "wakePhraseMinLevelDb"
 
         // Public Observable States for UI
         private val _isServiceRunning = MutableStateFlow(false)
@@ -143,8 +147,12 @@ class AudioMonitoringService : Service() {
         private val _recordingDurationSeconds = MutableStateFlow(0)
         val recordingDurationSeconds = _recordingDurationSeconds.asStateFlow()
 
-        private val _liveDbLevel = MutableStateFlow(0f)
-        val liveDbLevel = _liveDbLevel.asStateFlow()
+        private val _liveLevelDbfs = MutableStateFlow<Float?>(null)
+        /**
+         * Live microphone level in dBFS, about 10 updates per second from the monitoring capture stream (before any
+         * chime muting); null while there is no live input (monitoring off, microphone unavailable or released).
+         */
+        val liveLevelDbfs = _liveLevelDbfs.asStateFlow()
 
         private val _liveNoiseFloorDb = MutableStateFlow(25f)
         val liveNoiseFloorDb = _liveNoiseFloorDb.asStateFlow()
@@ -268,6 +276,7 @@ class AudioMonitoringService : Service() {
         }
 
         memoDetector.thresholdDb = intent.getFloatExtra("thresholdDb", 48.0f)
+        memoDetector.wakePhraseMinLevelDb = intent.getFloatExtra(EXTRA_WAKE_PHRASE_MIN_LEVEL_DB, Float.NaN).takeUnless { it.isNaN() }
         memoDetector.minTriggerDurationMs = intent.getLongExtra("minTriggerDurationMs", 250L)
         memoDetector.silenceTimeoutMs = intent.getLongExtra("silenceTimeoutMs", 2000L)
         memoDetector.preTriggerDurationMs = intent.getLongExtra("preTriggerDurationMs", 800L)
@@ -375,6 +384,7 @@ class AudioMonitoringService : Service() {
                     // A new capture stream: re-learn the background (the input device may have changed)
                     memoDetector.restartStream()
                     frameAssembler.reset()
+                    levelMeter.reset()
                     val buffer = ShortArray(chunkSize)
 
                     while (isActive && record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
@@ -406,6 +416,8 @@ class AudioMonitoringService : Service() {
                         delay(1500)
                     }
                 } finally {
+                    // No stale level while the stream is down (restart, microphone handed to Settings, shutdown)
+                    _liveLevelDbfs.value = null
                     releaseAudioRecord(activeRecord)
                     microphoneArbiter.release(MicrophoneOwner.MONITORING)
                 }
@@ -422,6 +434,9 @@ class AudioMonitoringService : Service() {
     ) {
         // Check system media playback status
         val mediaStatus = mediaPlaybackDetector.checkPlaybackStatus()
+
+        // Live level from the real microphone input (also while only monitoring), before chime muting
+        levelMeter.update(frame)?.let { _liveLevelDbfs.value = it }
 
         // Suppress our own feedback chime (plus output latency tail) from the mic stream
         val isFeedbackMuted = System.currentTimeMillis() < feedbackMuteUntilMs
@@ -448,7 +463,6 @@ class AudioMonitoringService : Service() {
                     playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STARTED)
                 }
                 is MemoDetectionEvent.ChunkRecorded -> {
-                    _liveDbLevel.value = event.peakDb
                     if (_isCurrentlyRecording.value) {
                         _recordingDurationSeconds.value = (memoDetector.currentRecordingDurationMs() / 1000L).toInt()
                     }
@@ -879,6 +893,7 @@ class AudioMonitoringService : Service() {
         _isServiceRunning.value = false
         RecordingTileService.requestUpdate(this)
         _liveKeywordConfidence.value = 0f
+        _liveLevelDbfs.value = null
         _currentRecordingState.value = RecordingLifecycleState.IDLE
         _isCurrentlyRecording.value = false
 

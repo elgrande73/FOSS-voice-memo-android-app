@@ -8,6 +8,7 @@ import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.settings.SettingsMigrator
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -128,5 +129,47 @@ class SettingsMigratorTest {
         prefs.edit().putString(PreferenceKeys.LEGACY_KEYWORD_SENSITIVITY, "garbage").commit()
         SettingsMigrator.migrate(prefs)
         assertEquals(MatchConfidenceThreshold.DEFAULT_PERCENT, threshold())
+    }
+
+    // --- v2: optional minimum audio level of the wake phrase ---
+
+    private fun minLevelEnabled() = prefs.getBoolean(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_ENABLED, false)
+    private fun minLevelDbfs() = prefs.getFloat(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_DBFS, Float.NaN)
+
+    @Test
+    fun freshInstallationGetsTheMeasuredLevelDefault() {
+        SettingsMigrator.migrate(prefs)
+        assertEquals(io.github.elgrande73.voicememo.settings.WakePhraseLevel.DEFAULT_ENABLED, minLevelEnabled())
+        assertEquals(io.github.elgrande73.voicememo.settings.WakePhraseLevel.DEFAULT_DBFS, minLevelDbfs(), 0.001f)
+    }
+
+    @Test
+    fun existingInstallationKeepsTheLoudnessConditionItHad() {
+        // v1 with the default activation threshold (48 = −42 dBFS), never changed by the user
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 1).putInt(PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT, 60).commit()
+        SettingsMigrator.migrate(prefs)
+        assertTrue(minLevelEnabled())
+        assertEquals(-42f, minLevelDbfs(), 0.001f)
+        assertEquals(60, threshold())
+        assertEquals(SettingsMigrator.CURRENT_VERSION, prefs.getInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 0))
+    }
+
+    @Test
+    fun customisedActivationThresholdIsCarriedOverAndLeftUntouched() {
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 1).putFloat(PreferenceKeys.ACTIVATION_THRESHOLD_DB, 57f).commit()
+        SettingsMigrator.migrate(prefs)
+        assertTrue(minLevelEnabled())
+        assertEquals(-33f, minLevelDbfs(), 0.001f)
+        assertEquals(57f, prefs.getFloat(PreferenceKeys.ACTIVATION_THRESHOLD_DB, 0f), 0.001f)
+    }
+
+    @Test
+    fun levelSettingsTheUserChoseAreNeverReplaced() {
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 1)
+            .putBoolean(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_ENABLED, false)
+            .putFloat(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_DBFS, -37f).commit()
+        repeat(3) { SettingsMigrator.migrate(prefs) }
+        assertFalse(minLevelEnabled())
+        assertEquals(-37f, minLevelDbfs(), 0.001f)
     }
 }

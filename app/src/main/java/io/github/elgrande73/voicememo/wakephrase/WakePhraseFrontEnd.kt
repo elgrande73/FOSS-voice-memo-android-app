@@ -72,7 +72,16 @@ data class FrontEndConfig(
      * Weight of the speech-presence feature (frame SNR above the noise floor, 0..1, appended after the 16 shape
      * values); 0 = not appended.
      */
-    val speechPresenceWeight: Double = 0.0
+    val speechPresenceWeight: Double = 0.0,
+    /** Noise-floor estimator: fraction of the dB gap closed per frame when the level falls (see NoiseFloorEstimator). */
+    val noiseFallRate: Double = NoiseFloorEstimator.FALL_RATE,
+    /** Noise-floor estimator: maximum rise caused by foreground (speech) frames, dB per second. */
+    val noiseMaxRiseDbPerSecond: Double = NoiseFloorEstimator.MAX_RISE_DB_PER_SECOND,
+    /** Noise-floor estimator: fraction of the dB gap closed per frame for noise-like frames (< 6 dB above it). */
+    val noiseRiseRate: Double = NoiseFloorEstimator.NOISE_RISE_RATE,
+    /** Per-frame smoothing of the suppression gain when it rises (opens) and falls (closes); 1.0 = no smoothing. */
+    val gainAttack: Double = WakePhraseFrontEnd.GAIN_ATTACK,
+    val gainRelease: Double = WakePhraseFrontEnd.GAIN_RELEASE
 ) {
     /** Number of values per feature vector. */
     val featureSize: Int get() = WakePhraseFrontEnd.NUM_BANDS + if (speechPresenceWeight > 0.0) 1 else 0
@@ -98,8 +107,8 @@ class WakePhraseFrontEnd(private val config: FrontEndConfig = FrontEndConfig.DEF
     private var hasPreviousFrame = false
     private val smoothedGain = DoubleArray(NUM_BANDS) { 1.0 }
     private val frameMeanSquare = DoubleArray(1)
-    private val bandNoise = NoiseFloorEstimator(NUM_BANDS)
-    private val broadbandNoise = NoiseFloorEstimator(1)
+    private val bandNoise = NoiseFloorEstimator(NUM_BANDS, config.noiseFallRate, config.noiseMaxRiseDbPerSecond, config.noiseRiseRate)
+    private val broadbandNoise = NoiseFloorEstimator(1, config.noiseFallRate, config.noiseMaxRiseDbPerSecond, config.noiseRiseRate)
 
     /** Broadband background level in dBFS, or null before the first non-silent frame. */
     val noiseFloorDbfs: Float?
@@ -141,7 +150,7 @@ class WakePhraseFrontEnd(private val config: FrontEndConfig = FrontEndConfig.DEF
             val p = bandPower[b]
             val n = bandNoise.estimate(b)
             val targetGain = if (suppress && p > 0.0) max(config.gainFloor, 1.0 - config.overSubtraction * n / p) else 1.0
-            val rate = if (targetGain > smoothedGain[b]) GAIN_ATTACK else GAIN_RELEASE
+            val rate = if (targetGain > smoothedGain[b]) config.gainAttack else config.gainRelease
             smoothedGain[b] += (targetGain - smoothedGain[b]) * rate
             cleanPower[b] = p * (if (suppress) smoothedGain[b] else 1.0)
             inputTotal += p
@@ -234,7 +243,12 @@ class WakePhraseFrontEnd(private val config: FrontEndConfig = FrontEndConfig.DEF
         const val FEATURE_EPSILON = 0.01
 
         const val GAIN_ATTACK = 0.7
-        const val GAIN_RELEASE = 0.3
+        /**
+         * Was 0.3. With slow closing, the gains opened by memo speech stayed open into a short pause, so a stop phrase
+         * following speech was processed differently from a start phrase following silence (measured in
+         * WakePhraseStartStopTest; docs/WAKE_PHRASE_DETECTION.md, "Start/stop consistency").
+         */
+        const val GAIN_RELEASE = 0.5
 
 
         const val CLIP_LEVEL = 32700

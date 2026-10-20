@@ -21,7 +21,14 @@ import kotlin.math.pow
  *
  * The estimate is bounded to [MIN_POWER]..1.0 (full scale).
  */
-class NoiseFloorEstimator(private val size: Int) {
+class NoiseFloorEstimator(
+    private val size: Int,
+    private val fallRate: Double = FALL_RATE,
+    maxRiseDbPerSecond: Double = MAX_RISE_DB_PER_SECOND,
+    private val noiseRiseRate: Double = NOISE_RISE_RATE
+) {
+
+    private val maxRisePerFrame = 10.0.pow(maxRiseDbPerSecond * FRAME_SECONDS / 10.0)
 
     private val estimate = DoubleArray(size)
     private var validFrames = 0
@@ -63,9 +70,9 @@ class NoiseFloorEstimator(private val size: Int) {
             val p = power[i].coerceIn(MIN_POWER, 1.0)
             val current = estimate[i]
             estimate[i] = when {
-                p <= current -> current * (p / current).pow(FALL_RATE)
-                p < current * NOISE_MARGIN -> current * (p / current).pow(NOISE_RISE_RATE)
-                else -> minOf(p, current * MAX_RISE_PER_FRAME)
+                p <= current -> current * (p / current).pow(fallRate)
+                p < current * NOISE_MARGIN -> current * (p / current).pow(noiseRiseRate)
+                else -> minOf(p, current * maxRisePerFrame)
             }.coerceIn(MIN_POWER, 1.0)
         }
         validFrames++

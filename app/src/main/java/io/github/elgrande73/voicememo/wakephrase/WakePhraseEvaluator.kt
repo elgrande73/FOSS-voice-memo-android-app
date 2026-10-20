@@ -11,14 +11,14 @@ import io.github.elgrande73.voicememo.detection.MemoTriggerDetector
  *   reaches. It does not depend on the threshold: monitoring stops scoring at the moment it triggers, so the score is
  *   taken from a scoring pass that never triggers.
  * @param wouldTrigger Whether monitoring with the same settings would have started a recording.
- * @param peakLevelDb Loudest frame on the VAD dB scale (dBFS + 90), comparable with the activation threshold.
+ * @param peakLevelDb Loudest frame on the VAD dB scale (dBFS + 90), comparable with the minimum phrase level.
  */
 data class WakePhraseEvaluation(val bestConfidence: Float, val wouldTrigger: Boolean, val peakLevelDb: Float)
 
 /**
  * Evaluates recorded audio exactly as live monitoring would: the frames are streamed, in order, through the same
  * front end and matcher, and the trigger decision comes from a [MemoTriggerDetector] in Wake Phrase mode with the same
- * template, match confidence threshold and activation (loudness) threshold. The Settings phrase test uses this, so its
+ * template, match confidence threshold and optional minimum phrase level. The Settings phrase test uses this, so its
  * result comes from the same preprocessing, matcher and confidence interpretation as monitoring.
  *
  * Difference from monitoring by design: before scoring, the noise floor is primed with the same recording, because a
@@ -31,16 +31,17 @@ object WakePhraseEvaluator {
         frames: List<ShortArray>,
         templateBytes: ByteArray?,
         matchConfidenceThreshold: Float,
-        activationThresholdDb: Float,
+        minLevelDb: Float?,
         frontEndConfig: FrontEndConfig = FrontEndConfig.DEFAULT
-    ): WakePhraseEvaluation = evaluate(frames, listOfNotNull(templateBytes), matchConfidenceThreshold, activationThresholdDb, frontEndConfig)
+    ): WakePhraseEvaluation = evaluate(frames, listOfNotNull(templateBytes), matchConfidenceThreshold, minLevelDb, frontEndConfig)
 
     /** Evaluates against all enrolled samples ([templates]; empty = built-in default wake phrase). */
     fun evaluate(
         frames: List<ShortArray>,
         templates: List<ByteArray>,
         matchConfidenceThreshold: Float,
-        activationThresholdDb: Float,
+        /** Optional minimum phrase level (VAD dB scale, dBFS + 90), as in monitoring; null = no level condition. */
+        minLevelDb: Float?,
         frontEndConfig: FrontEndConfig = FrontEndConfig.DEFAULT,
         aggregation: ReferenceAggregation = TemplateKeywordDetector.DEFAULT_AGGREGATION,
         consecutiveMatchFrames: Int = MemoTriggerDetector.DEFAULT_CONSECUTIVE_MATCH_FRAMES,
@@ -63,7 +64,7 @@ object WakePhraseEvaluator {
         val matcher = newMatcher()
         val detector = MemoTriggerDetector(keywordDetector = matcher).apply {
             detectionMode = DetectionMode.KEYWORD_ONLY
-            thresholdDb = activationThresholdDb
+            wakePhraseMinLevelDb = minLevelDb
             this.matchConfidenceThreshold = matchConfidenceThreshold
             this.consecutiveMatchFrames = consecutiveMatchFrames
             reset(startMonitoring = true)

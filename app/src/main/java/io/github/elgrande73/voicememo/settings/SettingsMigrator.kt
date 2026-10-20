@@ -14,6 +14,12 @@ object PreferenceKeys {
     const val SETTINGS_SCHEMA_VERSION = "settingsSchemaVersion"
     const val MATCH_CONFIDENCE_THRESHOLD_PERCENT = "matchConfidenceThresholdPercent"
 
+    /** Optional minimum audio level of the wake phrase (see WakePhraseLevel). */
+    const val WAKE_PHRASE_MIN_LEVEL_ENABLED = "wakePhraseMinLevelEnabled"
+    const val WAKE_PHRASE_MIN_LEVEL_DBFS = "wakePhraseMinLevelDbfs"
+    /** Loudness-only activation threshold, VAD dB scale (dBFS + 90). Key predates the versioned settings. */
+    const val ACTIVATION_THRESHOLD_DB = "thresholdDb"
+
     /** Shortcut settings (see shortcuts.ShortcutSettings); absent means the default. */
     const val HARDWARE_SHORTCUT_ENABLED = "hardwareShortcutEnabled"
     const val HARDWARE_SHORTCUT_GESTURE = "hardwareShortcutGesture"
@@ -32,12 +38,15 @@ object PreferenceKeys {
  * saved are never replaced by defaults, and unrelated keys are never touched.
  */
 object SettingsMigrator {
-    const val CURRENT_VERSION = 1
+    const val CURRENT_VERSION = 2
 
     private const val TAG = "SettingsMigrator"
 
     /** Lower bound of the threshold when migration step v1 was written (the range is now wider). */
     private const val V1_MIN_PERCENT = 50
+
+    /** Default activation threshold (VAD dB scale) of versions before v2, used if the user never changed it. */
+    private const val V1_ACTIVATION_THRESHOLD_DB = 48f
 
     fun preferences(context: Context): SharedPreferences {
         val prefs = context.getSharedPreferences(PreferenceKeys.PREFS_NAME, Context.MODE_PRIVATE)
@@ -47,10 +56,15 @@ object SettingsMigrator {
 
     fun migrate(prefs: SharedPreferences) {
         val version = readInt(prefs, PreferenceKeys.SETTINGS_SCHEMA_VERSION) ?: 0
+        // Anything stored before the first migration means an existing installation, not a fresh one
+        val existingInstallation = version >= 1 || prefs.all.isNotEmpty()
         val editor = prefs.edit()
 
         if (version < 1) {
             migrateToV1(prefs, editor)
+        }
+        if (version < 2) {
+            migrateToV2(prefs, editor, existingInstallation)
         }
 
         // Always validate the authoritative threshold, so a corrupt or out-of-range value can never reach the detector
@@ -87,6 +101,25 @@ object SettingsMigrator {
         }
         // The legacy key is only removed in the same commit that stores its migrated value
         editor.remove(PreferenceKeys.LEGACY_KEYWORD_SENSITIVITY)
+    }
+
+    /**
+     * v2: the wake phrase's loudness condition becomes its own, optional setting ("Minimum audio level", dBFS).
+     * Until v1 the wake phrase always had to reach the loudness-mode activation threshold, so existing installations
+     * keep exactly that level (condition on); new installations get the measured default.
+     */
+    private fun migrateToV2(prefs: SharedPreferences, editor: SharedPreferences.Editor, existingInstallation: Boolean) {
+        if (!prefs.contains(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_ENABLED)) {
+            editor.putBoolean(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_ENABLED, if (existingInstallation) true else WakePhraseLevel.DEFAULT_ENABLED)
+        }
+        if (readFloat(prefs, PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_DBFS) == null) {
+            val dbfs = if (existingInstallation) {
+                WakePhraseLevel.fromDetectorDb(readFloat(prefs, PreferenceKeys.ACTIVATION_THRESHOLD_DB) ?: V1_ACTIVATION_THRESHOLD_DB)
+            } else {
+                WakePhraseLevel.DEFAULT_DBFS
+            }
+            editor.putFloat(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_DBFS, WakePhraseLevel.clampDbfs(dbfs))
+        }
     }
 
     /**

@@ -97,7 +97,7 @@ class DetectionEngineTest {
 
         val triggerDetector = MemoTriggerDetector(keywordDetector = spyKeywordDetector)
         triggerDetector.detectionMode = DetectionMode.KEYWORD_ONLY
-        triggerDetector.thresholdDb = 50.0f
+        triggerDetector.wakePhraseMinLevelDb = 50.0f
         triggerDetector.reset(startMonitoring = true)
 
         val silence = ShortArray(800) { 0 }
@@ -142,7 +142,7 @@ class DetectionEngineTest {
     fun testWakePhraseOnly_WakePhraseBelowThreshold_DoesNotRecord() {
         val triggerDetector = MemoTriggerDetector()
         triggerDetector.detectionMode = DetectionMode.KEYWORD_ONLY
-        triggerDetector.thresholdDb = 55.0f // High threshold
+        triggerDetector.wakePhraseMinLevelDb = 55.0f // Optional minimum phrase level (dBFS + 90), set high
         triggerDetector.reset(startMonitoring = true)
 
         // Ciao Linda phrase spoken as quiet whisper (amplitude 100, dB ~ 22dB)

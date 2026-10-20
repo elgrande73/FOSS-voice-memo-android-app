@@ -206,7 +206,7 @@ class WakePhrasePipelineTest {
     fun activationRequiresTheLoudnessThreshold() {
         val template = AudioFixtures.enrollTemplate()
         val quiet = testRecording("ciao_linda_a", peakDbfs = -50.0) // peak ≈ 40 dB on the VAD scale
-        val result = WakePhraseEvaluator.evaluate(quiet, template, defaultThreshold, activationThresholdDb = 48f)
+        val result = WakePhraseEvaluator.evaluate(quiet, template, defaultThreshold, minLevelDb = 48f)
         assertFalse(result.wouldTrigger)
         assertTrue(result.peakLevelDb < 48f)
     }

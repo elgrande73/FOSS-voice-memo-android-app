@@ -124,6 +124,7 @@ import io.github.elgrande73.voicememo.ui.theme.ThemeMode
 import io.github.elgrande73.voicememo.viewmodel.VoiceMemoViewModel
 import io.github.elgrande73.voicememo.viewmodel.VoiceNoteFilter
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
+import io.github.elgrande73.voicememo.settings.WakePhraseLevel
 import io.github.elgrande73.voicememo.shortcuts.HardwareGesture
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
 import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutAccessibilityService
@@ -343,7 +344,9 @@ fun DashboardScreen(
     val phraseCaptureState by viewModel.phraseCaptureState.collectAsState()
     val isCurrentlyRecording by AudioMonitoringService.isCurrentlyRecording.collectAsState()
     val recordingDurationSeconds by AudioMonitoringService.recordingDurationSeconds.collectAsState()
-    val liveDb by AudioMonitoringService.liveDbLevel.collectAsState()
+    val liveLevelDbfs by AudioMonitoringService.liveLevelDbfs.collectAsState()
+    val wakePhraseMinLevelEnabled by viewModel.wakePhraseMinLevelEnabled.collectAsState()
+    val wakePhraseMinLevelDbfs by viewModel.wakePhraseMinLevelDbfs.collectAsState()
     val liveNoiseFloorDb by AudioMonitoringService.liveNoiseFloorDb.collectAsState()
     val isVoiceDetected by AudioMonitoringService.isVoiceDetected.collectAsState()
     val activeInputDevice by AudioMonitoringService.activeInputDeviceName.collectAsState()
@@ -494,89 +497,21 @@ fun DashboardScreen(
                 }
             }
 
-            // Live Audio Level & Threshold Visualizer
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "Live Audio Level",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "${liveDb.toInt()} dB",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = if (liveDb >= thresholdDb) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Decibel Progress Bar with Threshold Marker
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(24.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                    ) {
-                        val progressFraction = (liveDb / 100f).coerceIn(0f, 1f)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(fraction = progressFraction)
-                                .height(24.dp)
-                                .background(
-                                    if (liveDb >= thresholdDb) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
-                                )
-                        )
-
-                        // Threshold indicator line
-                        val thresholdFraction = (thresholdDb / 100f).coerceIn(0f, 1f)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(fraction = thresholdFraction)
-                                .height(24.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.CenterEnd)
-                                    .width(3.dp)
-                                    .height(24.dp)
-                                    .background(Color.Red)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "Noise Floor: ${liveNoiseFloorDb.toInt()} dB",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "Activation threshold: ${thresholdDb.toInt()} dB",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color.Red
-                        )
-                    }
-                }
+            // Live Audio Level & Threshold Visualizer (digital level in dBFS from the monitoring stream)
+            val levelMarkerDbfs: Float? = when (detectionMode) {
+                DetectionMode.KEYWORD_ONLY -> if (wakePhraseMinLevelEnabled) wakePhraseMinLevelDbfs else null
+                DetectionMode.AUTO_SOUND -> WakePhraseLevel.fromDetectorDb(thresholdDb)
             }
+            LiveLevelCard(
+                levelDbfs = liveLevelDbfs,
+                noiseFloorDbfs = if (liveLevelDbfs != null) WakePhraseLevel.fromDetectorDb(liveNoiseFloorDb) else null,
+                markerDbfs = levelMarkerDbfs,
+                markerLabel = when (detectionMode) {
+                    DetectionMode.KEYWORD_ONLY -> "Wake-phrase minimum"
+                    DetectionMode.AUTO_SOUND -> "Activation threshold"
+                },
+                engineState = engineState
+            )
 
             // Live Wake-Phrase Match Confidence Gauge
             if (detectionMode == DetectionMode.KEYWORD_ONLY) {
@@ -905,6 +840,101 @@ fun ShortcutSettingsCard(viewModel: VoiceMemoViewModel) {
                     checked = lockScreenControls,
                     onCheckedChange = { viewModel.setLockScreenControlsEnabled(it) },
                     modifier = Modifier.testTag("lock_screen_controls_switch")
+                )
+            }
+        }
+    }
+}
+
+/** Lowest level shown on the live meter; quieter input (including digital silence) shows an empty bar. */
+private const val METER_FLOOR_DBFS = -80f
+
+/**
+ * Live microphone level. Values are dBFS (digital level relative to full scale), not sound pressure: the same voice
+ * reads differently on different phones and microphones.
+ */
+@Composable
+fun LiveLevelCard(
+    levelDbfs: Float?,
+    noiseFloorDbfs: Float?,
+    markerDbfs: Float?,
+    markerLabel: String,
+    engineState: MonitoringEngineState
+) {
+    fun fraction(dbfs: Float) = ((dbfs - METER_FLOOR_DBFS) / -METER_FLOOR_DBFS).coerceIn(0f, 1f)
+    val aboveMarker = levelDbfs != null && markerDbfs != null && levelDbfs >= markerDbfs
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(text = "Live Audio Level", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    text = levelDbfs?.let { "${Math.round(it)} dBFS" } ?: "—",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = if (aboveMarker) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.testTag("live_level_value")
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(24.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .testTag("live_level_bar")
+            ) {
+                if (levelDbfs != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(fraction = fraction(levelDbfs))
+                            .height(24.dp)
+                            .background(if (aboveMarker) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary)
+                    )
+                }
+                if (markerDbfs != null) {
+                    Box(modifier = Modifier.fillMaxWidth(fraction = fraction(markerDbfs)).height(24.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .width(3.dp)
+                                .height(24.dp)
+                                .background(Color.Red)
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = when {
+                        levelDbfs == null && engineState == MonitoringEngineState.UNAVAILABLE -> "Microphone unavailable"
+                        levelDbfs == null -> "No live input while monitoring is off"
+                        noiseFloorDbfs != null -> "Noise floor: ${Math.round(noiseFloorDbfs)} dBFS"
+                        else -> ""
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("live_level_status")
+                )
+                Text(
+                    text = markerDbfs?.let { "$markerLabel: ${Math.round(it)} dBFS" } ?: "$markerLabel: off",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.Red,
+                    modifier = Modifier.testTag("live_level_marker")
                 )
             }
         }
@@ -1479,6 +1509,8 @@ private fun LaunchedEffectScopeCoroutine(viewModel: VoiceMemoViewModel, note: Vo
 @Composable
 fun SettingsScreen(viewModel: VoiceMemoViewModel) {
     val detectionMode by viewModel.detectionMode.collectAsState()
+    val wakePhraseMinLevelEnabled by viewModel.wakePhraseMinLevelEnabled.collectAsState()
+    val wakePhraseMinLevelDbfs by viewModel.wakePhraseMinLevelDbfs.collectAsState()
     val thresholdDb by viewModel.thresholdDb.collectAsState()
     val silenceTimeoutMs by viewModel.silenceTimeoutMs.collectAsState()
     val preTriggerMs by viewModel.preTriggerDurationMs.collectAsState()
@@ -1740,7 +1772,8 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                     val scorePercent = (result.confidence * 100).toInt()
                     val reachesThreshold = result.confidence >= MatchConfidenceThreshold.toDetectorConfidence(matchConfidenceThresholdPercent)
                     // The loudness check is known only for tests evaluated in this session
-                    val tooQuiet = lastTestEvaluation?.let { it.peakLevelDb < thresholdDb } == true
+                    val tooQuiet = wakePhraseMinLevelEnabled &&
+                        lastTestEvaluation?.let { it.peakLevelDb < WakePhraseLevel.toDetectorDb(wakePhraseMinLevelDbfs) } == true
                     val testedAt = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(result.timestamp))
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
@@ -1753,8 +1786,8 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                     )
                     if (tooQuiet) {
                         Text(
-                            text = "The phrase was quieter than the activation threshold (${thresholdDb.toInt()} dB), " +
-                                "so monitoring would not start a recording. Speak louder or lower the activation threshold.",
+                            text = "The phrase was quieter than the minimum audio level (${Math.round(wakePhraseMinLevelDbfs)} dBFS), " +
+                                "so monitoring would not react to it. Speak louder, move closer, or lower or turn off the minimum audio level.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error
                         )
@@ -1789,6 +1822,38 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                     steps = MatchConfidenceThreshold.MAX_PERCENT - MatchConfidenceThreshold.MIN_PERCENT - 1,
                     modifier = Modifier.testTag("match_confidence_threshold_slider")
                 )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (wakePhraseMinLevelEnabled) "Minimum audio level: ${Math.round(wakePhraseMinLevelDbfs)} dBFS" else "Minimum audio level: off",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.testTag("wake_phrase_min_level_label")
+                        )
+                        Text(
+                            text = "Additional condition for starting and stopping with the wake phrase: the spoken phrase must also " +
+                                "reach this microphone level, so distant voices (TV, other rooms) are ignored. It never cuts audio " +
+                                "from a memo. Compare with the live level on the dashboard; lower it if the phrase is missed when " +
+                                "you speak softly or from further away.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = wakePhraseMinLevelEnabled,
+                        onCheckedChange = { viewModel.setWakePhraseMinLevelEnabled(it) },
+                        modifier = Modifier.testTag("wake_phrase_min_level_switch")
+                    )
+                }
+                if (wakePhraseMinLevelEnabled) {
+                    Slider(
+                        value = wakePhraseMinLevelDbfs,
+                        onValueChange = { viewModel.setWakePhraseMinLevelDbfs(Math.round(it).toFloat()) },
+                        valueRange = WakePhraseLevel.MIN_DBFS..WakePhraseLevel.MAX_DBFS,
+                        modifier = Modifier.testTag("wake_phrase_min_level_slider")
+                    )
+                }
                 if (matchConfidenceThresholdPercent < MatchConfidenceThreshold.DEFAULT_PERCENT) {
                     Text(
                         text = "Below ${MatchConfidenceThreshold.DEFAULT_PERCENT}%, similar-sounding words and other speech start " +
@@ -1838,14 +1903,21 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
 
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    text = "Activation Threshold: ${thresholdDb.toInt()} dB",
+                    text = "Activation threshold (Loudness Only mode): ${Math.round(WakePhraseLevel.fromDetectorDb(thresholdDb))} dBFS",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "In Loudness Only mode, recording starts when the microphone level exceeds this. dBFS is the " +
+                        "digital level (0 = loudest possible); the same voice reads differently on different phones.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Slider(
                     value = thresholdDb,
                     onValueChange = { viewModel.setThresholdDb(it) },
-                    valueRange = 35f..75f
+                    valueRange = 35f..75f,
+                    modifier = Modifier.testTag("activation_threshold_slider")
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))

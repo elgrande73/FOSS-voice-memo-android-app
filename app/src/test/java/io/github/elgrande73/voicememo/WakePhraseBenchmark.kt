@@ -61,8 +61,15 @@ object WakePhraseBenchmark {
         val frontEnd: FrontEndConfig = FrontEndConfig.DEFAULT,
         val localMismatchWeight: Float = TemplateKeywordDetector.DEFAULT_LOCAL_MISMATCH_WEIGHT,
         val distanceScale: Float = TemplateKeywordDetector.DEFAULT_DISTANCE_SCALE,
-        val conditions: Conditions = TUNING
-    )
+        val conditions: Conditions = TUNING,
+        /** Optional minimum phrase level in dBFS (null = off). Default: the app's setting for new installations. */
+        val minLevelDbfs: Float? = LEVEL_DEFAULT_DBFS
+    ) {
+        val minLevelDb: Float? get() = minLevelDbfs?.let { it + 90f }
+    }
+
+    /** Minimum phrase level used by the benchmark unless a setup says otherwise (same as the app default). */
+    val LEVEL_DEFAULT_DBFS: Float? = io.github.elgrande73.voicememo.settings.WakePhraseLevel.DEFAULT_DBFS
 
     fun templates(count: Int, frontEnd: FrontEndConfig = FrontEndConfig.DEFAULT): List<ByteArray> = ENROLL.take(count).map { name ->
         val recording = AudioFixtures.scene(AudioFixtures.atPeak(AudioFixtures.load(name), -12.0), 2.5, 0.3, -65.0, Noise.PINK, seed = name.hashCode())
@@ -75,7 +82,7 @@ object WakePhraseBenchmark {
         val offset = Random(seed).nextDouble(0.0, 0.05)
         val frames = AudioFixtures.frames(AudioFixtures.scene(AudioFixtures.atPeak(AudioFixtures.load(clip), peak), 3.0, 0.5 + offset, noiseDbfs, noise, seed))
         return WakePhraseEvaluator.evaluate(
-            frames, templates, setup.thresholdPercent / 100f, 48f, setup.frontEnd, setup.aggregation, setup.consecutiveMatchFrames,
+            frames, templates, setup.thresholdPercent / 100f, setup.minLevelDb, setup.frontEnd, setup.aggregation, setup.consecutiveMatchFrames,
             setup.localMismatchWeight, setup.distanceScale
         ).wouldTrigger
     }
@@ -103,7 +110,7 @@ object WakePhraseBenchmark {
                 val offset = Random(seed).nextDouble(0.0, 0.05)
                 val frames = AudioFixtures.frames(AudioFixtures.scene(AudioFixtures.atPeak(AudioFixtures.load(clip), peak), 3.0, 0.5 + offset, noiseDbfs, noise, seed++))
                 val score = WakePhraseEvaluator.evaluate(
-                    frames, templates, 1f, 48f, setup.frontEnd, setup.aggregation, 1, setup.localMismatchWeight, setup.distanceScale
+                    frames, templates, 1f, null, setup.frontEnd, setup.aggregation, 1, setup.localMismatchWeight, setup.distanceScale
                 ).bestConfidence
                 if (clip in positives) pos += score else neg += score
             }
@@ -132,6 +139,7 @@ object WakePhraseBenchmark {
             detectionMode = DetectionMode.KEYWORD_ONLY
             keywordBehavior = KeywordBehavior.START_AND_STOP
             thresholdDb = 48f
+            wakePhraseMinLevelDb = setup.minLevelDb
             matchConfidenceThreshold = setup.thresholdPercent / 100f
             consecutiveMatchFrames = setup.consecutiveMatchFrames
             reset(startMonitoring = true)
