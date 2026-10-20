@@ -94,7 +94,21 @@ class UserDataPersistenceTest {
         viewModel.setMatchConfidenceThresholdPercent(120)
         assertEquals(80, viewModel.matchConfidenceThresholdPercent.value)
         viewModel.setMatchConfidenceThresholdPercent(10)
-        assertEquals(50, viewModel.matchConfidenceThresholdPercent.value)
+        assertEquals(20, viewModel.matchConfidenceThresholdPercent.value)
+    }
+
+    @Test
+    fun lowThresholdPersistsAndDashboardShowsTheValueTheDetectorUses() {
+        VoiceMemoViewModel(app).setMatchConfidenceThresholdPercent(20)
+        val restarted = VoiceMemoViewModel(app)
+        assertEquals(20, restarted.matchConfidenceThresholdPercent.value)
+        assertEquals(0.20f, MatchConfidenceThreshold.toDetectorConfidence(restarted.matchConfidenceThresholdPercent.value), 0.0001f)
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                DashboardScreen(viewModel = restarted, hasMicPermission = true, onRequestPermission = {})
+            }
+        }
+        composeTestRule.onNodeWithTag("dashboard_trigger_threshold").assertTextEquals("Trigger threshold: 20%")
     }
 
     @Test

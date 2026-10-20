@@ -143,7 +143,7 @@ All user data lives in app-private storage (never the cache directory) and survi
 | Voice memos (index) | Room database `voice_memo_database` | Schema in `app/schemas/` |
 | Voice memo audio | `filesDir/memos/*.wav` | Referenced by absolute path from the database |
 | Settings | SharedPreferences `voice_memo_preferences` | Versioned by `settingsSchemaVersion`, migrated by `SettingsMigrator` |
-| Match confidence threshold | key `matchConfidenceThresholdPercent` (Int, 50–80) | Single authoritative value |
+| Match confidence threshold | key `matchConfidenceThresholdPercent` (Int, 20–80) | Single authoritative value |
 | Enrolled wake-phrase samples (1–5) | `filesDir/wake_phrase/samples/sample_<id>.bin` | Versioned (`VMWS` v1), features only (no audio); deleting all restores the built-in "Ciao Linda" |
 | Single template of earlier versions | `filesDir/wake_phrase/enrolled_template.bin` | Read only for the one-time migration to sample 1; deleted after a verified copy |
 | Wake-phrase test recording | `filesDir/wake_phrase/test_recording.wav` | 16 kHz mono WAV of the last "Test Phrase" run |
@@ -155,11 +155,11 @@ All user data lives in app-private storage (never the cache directory) and survi
 
 ## 6. Match Confidence Threshold
 
-`TemplateKeywordDetector` scores each candidate window as `confidence = 1 − normalizedDtwDistance / 0.40` (0.0–1.0). The wake phrase is detected when `confidence ≥ threshold`, where `threshold = percent / 100` and `percent` is the user's **Match confidence threshold** (50 %–80 %, default 50 %). In Wake Phrase mode the audio must additionally exceed the loudness (activation) threshold.
+`TemplateKeywordDetector` scores each candidate window as `confidence = 1 − normalizedDtwDistance / 0.40` (0.0–1.0). The wake phrase is detected when `confidence ≥ threshold`, where `threshold = percent / 100` and `percent` is the user's **Match confidence threshold** (20 %–80 %, default 50 %). In Wake Phrase mode the audio must additionally exceed the loudness (activation) threshold.
 
 The ViewModel holds the persisted value, passes it to `AudioMonitoringService` (applied live through `ACTION_UPDATE_MATCH_CONFIDENCE_THRESHOLD` without resetting the detector), and the dashboard shows the same value as **Trigger threshold**.
 
-The former "keyword sensitivity" (0.10–0.95) required `distance ≤ 0.28 + (s − 0.5)·0.12` and `confidence ≥ clamp(0.42 − (s − 0.5)·0.20, 0.25, 0.75)`; `SettingsMigrator` converts a stored legacy value to the confidence threshold it effectively produced and clamps it to 50–80 %.
+The former "keyword sensitivity" (0.10–0.95) required `distance ≤ 0.28 + (s − 0.5)·0.12` and `confidence ≥ clamp(0.42 − (s − 0.5)·0.20, 0.25, 0.75)`; `SettingsMigrator` converts a stored legacy value to the confidence threshold it effectively produced and clamps it to 50–80 % (the range when that migration step was written; it is kept so the step always gives the same result).
 
 ---
 
@@ -197,7 +197,23 @@ The former "keyword sensitivity" (0.10–0.95) required `distance ≤ 0.28 + (s 
 
 ---
 
-## 9. Memo Completion (Stop Reasons)
+## 9. Recording Controls & Lock Screen
+
+Dashboard button, notification action, Quick Settings tile (`RecordingTileService`), hardware and keyboard shortcuts
+(`RecordingShortcutHandler`, a pure state machine, hosted by `MainActivity` and the optional
+`RecordingShortcutAccessibilityService`) all send start/stop/toggle requests to `AudioMonitoringService`. A start
+while recording is ignored; toggles are debounced. Background controls work only while monitoring runs (Android's
+while-in-use microphone rule). Platform limits and the device test plan: [`docs/SHORTCUTS_AND_LOCK_SCREEN.md`](docs/SHORTCUTS_AND_LOCK_SCREEN.md).
+
+| Setting | Key | Default |
+|---|---|---|
+| Volume-button shortcut | `hardwareShortcutEnabled`, `hardwareShortcutGesture` (enum name) | off, `HOLD_BOTH_VOLUME` |
+| Keyboard shortcut | `keyboardShortcutEnabled`, `keyboardShortcutKeyCode`, `keyboardShortcutModifiers` | off, not set |
+| Lock-screen controls | `lockScreenControlsEnabled` | on |
+
+---
+
+## 10. Memo Completion (Stop Reasons)
 
 `MemoTriggerDetector.finalizeRecording` is the only place a memo is finalized, once, with a `RecordingStopReason`:
 `KEYWORD` (the spoken stop phrase is removed by `StopPhraseTrimmer`), `SILENCE_TIMEOUT`, `MAX_DURATION`, `USER`,

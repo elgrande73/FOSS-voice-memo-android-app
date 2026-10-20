@@ -30,7 +30,7 @@ class MatchConfidenceThresholdTest {
 
     /**
      * The default phrase with some frames swapped (a mispronounced "Ciao Linda"), so its confidence lands inside the
-     * 50%–80% range. Fully deterministic.
+     * upper part of the 20%–80% range. Fully deterministic.
      */
     private fun partiallyMatchingPhrase(): Pair<List<ShortArray>, Float> {
         for (swappedFrames in 1..12) {
@@ -44,14 +44,16 @@ class MatchConfidenceThresholdTest {
     }
 
     @Test
-    fun rangeAndDefaultAreWithinFiftyToEightyPercent() {
-        assertEquals(50, MatchConfidenceThreshold.MIN_PERCENT)
+    fun rangeIsTwentyToEightyPercentWithDefaultFifty() {
+        assertEquals(20, MatchConfidenceThreshold.MIN_PERCENT)
         assertEquals(80, MatchConfidenceThreshold.MAX_PERCENT)
-        assertTrue(MatchConfidenceThreshold.DEFAULT_PERCENT in 50..80)
+        assertEquals(50, MatchConfidenceThreshold.DEFAULT_PERCENT)
     }
 
     @Test
     fun percentMapsOneToOneOntoDetectorConfidenceScale() {
+        assertEquals(0.20f, MatchConfidenceThreshold.toDetectorConfidence(20), 0.0001f)
+        assertEquals(0.35f, MatchConfidenceThreshold.toDetectorConfidence(35), 0.0001f)
         assertEquals(0.50f, MatchConfidenceThreshold.toDetectorConfidence(50), 0.0001f)
         assertEquals(0.65f, MatchConfidenceThreshold.toDetectorConfidence(65), 0.0001f)
         assertEquals(0.80f, MatchConfidenceThreshold.toDetectorConfidence(80), 0.0001f)
@@ -59,7 +61,10 @@ class MatchConfidenceThresholdTest {
 
     @Test
     fun outOfRangeValuesAreClamped() {
-        assertEquals(50, MatchConfidenceThreshold.clampPercent(10))
+        assertEquals(20, MatchConfidenceThreshold.clampPercent(10))
+        assertEquals(20, MatchConfidenceThreshold.clampPercent(20))
+        assertEquals(50, MatchConfidenceThreshold.clampPercent(50))
+        assertEquals(0.20f, MatchConfidenceThreshold.toDetectorConfidence(-5), 0.0001f)
         assertEquals(80, MatchConfidenceThreshold.clampPercent(99))
         assertEquals(0.80f, MatchConfidenceThreshold.toDetectorConfidence(250), 0.0001f)
     }

@@ -9,13 +9,12 @@ package io.github.elgrande73.voicememo.settings
  * The user-facing percentage therefore maps 1:1 onto that scale: `threshold = percent / 100`.
  */
 object MatchConfidenceThreshold {
-    const val MIN_PERCENT = 50
+    const val MIN_PERCENT = 20
     const val MAX_PERCENT = 80
 
     /**
-     * Default for fresh installations. The previous default (keyword sensitivity 0.60) corresponded to an
-     * effective confidence threshold of 40%, which is outside the supported 50%–80% range, so the closest
-     * valid value (50%) is used to keep recognition behavior as close as possible to before.
+     * Default for fresh installations. Values below 50 % accept clearly weaker matches and, on the evaluation
+     * fixtures, many more false activations (docs/WAKE_PHRASE_DETECTION.md, "Threshold sweep").
      */
     const val DEFAULT_PERCENT = 50
 

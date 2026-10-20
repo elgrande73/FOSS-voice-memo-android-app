@@ -1,11 +1,13 @@
 package io.github.elgrande73.voicememo
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -88,6 +90,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -115,6 +124,11 @@ import io.github.elgrande73.voicememo.ui.theme.ThemeMode
 import io.github.elgrande73.voicememo.viewmodel.VoiceMemoViewModel
 import io.github.elgrande73.voicememo.viewmodel.VoiceNoteFilter
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
+import io.github.elgrande73.voicememo.shortcuts.HardwareGesture
+import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
+import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutAccessibilityService
+import io.github.elgrande73.voicememo.shortcuts.ShortcutKeyHost
+import io.github.elgrande73.voicememo.shortcuts.ShortcutRuntime
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -123,6 +137,40 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
 
     private val viewModel: VoiceMemoViewModel by viewModels()
+
+    /** Hardware-button and keyboard shortcuts while this activity has focus. */
+    private val shortcutHost by lazy { ShortcutKeyHost(this) { viewModel.toggleManualRecording() } }
+
+    override fun onResume() {
+        super.onResume()
+        shortcutHost.start()
+        ShortcutRuntime.foregroundToggle = { viewModel.toggleManualRecording() }
+    }
+
+    override fun onPause() {
+        ShortcutRuntime.foregroundToggle = null
+        shortcutHost.stop()
+        super.onPause()
+    }
+
+    // Overrides the public platform Activity.dispatchKeyEvent; lint attributes it to androidx.core's restricted
+    // ComponentActivity override (known false positive)
+    @SuppressLint("RestrictedApi")
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (viewModel.keyboardShortcutCapture.value) {
+            // Settings is recording a new shortcut: the key press is the answer, not an action
+            if (event.keyCode == KeyEvent.KEYCODE_BACK || event.keyCode == KeyEvent.KEYCODE_ESCAPE) {
+                if (event.action == KeyEvent.ACTION_UP) viewModel.cancelKeyboardShortcutCapture()
+                return true
+            }
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                viewModel.onShortcutKeyCaptured(event.keyCode, KeyboardShortcut.modifiersOf(event.metaState))
+            }
+            return true
+        }
+        if (shortcutHost.onKeyEvent(event)) return true
+        return super.dispatchKeyEvent(event)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -310,399 +358,615 @@ fun DashboardScreen(
 
     val context = LocalContext.current
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState())
-            .testTag("dashboard_screen"),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Text(
-            text = stringResource(R.string.dashboard_title),
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.testTag("dashboard_title")
-        )
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                // Room below the content for the record button, so nothing ends up hidden behind it
+                .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = RECORD_BAR_HEIGHT + 16.dp)
+                .testTag("dashboard_screen"),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.dashboard_title),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.testTag("dashboard_title")
+            )
 
-        // Permission Warning Card
-        if (!hasMicPermission) {
+            // Permission Warning Card
+            if (!hasMicPermission) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Microphone Permission Required",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Voice Memo needs microphone access to listen for voice memos and wake phrases.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = onRequestPermission,
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Text("Grant Microphone Access")
+                        }
+                    }
+                }
+            }
+
+            // Monitoring Status Card
             Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = when {
+                        isCurrentlyRecording -> MaterialTheme.colorScheme.errorContainer
+                        engineState == MonitoringEngineState.ACTIVE -> MaterialTheme.colorScheme.primaryContainer
+                        else -> MaterialTheme.colorScheme.surfaceVariant
+                    }
+                ),
+                shape = RoundedCornerShape(24.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Microphone Permission Required",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Voice Memo needs microphone access to listen for voice memos and wake phrases.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Button(
-                        onClick = onRequestPermission,
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                    ) {
-                        Text("Grant Microphone Access")
-                    }
-                }
-            }
-        }
-
-        // Monitoring Status Card
-        Card(
-            colors = CardDefaults.cardColors(
-                containerColor = when {
-                    isCurrentlyRecording -> MaterialTheme.colorScheme.errorContainer
-                    engineState == MonitoringEngineState.ACTIVE -> MaterialTheme.colorScheme.primaryContainer
-                    else -> MaterialTheme.colorScheme.surfaceVariant
-                }
-            ),
-            shape = RoundedCornerShape(24.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+                Column(modifier = Modifier.padding(20.dp)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(16.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    when {
-                                        isCurrentlyRecording -> Color.Red
-                                        engineState == MonitoringEngineState.ACTIVE -> Color(0xFF4CAF50)
-                                        engineState == MonitoringEngineState.UNAVAILABLE -> Color(0xFFFF9800)
-                                        phraseCaptureState != PhraseCaptureState.Idle -> Color(0xFFFF9800)
-                                        else -> Color.Gray
-                                    }
-                                )
-                        )
-                        Column {
-                            Text(
-                                text = monitoringStatusText(isCurrentlyRecording, engineState, phraseCaptureState),
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.testTag("monitoring_status")
-                            )
-                            Text(
-                                text = "Mode: ${detectionMode.displayName}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    if (isCurrentlyRecording) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.error,
-                            shape = RoundedCornerShape(12.dp)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Text(
-                                text = "${recordingDurationSeconds}s",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            Box(
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        when {
+                                            isCurrentlyRecording -> Color.Red
+                                            engineState == MonitoringEngineState.ACTIVE -> Color(0xFF4CAF50)
+                                            engineState == MonitoringEngineState.UNAVAILABLE -> Color(0xFFFF9800)
+                                            phraseCaptureState != PhraseCaptureState.Idle -> Color(0xFFFF9800)
+                                            else -> Color.Gray
+                                        }
+                                    )
                             )
+                            Column {
+                                Text(
+                                    text = monitoringStatusText(isCurrentlyRecording, engineState, phraseCaptureState),
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.testTag("monitoring_status")
+                                )
+                                Text(
+                                    text = "Mode: ${detectionMode.displayName}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        if (isCurrentlyRecording) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.error,
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text(
+                                    text = "${recordingDurationSeconds}s",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
                         }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
 
-                // Hardware Input Source info
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = "Microphone:",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = if (isFallbackActive) "$activeInputDevice (Default)" else activeInputDevice,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-        }
-
-        // Live Audio Level & Threshold Visualizer
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(20.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = "Live Audio Level",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "${liveDb.toInt()} dB",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = if (liveDb >= thresholdDb) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Decibel Progress Bar with Threshold Marker
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(24.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                ) {
-                    val progressFraction = (liveDb / 100f).coerceIn(0f, 1f)
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(fraction = progressFraction)
-                            .height(24.dp)
-                            .background(
-                                if (liveDb >= thresholdDb) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
-                            )
-                    )
-
-                    // Threshold indicator line
-                    val thresholdFraction = (thresholdDb / 100f).coerceIn(0f, 1f)
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(fraction = thresholdFraction)
-                            .height(24.dp)
+                    // Hardware Input Source info
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .width(3.dp)
-                                .height(24.dp)
-                                .background(Color.Red)
+                        Text(
+                            text = "Microphone:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = if (isFallbackActive) "$activeInputDevice (Default)" else activeInputDevice,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = "Noise Floor: ${liveNoiseFloorDb.toInt()} dB",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "Activation threshold: ${thresholdDb.toInt()} dB",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color.Red
-                    )
-                }
             }
-        }
 
-        // Live Wake-Phrase Match Confidence Gauge
-        if (detectionMode == DetectionMode.KEYWORD_ONLY) {
+            // Live Audio Level & Threshold Visualizer
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 shape = RoundedCornerShape(20.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(20.dp),
-                    modifier = Modifier.padding(20.dp)
-                ) {
-                    WakePhraseConfidenceGauge(
-                        confidence = keywordConfidence,
-                        threshold = MatchConfidenceThreshold.toDetectorConfidence(matchConfidenceThresholdPercent),
-                        modifier = Modifier
-                            .size(120.dp)
-                            .testTag("keyword_confidence_gauge")
-                    )
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Text(
-                            text = "Wake Phrase Match",
+                            text = "Live Audio Level",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Live similarity to your wake phrase",
+                            text = "${liveDb.toInt()} dB",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = if (liveDb >= thresholdDb) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Decibel Progress Bar with Threshold Marker
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(24.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        val progressFraction = (liveDb / 100f).coerceIn(0f, 1f)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(fraction = progressFraction)
+                                .height(24.dp)
+                                .background(
+                                    if (liveDb >= thresholdDb) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
+                                )
+                        )
+
+                        // Threshold indicator line
+                        val thresholdFraction = (thresholdDb / 100f).coerceIn(0f, 1f)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(fraction = thresholdFraction)
+                                .height(24.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .width(3.dp)
+                                    .height(24.dp)
+                                    .background(Color.Red)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Noise Floor: ${liveNoiseFloorDb.toInt()} dB",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "Trigger threshold: $matchConfidenceThresholdPercent%",
+                            text = "Activation threshold: ${thresholdDb.toInt()} dB",
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.SemiBold,
-                            color = Color.Red,
-                            modifier = Modifier.testTag("dashboard_trigger_threshold")
+                            color = Color.Red
                         )
-                        if (!isServiceRunning) {
+                    }
+                }
+            }
+
+            // Live Wake-Phrase Match Confidence Gauge
+            if (detectionMode == DetectionMode.KEYWORD_ONLY) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(20.dp),
+                        modifier = Modifier.padding(20.dp)
+                    ) {
+                        WakePhraseConfidenceGauge(
+                            confidence = keywordConfidence,
+                            threshold = MatchConfidenceThreshold.toDetectorConfidence(matchConfidenceThresholdPercent),
+                            modifier = Modifier
+                                .size(120.dp)
+                                .testTag("keyword_confidence_gauge")
+                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(
-                                text = "Start monitoring to see live values",
+                                text = "Wake Phrase Match",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Live similarity to your wake phrase",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            Text(
+                                text = "Trigger threshold: $matchConfidenceThresholdPercent%",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.Red,
+                                modifier = Modifier.testTag("dashboard_trigger_threshold")
+                            )
+                            if (!isServiceRunning) {
+                                Text(
+                                    text = "Start monitoring to see live values",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Monitoring control (the record button is at the bottom of the screen)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Button(
+                    onClick = { viewModel.setMonitoringEnabledByUser(!isServiceRunning) },
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isServiceRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(56.dp)
+                        .testTag("toggle_monitoring_button")
+                ) {
+                    Text(
+                        text = if (isServiceRunning) "Stop Monitoring" else "Start Monitoring",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // Today's Session Summary Card
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Session Stats",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.SpaceAround,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "$sessionCount",
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Memos Captured",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = if (engineState == MonitoringEngineState.ACTIVE) "Active" else "Idle",
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (engineState == MonitoringEngineState.ACTIVE) Color(0xFF4CAF50) else Color.Gray
+                            )
+                            Text(
+                                text = "Service State",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Last Captured Memo Quick Preview Card
+            lastRecordedNote?.let { note ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Last Captured Memo",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = note.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Duration: ${String.format(Locale.US, "%.1fs", note.durationSeconds)} • Peak: ${note.peakDb.toInt()} dB",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = { viewModel.playVoiceNote(note) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(imageVector = Icons.Default.PlayArrow, contentDescription = "Play")
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Play Memo")
                         }
                     }
                 }
             }
         }
 
-        // Primary Hero Action Controls
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.fillMaxWidth()
+        // Large record button at the bottom centre: reachable with the thumb, away from the other controls
+        MemoRecordBar(
+            isRecording = isCurrentlyRecording,
+            onClick = {
+                if (isCurrentlyRecording) {
+                    viewModel.stopManualRecording()
+                    Toast.makeText(context, "Voice memo saved", Toast.LENGTH_SHORT).show()
+                } else {
+                    viewModel.startManualRecording()
+                }
+            },
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
+    }
+}
+
+/** Settings > Shortcuts & lock screen: hardware buttons, external keyboard, background use and lock-screen controls. */
+@Composable
+fun ShortcutSettingsCard(viewModel: VoiceMemoViewModel) {
+    val config by viewModel.shortcutConfig.collectAsState()
+    val capturing by viewModel.keyboardShortcutCapture.collectAsState()
+    val keyboardMessage by viewModel.keyboardShortcutMessage.collectAsState()
+    val lockScreenControls by viewModel.lockScreenControlsEnabled.collectAsState()
+    val context = LocalContext.current
+    var backgroundShortcutsEnabled by remember { mutableStateOf(RecordingShortcutAccessibilityService.isEnabled(context)) }
+    // Re-check after returning from Android's accessibility settings
+    LifecycleResumeEffect(Unit) {
+        backgroundShortcutsEnabled = RecordingShortcutAccessibilityService.isEnabled(context)
+        onPauseOrDispose { viewModel.cancelKeyboardShortcutCapture() }
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("shortcut_settings")
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = "Shortcuts & Lock Screen", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                text = "Start and stop a memo without the dashboard button. The same shortcut starts a memo, or stops the one being recorded.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // Hardware buttons
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "Volume-button shortcut", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = config.hardwareGesture.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = config.hardwareEnabled,
+                    onCheckedChange = { viewModel.setHardwareShortcutEnabled(it) },
+                    modifier = Modifier.testTag("hardware_shortcut_switch")
+                )
+            }
+            if (config.hardwareEnabled) {
+                HardwareGesture.entries.forEach { gesture ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { viewModel.setHardwareGesture(gesture) }
+                            .testTag("hardware_gesture_${gesture.name}")
+                    ) {
+                        RadioButton(selected = config.hardwareGesture == gesture, onClick = { viewModel.setHardwareGesture(gesture) })
+                        Text(text = gesture.title, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                Text(
+                    text = "Release the buttons when the memo starts. If Android's accessibility shortcut is set to both volume " +
+                        "buttons, Android may take that combination; use Hold Volume Down instead.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            // External keyboard
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "Keyboard shortcut", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = config.keyboardShortcut?.let { "Bluetooth or USB keyboard: ${it.label}" } ?: "Not set",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.testTag("keyboard_shortcut_label")
+                    )
+                }
+                Switch(
+                    checked = config.keyboardEnabled,
+                    onCheckedChange = { viewModel.setKeyboardShortcutEnabled(it) },
+                    modifier = Modifier.testTag("keyboard_shortcut_switch")
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (capturing) {
+                    OutlinedButton(onClick = { viewModel.cancelKeyboardShortcutCapture() }) { Text("Cancel") }
+                } else {
+                    OutlinedButton(
+                        onClick = { viewModel.startKeyboardShortcutCapture() },
+                        modifier = Modifier.testTag("keyboard_shortcut_set")
+                    ) { Text(if (config.keyboardShortcut == null) "Set Shortcut" else "Change Shortcut") }
+                    if (config.keyboardShortcut != null) {
+                        TextButton(onClick = { viewModel.clearKeyboardShortcut() }) { Text("Remove") }
+                    }
+                }
+            }
+            if (capturing) {
+                Text(
+                    text = "Press the key combination on your keyboard now (for example Ctrl+Shift+R, or F9). Back or Esc cancels.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.testTag("keyboard_shortcut_capture_hint")
+                )
+            }
+            keyboardMessage?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("keyboard_shortcut_message")
+                )
+            }
+
+            // Background use
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(text = "Use shortcuts outside the app", fontWeight = FontWeight.SemiBold)
+            Text(
+                text = (if (backgroundShortcutsEnabled) "On. " else "Off. ") +
+                    "Without it, shortcuts work only while Voice Memo is open. To use them in other apps and on the lock " +
+                    "screen, enable \"${context.getString(R.string.accessibility_service_label)}\" in Android's accessibility " +
+                    "settings. It only checks key presses for your shortcut and never reads screen content or typed text. " +
+                    "Outside the app a shortcut can start a memo only while monitoring is running. No shortcut works " +
+                    "while the screen is off (Android does not pass button presses to apps then).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("background_shortcuts_status")
+            )
+            TextButton(onClick = {
+                try {
+                    context.startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (_: Exception) {
+                    Toast.makeText(context, "Accessibility settings are not available on this device", Toast.LENGTH_LONG).show()
+                }
+            }) { Text("Open Accessibility Settings") }
+
+            // Lock screen
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "Recording controls on the lock screen", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = "While monitoring runs, the notification's Start/Stop memo button and the \"Voice memo\" " +
+                            "Quick Settings tile work without unlocking. Memos can only be played after unlocking. " +
+                            "When off, Android asks you to unlock first.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = lockScreenControls,
+                    onCheckedChange = { viewModel.setLockScreenControlsEnabled(it) },
+                    modifier = Modifier.testTag("lock_screen_controls_switch")
+                )
+            }
+        }
+    }
+}
+
+/** Height reserved at the bottom of the dashboard for [MemoRecordBar]. */
+val RECORD_BAR_HEIGHT = 140.dp
+
+/**
+ * Quick Memo / Stop Memo: a 96 dp round button, bottom centre, on an opaque bar so taps near it cannot reach the
+ * scrolled content behind. Start and stop differ in colour, symbol (dot / square) and label; TalkBack announces the
+ * action and the recording state.
+ */
+@Composable
+fun MemoRecordBar(isRecording: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val label = if (isRecording) "Stop Memo" else "Quick Memo"
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        modifier = modifier
+            .fillMaxWidth()
+            .height(RECORD_BAR_HEIGHT)
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxSize()
         ) {
             Button(
-                onClick = { viewModel.setMonitoringEnabledByUser(!isServiceRunning) },
-                shape = RoundedCornerShape(16.dp),
+                onClick = onClick,
+                shape = CircleShape,
+                contentPadding = PaddingValues(0.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isServiceRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                    containerColor = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                 ),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp),
                 modifier = Modifier
-                    .weight(1f)
-                    .height(56.dp)
-                    .testTag("toggle_monitoring_button")
-            ) {
-                Text(
-                    text = if (isServiceRunning) "Stop Monitoring" else "Start Monitoring",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            OutlinedButton(
-                onClick = {
-                    if (isCurrentlyRecording) {
-                        viewModel.stopManualRecording()
-                        Toast.makeText(context, "Voice memo saved", Toast.LENGTH_SHORT).show()
-                    } else {
-                        viewModel.startManualRecording()
+                    .size(96.dp)
+                    .semantics {
+                        contentDescription = if (isRecording) "Stop memo and save" else "Start quick memo"
+                        stateDescription = if (isRecording) "Recording" else "Not recording"
                     }
-                },
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier
-                    .weight(1f)
-                    .height(56.dp)
                     .testTag("manual_record_button")
             ) {
-                Text(
-                    text = if (isCurrentlyRecording) "Stop Memo" else "Quick Memo",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-
-        // Today's Session Summary Card
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-            shape = RoundedCornerShape(20.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "Session Stats",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                Row(
-                    horizontalArrangement = Arrangement.SpaceAround,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = "$sessionCount",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "Memos Captured",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = if (engineState == MonitoringEngineState.ACTIVE) "Active" else "Idle",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = if (engineState == MonitoringEngineState.ACTIVE) Color(0xFF4CAF50) else Color.Gray
-                        )
-                        Text(
-                            text = "Service State",
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                val symbolColor = if (isRecording) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary
+                Canvas(modifier = Modifier.size(34.dp)) {
+                    if (isRecording) {
+                        drawRoundRect(color = symbolColor, cornerRadius = CornerRadius(size.minDimension * 0.15f))
+                    } else {
+                        drawCircle(color = symbolColor)
                     }
                 }
             }
-        }
-
-        // Last Captured Memo Quick Preview Card
-        lastRecordedNote?.let { note ->
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Last Captured Memo",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = note.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Duration: ${String.format(Locale.US, "%.1fs", note.durationSeconds)} • Peak: ${note.peakDb.toInt()} dB",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Button(
-                        onClick = { viewModel.playVoiceNote(note) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(imageVector = Icons.Default.PlayArrow, contentDescription = "Play")
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Play Memo")
-                    }
-                }
-            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier
+                    .padding(top = 8.dp)
+                    .testTag("manual_record_label")
+            )
         }
     }
 }
@@ -853,6 +1117,7 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
             singleLine = true,
             modifier = Modifier
                 .fillMaxWidth()
+                .onFocusChanged { ShortcutRuntime.textInputFocused = it.isFocused }
                 .testTag("search_notes_input")
         )
 
@@ -1149,7 +1414,9 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
                     onValueChange = { renameText = it },
                     label = { Text("Title") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { ShortcutRuntime.textInputFocused = it.isFocused }
                 )
             },
             confirmButton = {
@@ -1522,6 +1789,15 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                     steps = MatchConfidenceThreshold.MAX_PERCENT - MatchConfidenceThreshold.MIN_PERCENT - 1,
                     modifier = Modifier.testTag("match_confidence_threshold_slider")
                 )
+                if (matchConfidenceThresholdPercent < MatchConfidenceThreshold.DEFAULT_PERCENT) {
+                    Text(
+                        text = "Below ${MatchConfidenceThreshold.DEFAULT_PERCENT}%, similar-sounding words and other speech start " +
+                            "memos much more often. Use low values only if the phrase is otherwise not detected.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.testTag("match_confidence_threshold_warning")
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
@@ -1672,6 +1948,8 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                 }
             }
         }
+
+        ShortcutSettingsCard(viewModel)
 
         // Section: Hardware Microphones
         Card(

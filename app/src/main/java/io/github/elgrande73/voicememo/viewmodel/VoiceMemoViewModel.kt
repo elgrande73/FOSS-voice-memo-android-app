@@ -47,6 +47,11 @@ import io.github.elgrande73.voicememo.playback.MemoAudioOutput
 import io.github.elgrande73.voicememo.playback.MemoPlaybackSequencer
 import io.github.elgrande73.voicememo.playback.PlaybackCue
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
+import io.github.elgrande73.voicememo.shortcuts.HardwareGesture
+import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
+import io.github.elgrande73.voicememo.shortcuts.ShortcutConfig
+import io.github.elgrande73.voicememo.shortcuts.ShortcutRuntime
+import io.github.elgrande73.voicememo.shortcuts.ShortcutSettings
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.settings.SettingsMigrator
 import io.github.elgrande73.voicememo.ui.theme.ThemeMode
@@ -193,6 +198,20 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         )
     )
     val matchConfidenceThresholdPercent = _matchConfidenceThresholdPercent.asStateFlow()
+
+    // Recording shortcuts (hardware buttons, external keyboard) and lock-screen controls
+    private val _shortcutConfig = MutableStateFlow<ShortcutConfig>(ShortcutSettings.load(prefs))
+    val shortcutConfig = _shortcutConfig.asStateFlow()
+
+    private val _lockScreenControlsEnabled = MutableStateFlow<Boolean>(ShortcutSettings.lockScreenControlsEnabled(prefs))
+    val lockScreenControlsEnabled: StateFlow<Boolean> = _lockScreenControlsEnabled.asStateFlow()
+
+    /** True while Settings waits for the user to press a new keyboard shortcut. */
+    private val _keyboardShortcutCapture = MutableStateFlow(false)
+    val keyboardShortcutCapture = _keyboardShortcutCapture.asStateFlow()
+
+    private val _keyboardShortcutMessage = MutableStateFlow<String?>(null)
+    val keyboardShortcutMessage = _keyboardShortcutMessage.asStateFlow()
 
     private val _keywordBehavior = MutableStateFlow(
         try {
@@ -415,6 +434,87 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
             context.startService(intent)
         } catch (e: Exception) {
             Log.e(TAG, "startManualRecording failed", e)
+        }
+    }
+
+    /**
+     * Starts a memo, or stops the one being recorded (dashboard-equivalent action for keyboard and hardware
+     * shortcuts while the app is in the foreground). Starts monitoring if needed, like Quick Memo.
+     */
+    fun toggleManualRecording() {
+        if (AudioMonitoringService.isServiceRunning.value) {
+            AudioMonitoringService.requestToggle(context)
+        } else {
+            startManualRecording()
+        }
+    }
+
+    fun setHardwareShortcutEnabled(enabled: Boolean) {
+        updateShortcutConfig(_shortcutConfig.value.copy(hardwareEnabled = enabled))
+    }
+
+    fun setHardwareGesture(gesture: HardwareGesture) {
+        updateShortcutConfig(_shortcutConfig.value.copy(hardwareGesture = gesture))
+    }
+
+    fun setKeyboardShortcutEnabled(enabled: Boolean) {
+        if (enabled && _shortcutConfig.value.keyboardShortcut == null) {
+            _keyboardShortcutMessage.value = "Set a key combination first."
+            return
+        }
+        updateShortcutConfig(_shortcutConfig.value.copy(keyboardEnabled = enabled))
+    }
+
+    fun startKeyboardShortcutCapture() {
+        _keyboardShortcutMessage.value = null
+        _keyboardShortcutCapture.value = true
+        ShortcutRuntime.captureActive = true
+    }
+
+    fun cancelKeyboardShortcutCapture() {
+        _keyboardShortcutCapture.value = false
+        ShortcutRuntime.captureActive = false
+    }
+
+    /**
+     * Called with each key press while capturing. Modifier keys alone are ignored (the user is still building the
+     * combination); anything else either becomes the new shortcut (and enables it) or is rejected with a reason.
+     * @return true if the key was used by the capture.
+     */
+    fun onShortcutKeyCaptured(keyCode: Int, modifiers: Int): Boolean {
+        if (!_keyboardShortcutCapture.value) return false
+        val problem = KeyboardShortcut.validate(keyCode, modifiers)
+        if (problem == KeyboardShortcut.Problem.MODIFIER_ONLY) return true
+        if (problem != null) {
+            _keyboardShortcutMessage.value = problem.message
+            return true
+        }
+        val shortcut = KeyboardShortcut(keyCode, modifiers)
+        cancelKeyboardShortcutCapture()
+        updateShortcutConfig(_shortcutConfig.value.copy(keyboardShortcut = shortcut, keyboardEnabled = true))
+        _keyboardShortcutMessage.value = "Shortcut set to ${shortcut.label}."
+        return true
+    }
+
+    fun clearKeyboardShortcut() {
+        updateShortcutConfig(_shortcutConfig.value.copy(keyboardShortcut = null, keyboardEnabled = false))
+        _keyboardShortcutMessage.value = null
+    }
+
+    private fun updateShortcutConfig(config: ShortcutConfig) {
+        ShortcutSettings.save(prefs, config)
+        _shortcutConfig.value = ShortcutSettings.load(prefs)
+    }
+
+    fun setLockScreenControlsEnabled(enabled: Boolean) {
+        _lockScreenControlsEnabled.value = enabled
+        ShortcutSettings.setLockScreenControlsEnabled(prefs, enabled)
+        if (AudioMonitoringService.isServiceRunning.value) {
+            try {
+                context.startService(Intent(context, AudioMonitoringService::class.java).setAction(AudioMonitoringService.ACTION_REFRESH_NOTIFICATION))
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to refresh notification", e)
+            }
         }
     }
 
@@ -1015,7 +1115,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
-     * Sets the Match confidence threshold (percent, clamped to 50–80). Persisted as the single authoritative value and
+     * Sets the Match confidence threshold (percent, clamped to 20–80). Persisted as the single authoritative value and
      * applied live to the running detector without restarting monitoring.
      */
     fun setMatchConfidenceThresholdPercent(percent: Int) {
@@ -1100,6 +1200,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     override fun onCleared() {
+        cancelKeyboardShortcutCapture()
         stopPlayback()
         playbackChimePlayer.release()
         previewSoundPlayer.release()

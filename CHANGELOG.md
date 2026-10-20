@@ -6,6 +6,27 @@ First release under the new name **Voice Memo** and the new application ID `io.g
 (previously **Ciao Linda**, `com.aistudio.ciaolinda`). Android installs it as a separate app; data of the old app is
 not accessible to it (see README, "New application identity").
 
+### Added (recording controls)
+- Large round Quick Memo / Stop Memo button at the bottom centre of the dashboard (96 dp, distinct colour, symbol and
+  label for start and stop; TalkBack labels).
+- Lock-screen controls while monitoring runs: Start/Stop memo button in the monitoring notification and a "Voice memo"
+  Quick Settings tile, usable without unlocking (can be turned off; Android then asks to unlock). The monitoring
+  notification moved to a new channel "Monitoring and recording controls" (no sound), because silent notifications are
+  hidden on many lock screens.
+- Optional volume-button shortcut (hold both volume buttons, or hold Volume Down/Up) and external keyboard shortcut,
+  both off by default. They work while Voice Memo is open, and in other apps or on the lock screen (screen on) with the
+  optional accessibility service. No shortcut works while the screen is off (Android limitation). See
+  `docs/SHORTCUTS_AND_LOCK_SCREEN.md`.
+
+### Changed
+- Match confidence threshold range widened to 20 %–80 % (default still 50 %; saved values are kept). On the synthetic
+  benchmark, values below 50 % let ordinary conversation start memos (conversation FPR 0.024 at 45 %, 0.476 at 30 %);
+  Settings warns about this.
+
+### Fixed
+- Starting a memo while one was already being recorded restarted it and discarded the audio so far; repeated start
+  requests are now ignored.
+
 ### Added (stop handling and multi-sample enrollment)
 - Memos ended by repeating the wake phrase no longer contain the spoken stop phrase (cut at the pause before it, with a
   short fade-out). Memos ended by the silence timeout, the maximum length, the Stop button, stopping monitoring or a

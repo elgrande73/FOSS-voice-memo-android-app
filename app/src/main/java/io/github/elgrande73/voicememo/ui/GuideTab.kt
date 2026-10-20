@@ -106,7 +106,7 @@ fun GuideTab() {
                     "Record the \"Ciao Linda\" template in a quiet room at your normal conversational speaking distance.",
                     "Use the 'Test Phrase' button in Settings to check the match confidence of your voice; the result is saved and is computed exactly as during monitoring.",
                     "Monitoring pauses automatically while you record or test a phrase in Settings and resumes afterwards.",
-                    "Raise the Match confidence threshold (50%–80%) if the phrase triggers too easily, lower it if it is hard to trigger. The dashboard shows the same value as the Trigger threshold."
+                    "Raise the Match confidence threshold (20%–80%, default 50%) if the phrase triggers too easily, lower it if it is hard to trigger. Below 50% ordinary speech can start memos too. The dashboard shows the same value as the Trigger threshold."
                 )
             ),
             GuideSection(
@@ -138,8 +138,12 @@ fun GuideTab() {
                     - Bluetooth Headsets & Wireless Earbuds (via Bluetooth SCO)
                     
                     Monitoring runs as an Android Foreground Service with a persistent notification. It can run continuously with your screen off, inside your pocket, or placed on a desk.
+
+                    While monitoring runs, the notification's Start/Stop memo button and the "Voice memo" Quick Settings tile work from the lock screen without unlocking (Settings → Shortcuts & Lock Screen). Optional shortcuts: hold both volume buttons (or one), or a key combination on a Bluetooth/USB keyboard.
                 """.trimIndent(),
                 tips = listOf(
+                    "Add the \"Voice memo\" tile: pull down Quick Settings, tap the edit (pencil) button and drag the tile in.",
+                    "Shortcuts work in other apps and on the lock screen only after enabling \"Voice Memo recording shortcuts\" in Android's accessibility settings, and never while the screen is off.",
                     "Exclude Voice Memo from aggressive OS Battery Optimization in Android Settings for uninterrupted overnight listening.",
                     "If plugging in or disconnecting a headset, the audio pipeline automatically re-routes with zero data loss."
                 )

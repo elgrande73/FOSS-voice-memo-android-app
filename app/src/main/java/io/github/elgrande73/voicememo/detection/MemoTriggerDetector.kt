@@ -410,10 +410,12 @@ class MemoTriggerDetector(
     }
 
     /**
-     * Manually force starts recording immediately.
+     * Starts a memo immediately. Does nothing (returns null) while a memo is already being recorded, so a repeated
+     * start request (notification, tile, shortcut) can never discard the memo in progress.
      */
     @Synchronized
-    fun startManualRecording(): MemoDetectionEvent.TriggerStarted {
+    fun startManualRecording(): MemoDetectionEvent.TriggerStarted? {
+        if (currentState == RecordingLifecycleState.RECORDING) return null
         val now = System.currentTimeMillis()
         currentState = RecordingLifecycleState.RECORDING
         framesSinceTrigger = 0

@@ -62,7 +62,7 @@ Saved test WAV (validated)  ───┘   (exact 50 ms frames) └─ WakePhras
 For each candidate window the DTW path cost between template and recent frames is divided by the path length (mean
 Euclidean distance between L2-normalised feature vectors, 0…√2) and mapped to
 `score = clamp(1 − distance / 0.40, 0, 1)`. This is a **heuristic similarity score, not a calibrated probability**; the
-UI shows it as "match" percentage. The user's *Match confidence threshold* (50–80 %) is compared with it directly
+UI shows it as "match" percentage. The user's *Match confidence threshold* (20–80 %) is compared with it directly
 (`percent / 100`), and the dashboard shows the same value as *Trigger threshold*. The mapping constant 0.40 was not
 changed. The dashboard gauge shows the latest score with a short peak-hold (×0.92 per frame) so brief matches stay
 visible; the trigger decision always uses the raw, undecayed score of the current frame.
@@ -239,10 +239,34 @@ All false positives are near misses. Ordinary conversation produced no activatio
 | 75 % | 0.167 | 0 | 0.306 | 0 |
 | 80 % | 0 | 0 | 0 | 0 |
 
+**Extended range (20–45 %, available since the range was widened):**
+
+| Threshold | Recall (1 sample) | Near-miss FPR (1) | Conversation FPR (1) | Recall (5 samples) | Near-miss FPR (5) | Conversation FPR (5) |
+|---|---|---|---|---|---|---|
+| 20 % | 0.972 | 0.929 | 0.833 | 1.000 | 0.929 | 0.929 |
+| 25 % | 0.944 | 0.881 | 0.643 | 0.972 | 0.905 | 0.714 |
+| 30 % | 0.833 | 0.762 | 0.476 | 0.889 | 0.833 | 0.548 |
+| 35 % | 0.806 | 0.667 | 0.262 | 0.833 | 0.786 | 0.262 |
+| 40 % | 0.806 | 0.643 | 0.119 | 0.833 | 0.738 | 0.119 |
+| 45 % | 0.722 | 0.571 | 0.024 | 0.833 | 0.595 | 0.024 |
+| 50 % | 0.639 | 0.500 | 0 | 0.778 | 0.500 | 0 |
+
+Below 50 %, ordinary conversation starts activating the detector. In continuous monitoring, conversation-only audio gave:
+
+| Threshold | 1 sample | 5 samples |
+|---|---|---|
+| 30 % | 136 activations in 10 min (816/h) | 191 (1146/h) |
+| 40 % | 41 (246/h) | 56 (336/h) |
+| 50 % | 0 | 0 |
+
+Low values are offered for voices or microphones where the phrase is otherwise not detected. Settings shows a warning below 50 %. The scores themselves are unchanged: a lower threshold simply accepts weaker matches.
+
 **Near-miss false activations per hour of continuous monitoring:**
 
 | Threshold | 1 sample | 5 samples |
 |---|---|---|
+| 30 % | 1572 | 1668 |
+| 40 % | 1338 | 1506 |
 | 50 % | 942 | 1002 |
 | 70 % | 12 | 48 |
 

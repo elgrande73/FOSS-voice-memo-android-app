@@ -14,9 +14,10 @@ The default wake phrase is **"Ciao Linda"**.
 - **Automatic recording**: starts when speech or sound exceeds the activation threshold and stops after a configurable silence timeout.
 - **Wake phrase**: say **"Ciao Linda"** to start (and optionally stop) a memo. An offline keyword spotter (spectral filterbanks + Dynamic Time Warping) is built in; you can optionally record one to five samples of the phrase in your own voice (natural variations help); they are matched on the device and never leave it. When the phrase is repeated to stop a memo, the spoken stop phrase is removed from the recording; a memo ended by the silence timeout keeps its complete ending. Monitoring and the Settings phrase test use the same detection pipeline, and monitoring pauses automatically while a phrase is recorded in Settings.
 - **Adaptive noise handling**: the background noise floor is estimated automatically and conservative spectral noise suppression keeps background sounds from being mistaken for the wake phrase (see [`docs/WAKE_PHRASE_DETECTION.md`](docs/WAKE_PHRASE_DETECTION.md)).
-- **Match confidence threshold**: one setting (50 %–80 %) controls how closely speech must match the wake phrase; the dashboard shows the same value as the *Trigger threshold* next to a live match gauge.
+- **Match confidence threshold**: one setting (20 %–80 %, default 50 %) controls how closely speech must match the wake phrase; the dashboard shows the same value as the *Trigger threshold* next to a live match gauge.
 - **Rolling pre-trigger buffer**: keeps the start of your sentence.
 - **Playback queue**: playing a memo from the list automatically continues with the next memo of the list you are viewing (filters and search respected), framed by short beginning and ending chimes.
+- **Recording controls**: a large Quick Memo / Stop Memo button at the bottom of the dashboard; Start/Stop from the lock screen through the monitoring notification and a Quick Settings tile; optional volume-button and Bluetooth/USB keyboard shortcuts (see [`docs/SHORTCUTS_AND_LOCK_SCREEN.md`](docs/SHORTCUTS_AND_LOCK_SCREEN.md) for what Android allows).
 - **Recording chimes**: optional sounds when a recording starts and stops.
 - **Audio routing**: built-in microphone, USB audio and Bluetooth headsets.
 - **Local storage & export**: 16-bit PCM WAV files indexed in a local Room database; search, favorites, playback speed, ZIP export.
@@ -45,6 +46,8 @@ Changing the application ID is a deliberate breaking change. Android treats Voic
 
 - **No network access**: the app does not request the `INTERNET` permission and contains no networking libraries, analytics, trackers or ads.
 - **Optional transcription** (off by default): uses the device's system speech-recognition service (`android.speech.SpeechRecognizer`). That service is provided by the device (on many phones a proprietary service) and may itself use the network; the app requests offline recognition (`EXTRA_PREFER_OFFLINE`). *Known limitation:* the current implementation listens to the microphone after a memo is saved instead of transcribing the saved file.
+- **Optional accessibility service** ("Voice Memo recording shortcuts", off until you enable it in Android's settings): only checks key presses for your configured shortcut so it works in other apps and on the lock screen; it requests no accessibility events and cannot read screen content or typed text.
+- **Lock screen**: while monitoring runs, anyone holding the locked phone can start or stop a memo from the notification or the Quick Settings tile (turn this off under *Settings → Shortcuts & Lock Screen*). Memos can only be listened to after unlocking.
 - **Backups**: Android's standard app backup is enabled (`allowBackup`), so memos and settings can be included in device backups configured by the user.
 
 | Permission | Why |

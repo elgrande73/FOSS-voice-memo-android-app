@@ -21,6 +21,7 @@ import android.media.MediaRecorder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -46,6 +47,11 @@ import io.github.elgrande73.voicememo.memo.AppDatabase
 import io.github.elgrande73.voicememo.memo.ErrorLogger
 import io.github.elgrande73.voicememo.memo.VoiceNote
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
+import io.github.elgrande73.voicememo.settings.PreferenceKeys
+import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutHandler
+import io.github.elgrande73.voicememo.shortcuts.RecordingTileService
+import io.github.elgrande73.voicememo.shortcuts.ShortcutSettings
+import io.github.elgrande73.voicememo.shortcuts.ToggleDebouncer
 import io.github.elgrande73.voicememo.transcription.AndroidOnDeviceSpeechEngine
 import io.github.elgrande73.voicememo.transcription.SpeechToTextEngine
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
@@ -99,18 +105,27 @@ class AudioMonitoringService : Service() {
     private var audioDeviceCallback: AudioDeviceCallback? = null
     private var headsetReceiver: BroadcastReceiver? = null
     private val noteNotificationCounter = AtomicInteger(2000)
+    private val toggleDebouncer = ToggleDebouncer(RecordingShortcutHandler.MIN_TOGGLE_INTERVAL_MS)
 
     companion object {
+        /** Channel of earlier versions (silent, so hidden on most lock screens); deleted on start. */
         const val CHANNEL_ID = "voice_memo_monitoring_channel"
+        /** Ongoing notification with the recording controls; default importance (no sound) so it is shown on the lock screen. */
+        const val CONTROLS_CHANNEL_ID = "voice_memo_controls_channel"
         const val CHANNEL_NOTE_ID = "voice_memo_note_channel"
         const val NOTIFICATION_ID = 1001
         // Covers thread hand-off, AudioTrack output latency and room echo after the chime
         private const val FEEDBACK_MUTE_TAIL_MS = 450L
         // Time the capture thread gets to apply a Stop request before it is finalized directly
         private const val MANUAL_STOP_GRACE_MS = 400L
+        private const val RECORDING_STATUS_TEXT = "🔴 Recording voice memo..."
 
         const val ACTION_START_MANUAL_RECORDING = "${BuildConfig.APPLICATION_ID}.ACTION_START_MANUAL_RECORDING"
         const val ACTION_STOP_MANUAL_RECORDING = "${BuildConfig.APPLICATION_ID}.ACTION_STOP_MANUAL_RECORDING"
+        /** Starts a memo if none is being recorded, otherwise stops it (shortcuts and Quick Settings tile). */
+        const val ACTION_TOGGLE_MANUAL_RECORDING = "${BuildConfig.APPLICATION_ID}.ACTION_TOGGLE_MANUAL_RECORDING"
+        /** Rebuilds the notification after the lock-screen controls setting changed. */
+        const val ACTION_REFRESH_NOTIFICATION = "${BuildConfig.APPLICATION_ID}.ACTION_REFRESH_NOTIFICATION"
         const val ACTION_RELOAD_TEMPLATE = "${BuildConfig.APPLICATION_ID}.ACTION_RELOAD_TEMPLATE"
         const val ACTION_UPDATE_MATCH_CONFIDENCE_THRESHOLD = "${BuildConfig.APPLICATION_ID}.ACTION_UPDATE_MATCH_CONFIDENCE_THRESHOLD"
         const val EXTRA_MATCH_CONFIDENCE_THRESHOLD_PERCENT = "matchConfidenceThresholdPercent"
@@ -163,6 +178,21 @@ class AudioMonitoringService : Service() {
         /** Real state of the capture/detection engine (not just whether the service exists). */
         val engineState = _engineState.asStateFlow()
 
+        /**
+         * Toggles the memo of the running monitoring service. Returns false (and does nothing) if monitoring is not
+         * running: from the background the app may not start using the microphone.
+         */
+        fun requestToggle(context: Context): Boolean {
+            if (!_isServiceRunning.value) return false
+            return try {
+                context.startService(Intent(context, AudioMonitoringService::class.java).setAction(ACTION_TOGGLE_MANUAL_RECORDING))
+                true
+            } catch (e: Exception) {
+                Log.w("AudioService", "Toggle request rejected", e)
+                false
+            }
+        }
+
         /** Microphone ownership shared with the Settings phrase recordings. */
         val microphoneArbiter: MicrophoneArbiter get() = MicrophoneArbiter.shared
     }
@@ -199,6 +229,18 @@ class AudioMonitoringService : Service() {
             }
             ACTION_STOP_MANUAL_RECORDING -> {
                 handleStopManualRecording()
+                return START_STICKY
+            }
+            ACTION_TOGGLE_MANUAL_RECORDING -> {
+                // Several inputs (keys, tile, notification) can arrive at once: one toggle per interval
+                if (toggleDebouncer.tryAcquire(SystemClock.elapsedRealtime())) {
+                    if (memoDetector.currentState == RecordingLifecycleState.RECORDING) handleStopManualRecording()
+                    else if (_isServiceRunning.value) handleStartManualRecording()
+                }
+                return START_STICKY
+            }
+            ACTION_REFRESH_NOTIFICATION -> {
+                updateNotificationStatus(memoDetector.currentState)
                 return START_STICKY
             }
             ACTION_RELOAD_TEMPLATE -> {
@@ -246,7 +288,9 @@ class AudioMonitoringService : Service() {
 
     private fun ensureForegroundNotification() {
         try {
-            val notification = buildForegroundNotification("Monitoring audio...")
+            // Reflect the current state: this runs for every service request, also while a memo is recorded
+            val recording = memoDetector.currentState == RecordingLifecycleState.RECORDING
+            val notification = buildForegroundNotification(if (recording) RECORDING_STATUS_TEXT else "Monitoring audio...", recording)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val hasMic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
                 if (hasMic) {
@@ -269,6 +313,7 @@ class AudioMonitoringService : Service() {
     private fun startForegroundMonitoring() {
         ensureForegroundNotification()
         _isServiceRunning.value = true
+        RecordingTileService.requestUpdate(this)
 
         try {
             wakeLock?.acquire(10 * 60 * 1000L) // 10 minutes rolling
@@ -510,7 +555,8 @@ class AudioMonitoringService : Service() {
     }
 
     private fun handleStartManualRecording() {
-        memoDetector.startManualRecording()
+        // Already recording: keep the memo in progress
+        memoDetector.startManualRecording() ?: return
         playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STARTED)
         _currentRecordingState.value = RecordingLifecycleState.RECORDING
         _isCurrentlyRecording.value = true
@@ -706,14 +752,18 @@ class AudioMonitoringService : Service() {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
             val serviceChannel = NotificationChannel(
-                CHANNEL_ID,
-                "Voice Memo Monitoring",
-                NotificationManager.IMPORTANCE_LOW
+                CONTROLS_CHANNEL_ID,
+                "Monitoring and recording controls",
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Shows live background voice-note monitoring status"
+                description = "Monitoring status with a Start/Stop memo button, also on the lock screen. Never makes a sound."
+                setSound(null, null)
+                enableVibration(false)
                 setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
             notificationManager.createNotificationChannel(serviceChannel)
+            notificationManager.deleteNotificationChannel(CHANNEL_ID)
 
             val noteChannel = NotificationChannel(
                 CHANNEL_NOTE_ID,
@@ -726,7 +776,7 @@ class AudioMonitoringService : Service() {
         }
     }
 
-    private fun buildForegroundNotification(statusText: String): Notification {
+    private fun buildForegroundNotification(statusText: String, recording: Boolean = false): Notification {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
@@ -737,27 +787,64 @@ class AudioMonitoringService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
         )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val lockScreenControls = ShortcutSettings.lockScreenControlsEnabled(
+            getSharedPreferences(PreferenceKeys.PREFS_NAME, Context.MODE_PRIVATE)
+        )
+        val action = if (recording) {
+            NotificationCompat.Action.Builder(R.drawable.ic_stop_memo, "Stop memo", servicePendingIntent(ACTION_STOP_MANUAL_RECORDING, 10))
+        } else {
+            NotificationCompat.Action.Builder(R.drawable.ic_record_memo, "Start memo", servicePendingIntent(ACTION_START_MANUAL_RECORDING, 11))
+        }
+            // Android 12+: with lock-screen controls off, the action asks for the device to be unlocked first
+            .setAuthenticationRequired(!lockScreenControls)
+            .build()
+
+        val builder = NotificationCompat.Builder(this, CONTROLS_CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(statusText)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .addAction(action)
+        if (lockScreenControls) {
+            // Only the status and the Start/Stop button: nothing private is shown on the lock screen
+            builder.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        } else {
+            builder.setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setPublicVersion(
+                    NotificationCompat.Builder(this, CONTROLS_CHANNEL_ID)
+                        .setContentTitle(getString(R.string.app_name))
+                        .setSmallIcon(R.mipmap.ic_launcher)
+                        .build()
+                )
+        }
+        return builder.build()
     }
+
+    private fun servicePendingIntent(action: String, requestCode: Int): PendingIntent = PendingIntent.getService(
+        this,
+        requestCode,
+        Intent(this, AudioMonitoringService::class.java).setAction(action),
+        PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+    )
 
     private fun updateNotificationStatus(state: RecordingLifecycleState) {
         val text = when (state) {
             RecordingLifecycleState.MONITORING -> "Listening hands-free • Mode: ${memoDetector.detectionMode.title}"
-            RecordingLifecycleState.RECORDING -> "🔴 Recording voice memo..."
+            RecordingLifecycleState.RECORDING -> RECORDING_STATUS_TEXT
             else -> "Audio monitoring active"
         }
         try {
-            val notification = buildForegroundNotification(text)
+            val notification = buildForegroundNotification(text, state == RecordingLifecycleState.RECORDING)
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             notificationManager?.notify(NOTIFICATION_ID, notification)
         } catch (_: Exception) {}
+        RecordingTileService.requestUpdate(this)
     }
 
     private fun showNoteSavedNotification(title: String, durationSec: Double) {
@@ -790,6 +877,7 @@ class AudioMonitoringService : Service() {
     override fun onDestroy() {
         _engineState.value = MonitoringEngineState.STOPPING
         _isServiceRunning.value = false
+        RecordingTileService.requestUpdate(this)
         _liveKeywordConfidence.value = 0f
         _currentRecordingState.value = RecordingLifecycleState.IDLE
         _isCurrentlyRecording.value = false

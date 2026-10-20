@@ -65,7 +65,8 @@ class SettingsMigratorTest {
 
         SettingsMigrator.migrate(prefs)
 
-        // 0.60 used to mean a 40% confidence threshold, clamped into the supported 50–80% range
+        // 0.60 used to mean a 40% confidence threshold; step v1 clamped it into the 50–80% range of its time and keeps
+        // doing so, so a migration gives the same result whenever it runs
         assertEquals(50, threshold())
         assertFalse(prefs.contains(PreferenceKeys.LEGACY_KEYWORD_SENSITIVITY))
         assertFalse(prefs.getBoolean("dynamicColor", true))
@@ -92,7 +93,20 @@ class SettingsMigratorTest {
 
         prefs.edit().putInt(PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT, 5).commit()
         SettingsMigrator.migrate(prefs)
-        assertEquals(50, threshold())
+        assertEquals(20, threshold())
+    }
+
+    @Test
+    fun thresholdsInTheExtendedRangeAreKept() {
+        prefs.edit()
+            .putInt(PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT, 20)
+            .putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, SettingsMigrator.CURRENT_VERSION)
+            .commit()
+        SettingsMigrator.migrate(prefs)
+        assertEquals(20, threshold())
+        prefs.edit().putInt(PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT, 35).commit()
+        SettingsMigrator.migrate(prefs)
+        assertEquals(35, threshold())
     }
 
     @Test

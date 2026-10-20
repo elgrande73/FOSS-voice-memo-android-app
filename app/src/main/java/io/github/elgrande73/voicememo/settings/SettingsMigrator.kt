@@ -14,6 +14,14 @@ object PreferenceKeys {
     const val SETTINGS_SCHEMA_VERSION = "settingsSchemaVersion"
     const val MATCH_CONFIDENCE_THRESHOLD_PERCENT = "matchConfidenceThresholdPercent"
 
+    /** Shortcut settings (see shortcuts.ShortcutSettings); absent means the default. */
+    const val HARDWARE_SHORTCUT_ENABLED = "hardwareShortcutEnabled"
+    const val HARDWARE_SHORTCUT_GESTURE = "hardwareShortcutGesture"
+    const val KEYBOARD_SHORTCUT_ENABLED = "keyboardShortcutEnabled"
+    const val KEYBOARD_SHORTCUT_KEY_CODE = "keyboardShortcutKeyCode"
+    const val KEYBOARD_SHORTCUT_MODIFIERS = "keyboardShortcutModifiers"
+    const val LOCK_SCREEN_CONTROLS_ENABLED = "lockScreenControlsEnabled"
+
     /** Pre-standardization key holding the detector "keyword sensitivity" (0.10..0.95, higher = easier). */
     const val LEGACY_KEYWORD_SENSITIVITY = "keywordSensitivity"
 }
@@ -27,6 +35,9 @@ object SettingsMigrator {
     const val CURRENT_VERSION = 1
 
     private const val TAG = "SettingsMigrator"
+
+    /** Lower bound of the threshold when migration step v1 was written (the range is now wider). */
+    private const val V1_MIN_PERCENT = 50
 
     fun preferences(context: Context): SharedPreferences {
         val prefs = context.getSharedPreferences(PreferenceKeys.PREFS_NAME, Context.MODE_PRIVATE)
@@ -67,7 +78,8 @@ object SettingsMigrator {
         if (readInt(prefs, PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT) == null) {
             val legacySensitivity = readFloat(prefs, PreferenceKeys.LEGACY_KEYWORD_SENSITIVITY)
             val percent = if (legacySensitivity != null) {
-                MatchConfidenceThreshold.clampPercent(Math.round(legacySensitivityToConfidence(legacySensitivity) * 100f))
+                // Frozen behaviour of this step: it always clamped to the 50–80 % range of its time
+                Math.round(legacySensitivityToConfidence(legacySensitivity) * 100f).coerceIn(V1_MIN_PERCENT, MatchConfidenceThreshold.MAX_PERCENT)
             } else {
                 MatchConfidenceThreshold.DEFAULT_PERCENT
             }

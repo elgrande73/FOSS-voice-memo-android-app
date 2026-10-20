@@ -11,7 +11,7 @@ import org.junit.Test
 /**
  * Evaluates the noise suppression against the same front end with suppression bypassed, on identical fixtures:
  * wake phrase (same voice, two renditions) and unrelated speech, in quiet and in pink/white background noise, at three
- * speech levels, with enrollment in the same environment. Counts score ≥ 50 % (lowest selectable threshold) as a
+ * speech levels, with enrollment in the same environment. Counts score ≥ 50 % (default threshold) as a
  * detection for the wake phrase and as a false match for other speech.
  */
 class WakePhraseNoiseRobustnessTest {

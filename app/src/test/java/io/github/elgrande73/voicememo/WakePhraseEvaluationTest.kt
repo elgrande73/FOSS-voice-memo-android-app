@@ -35,7 +35,7 @@ class WakePhraseEvaluationTest {
     fun thresholdSweepSeparatesNearMissesFromConversation() {
         for (samples in listOf(1, 5)) {
             var previousRecall = 1.0
-            for (threshold in 50..80 step 5) {
+            for (threshold in 20..80 step 5) {
                 val setup = Setup(samples = samples, thresholdPercent = threshold)
                 val nearMiss = WakePhraseBenchmark.evaluate(setup, TARGET_EVAL, NEAR_MISSES)
                 val conversation = WakePhraseBenchmark.evaluate(setup, emptyList(), CONVERSATION)
@@ -43,8 +43,9 @@ class WakePhraseEvaluationTest {
                     "MEASURE sweep samples=$samples threshold=$threshold recall %.3f near-miss FPR %.3f conversation FPR %.3f"
                         .format(nearMiss.recall, nearMiss.falsePositiveRate, conversation.falsePositiveRate)
                 )
-                // Ordinary speech never triggered in any measured configuration
-                assertEquals("conversation FP at $threshold", 0, conversation.fp)
+                // Ordinary speech never triggered at the default or stricter thresholds (measured); below 50 % it does,
+                // which is reported, not asserted
+                if (threshold >= 50) assertEquals("conversation FP at $threshold", 0, conversation.fp)
                 assertTrue(nearMiss.recall <= previousRecall + 1e-9)
                 previousRecall = nearMiss.recall
             }
@@ -63,7 +64,7 @@ class WakePhraseEvaluationTest {
 
     @Test
     fun falseActivationsPerHourOfContinuousMonitoring() {
-        for (samples in listOf(1, 5)) for (threshold in listOf(50, 70)) {
+        for (samples in listOf(1, 5)) for (threshold in listOf(30, 40, 50, 70)) {
             val setup = Setup(samples = samples, thresholdPercent = threshold)
             val (conversation, conversationPerHour) = WakePhraseBenchmark.falseActivationsPerHour(setup, CONVERSATION)
             val (nearMiss, nearMissPerHour) = WakePhraseBenchmark.falseActivationsPerHour(setup, NEAR_MISSES)
@@ -71,7 +72,7 @@ class WakePhraseEvaluationTest {
                 "MEASURE FA/h samples=$samples threshold=$threshold conversation $conversation in 10 min (%.0f/h), near misses $nearMiss in 10 min (%.0f/h)"
                     .format(conversationPerHour, nearMissPerHour)
             )
-            assertEquals("conversation activations", 0, conversation)
+            if (threshold >= 50) assertEquals("conversation activations", 0, conversation)
         }
     }
 

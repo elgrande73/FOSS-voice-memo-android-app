@@ -1,7 +1,7 @@
 # CLAUDE.md — Voice Memo (Android, FOSS / F-Droid)
 
 Kotlin + Jetpack Compose (Material 3), Room, coroutines/Flow, platform audio APIs. minSdk 24, target/compile 35.
-Architecture, persistence rules and pipelines: `ARCHITECTURE.md`, `docs/WAKE_PHRASE_DETECTION.md`, `docs/FDROID.md`.
+Architecture, persistence rules and pipelines: `ARCHITECTURE.md`, `docs/WAKE_PHRASE_DETECTION.md`, `docs/SHORTCUTS_AND_LOCK_SCREEN.md`, `docs/FDROID.md`.
 
 ## Identity & branding (mandatory)
 - App name / launcher label: **Voice Memo** (`R.string.app_name`). Dashboard title: **Voice memo** (`R.string.dashboard_title`). These are separate strings; change neither as a side effect.
@@ -10,13 +10,14 @@ Architecture, persistence rules and pipelines: `ARCHITECTURE.md`, `docs/WAKE_PHR
 - Never claim Voice Memo inherits Ciao Linda's private data; there is no importer.
 
 ## Settings & detection (mandatory)
-- Exactly one wake-phrase setting: **Match confidence threshold**, percent, **50–80 % inclusive**, default 50 %, stored as `matchConfidenceThresholdPercent`. Dashboard label: **Trigger threshold**, showing the exact configured value. No competing "sensitivity" settings or terms.
+- Exactly one wake-phrase setting: **Match confidence threshold**, percent, **20–80 % inclusive**, default 50 % (below 50 % conversation starts triggering; measured, see docs), stored as `matchConfidenceThresholdPercent`. Dashboard label: **Trigger threshold**, showing the exact configured value. No competing "sensitivity" settings or terms.
 - Detector semantics: `score = clamp(1 − DTW distance / 0.40, 0, 1)` (similarity score, not a probability); match when `score ≥ percent / 100`. Do not rescale scores to make numbers look better.
 - Monitoring and the Settings phrase test must share one pipeline: `WakePhraseFrontEnd` → `TemplateKeywordDetector` → `MemoTriggerDetector` (test via `WakePhraseEvaluator`). Feed every 50 ms frame in order (`PcmFrameAssembler`); never gate frames before the matcher.
 - Noise handling stays conservative and validated by fixture tests (`WakePhraseNoiseRobustnessTest`); justify parameter changes with measurements on held-out conditions.
 - Wake-phrase samples are optional, max 5, matched with `ReferenceAggregation.MAX`; store features only, never raw enrollment audio, and keep them on the device.
 - Memo endings: only a `KEYWORD` stop removes audio (the stop phrase); timeouts, user/service stops and errors keep every captured frame. Finalize exactly once in `MemoTriggerDetector.finalizeRecording`.
 - Accuracy claims need measurements from `WakePhraseEvaluationTest` (synthetic fixtures; say so).
+- Recording controls (dashboard button, notification, tile, shortcuts) go through `AudioMonitoringService` start/stop/toggle actions; background controls only act while monitoring runs. Shortcuts are off by default; the accessibility service only filters key events (no window content). Never show app content over the lock screen. See `docs/SHORTCUTS_AND_LOCK_SCREEN.md`.
 - Microphone: only one owner at a time via `MicrophoneArbiter`. Settings phrase recordings go through `PhraseCaptureCoordinator` (stop monitoring → confirm release → record → restore unless the user changed monitoring). Dashboard status must reflect `AudioMonitoringService.engineState`, not just whether the service exists.
 
 ## Playback (mandatory)
