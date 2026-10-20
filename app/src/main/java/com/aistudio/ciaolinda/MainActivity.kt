@@ -1049,6 +1049,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
     val preTriggerMs by viewModel.preTriggerDurationMs.collectAsState()
     val maxMemoDurationMs by viewModel.maxMemoDurationMs.collectAsState()
     val noiseFilterEnabled by viewModel.noiseFilterEnabled.collectAsState()
+    val feedbackSoundsEnabled by viewModel.feedbackSoundsEnabled.collectAsState()
 
     val keywordSensitivity by viewModel.keywordSensitivity.collectAsState()
     val keywordBehavior by viewModel.keywordBehavior.collectAsState()
@@ -1315,6 +1316,26 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                     Switch(
                         checked = noiseFilterEnabled,
                         onCheckedChange = { viewModel.setNoiseFilterEnabled(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(text = "Recording Sounds", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            text = "Plays a rising chime when a memo starts and a falling chime when it stops",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = feedbackSoundsEnabled,
+                        onCheckedChange = { viewModel.setFeedbackSoundsEnabled(it) }
                     )
                 }
 

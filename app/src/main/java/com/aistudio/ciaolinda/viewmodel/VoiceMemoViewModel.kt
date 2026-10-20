@@ -149,6 +149,9 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     private val _noiseFilterEnabled = MutableStateFlow(prefs.getBoolean("noiseFilterEnabled", true))
     val noiseFilterEnabled = _noiseFilterEnabled.asStateFlow()
 
+    private val _feedbackSoundsEnabled = MutableStateFlow(prefs.getBoolean("feedbackSoundsEnabled", true))
+    val feedbackSoundsEnabled = _feedbackSoundsEnabled.asStateFlow()
+
     private val _keywordSensitivity = MutableStateFlow(prefs.getFloat("keywordSensitivity", 0.60f))
     val keywordSensitivity = _keywordSensitivity.asStateFlow()
 
@@ -289,6 +292,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
             putExtra("keywordSensitivity", _keywordSensitivity.value)
             putExtra("keywordBehavior", _keywordBehavior.value.name)
             putExtra("speechToTextEnabled", _speechToTextEnabled.value)
+            putExtra("feedbackSoundsEnabled", _feedbackSoundsEnabled.value)
         }
 
         try {
@@ -734,6 +738,12 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         restartServiceIfRunning()
     }
 
+    fun setFeedbackSoundsEnabled(enabled: Boolean) {
+        _feedbackSoundsEnabled.value = enabled
+        prefs.edit().putBoolean("feedbackSoundsEnabled", enabled).apply()
+        restartServiceIfRunning()
+    }
+
     fun setKeywordSensitivity(sensitivity: Float) {
         _keywordSensitivity.value = sensitivity
         keywordDetector.setSensitivity(sensitivity)
@@ -780,6 +790,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         setPreTriggerDurationMs(800L)
         setMaxMemoDurationMs(300_000L)
         setNoiseFilterEnabled(true)
+        setFeedbackSoundsEnabled(true)
         setKeywordSensitivity(0.60f)
         setKeywordBehavior(KeywordBehavior.START_AND_STOP)
         setSpeechToTextEnabled(false)

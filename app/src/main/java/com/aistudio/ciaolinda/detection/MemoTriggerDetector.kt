@@ -138,11 +138,15 @@ class MemoTriggerDetector(
      * Implements a CPU-efficient Two-Stage Detection Pipeline:
      * - Stage 1 (Cheap): Continuous RMS & dB SPL evaluation + pre-trigger ring buffer maintenance.
      * - Stage 2 (Wake-Phrase Spotting): Invoked ONLY if loudness exceeds threshold in Wake Phrase Only mode.
+     *
+     * @param isFeedbackMuted true while the frame is muted for an app feedback chime; such frames
+     *   do not count towards the silence timeout so the user can wait for the chime before speaking.
      */
     @Synchronized
     fun processFrame(
         frame: ShortArray,
-        isMediaPlaying: Boolean = false
+        isMediaPlaying: Boolean = false,
+        isFeedbackMuted: Boolean = false
     ): List<MemoDetectionEvent> {
         val events = mutableListOf<MemoDetectionEvent>()
         if (currentState == RecordingLifecycleState.IDLE) return events
@@ -290,7 +294,7 @@ class MemoTriggerDetector(
                         vadResult.db >= silenceFloorDb ||
                         (vadResult.isSpeechBand && vadResult.db >= 32.0f)
 
-                if (isSpeechOrAudioActive) {
+                if (isSpeechOrAudioActive || isFeedbackMuted) {
                     // Reset continuous silence timer whenever speech/audio is detected
                     lastSpeechTime = now
                     consecutiveSilentChunks = 0

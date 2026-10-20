@@ -29,6 +29,7 @@ import com.aistudio.ciaolinda.R
 import com.aistudio.ciaolinda.audio.AmplitudePoint
 import com.aistudio.ciaolinda.audio.AudioInputDevice
 import com.aistudio.ciaolinda.audio.AudioInputManager
+import com.aistudio.ciaolinda.audio.FeedbackSoundPlayer
 import com.aistudio.ciaolinda.audio.MediaPlaybackDetector
 import com.aistudio.ciaolinda.audio.WavWriter
 import com.aistudio.ciaolinda.detection.DetectionMode
@@ -72,10 +73,16 @@ class AudioMonitoringService : Service() {
     private lateinit var mediaPlaybackDetector: MediaPlaybackDetector
     private lateinit var database: AppDatabase
     private lateinit var speechEngine: SpeechToTextEngine
+    private lateinit var feedbackSoundPlayer: FeedbackSoundPlayer
 
     private var configuredInputId: Int = -1
     private var configuredInputName: String = ""
     private var speechToTextEnabled: Boolean = false
+    @Volatile
+    private var feedbackSoundsEnabled: Boolean = true
+    // Mic frames captured until this time are muted so feedback chimes don't leak into memos or re-trigger detection
+    @Volatile
+    private var feedbackMuteUntilMs: Long = 0L
 
     private val sampleRate = 16000
     private val channelConfig = AudioFormat.CHANNEL_IN_MONO
@@ -90,6 +97,7 @@ class AudioMonitoringService : Service() {
         const val CHANNEL_ID = "ciao_linda_monitoring_channel"
         const val CHANNEL_NOTE_ID = "ciao_linda_note_channel"
         const val NOTIFICATION_ID = 1001
+        private const val FEEDBACK_MUTE_TAIL_MS = 300L
 
         const val ACTION_START_MANUAL_RECORDING = "com.aistudio.ciaolinda.ACTION_START_MANUAL_RECORDING"
         const val ACTION_STOP_MANUAL_RECORDING = "com.aistudio.ciaolinda.ACTION_STOP_MANUAL_RECORDING"
@@ -143,6 +151,7 @@ class AudioMonitoringService : Service() {
         mediaPlaybackDetector = MediaPlaybackDetector(this)
         database = AppDatabase.getDatabase(this)
         speechEngine = AndroidOnDeviceSpeechEngine(this)
+        feedbackSoundPlayer = FeedbackSoundPlayer()
 
         createNotificationChannels()
         loadSavedKeywordTemplate()
@@ -180,6 +189,7 @@ class AudioMonitoringService : Service() {
         configuredInputId = intent.getIntExtra("audioInputId", -1)
         configuredInputName = intent.getStringExtra("audioInputName") ?: ""
         speechToTextEnabled = intent.getBooleanExtra("speechToTextEnabled", false)
+        feedbackSoundsEnabled = intent.getBooleanExtra("feedbackSoundsEnabled", true)
 
         val modeStr = intent.getStringExtra("detectionMode") ?: DetectionMode.AUTO_SOUND.name
         memoDetector.detectionMode = try {
@@ -301,8 +311,18 @@ class AudioMonitoringService : Service() {
                         // Check system media playback status
                         val mediaStatus = mediaPlaybackDetector.checkPlaybackStatus()
 
+                        // Suppress our own feedback chime (plus output latency tail) from the mic stream
+                        val isFeedbackMuted = System.currentTimeMillis() < feedbackMuteUntilMs
+                        if (isFeedbackMuted) {
+                            buffer.fill(0)
+                        }
+
                         // Process frame via State Machine
-                        val events = memoDetector.processFrame(buffer, isMediaPlaying = mediaStatus.isMediaPlaying)
+                        val events = memoDetector.processFrame(
+                            buffer,
+                            isMediaPlaying = mediaStatus.isMediaPlaying,
+                            isFeedbackMuted = isFeedbackMuted
+                        )
                         _isVoiceDetected.value = memoDetector.isVoiceDetected
                         _liveNoiseFloorDb.value = memoDetector.noiseFloorDb
 
@@ -315,6 +335,9 @@ class AudioMonitoringService : Service() {
                                         _recordingDurationSeconds.value = 0
                                     }
                                     updateNotificationStatus(event.newState)
+                                }
+                                is MemoDetectionEvent.TriggerStarted -> {
+                                    playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STARTED)
                                 }
                                 is MemoDetectionEvent.ChunkRecorded -> {
                                     _liveDbLevel.value = event.peakDb
@@ -336,6 +359,7 @@ class AudioMonitoringService : Service() {
                                 is MemoDetectionEvent.RecordingCompleted -> {
                                     _isCurrentlyRecording.value = false
                                     _recordingDurationSeconds.value = 0
+                                    playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STOPPED)
                                     saveCompletedVoiceNote(event)
                                 }
                                 else -> {}
@@ -352,6 +376,12 @@ class AudioMonitoringService : Service() {
                 }
             }
         }
+    }
+
+    private fun playFeedbackCue(cue: FeedbackSoundPlayer.Cue) {
+        if (!feedbackSoundsEnabled) return
+        feedbackMuteUntilMs = System.currentTimeMillis() + feedbackSoundPlayer.cueDurationMs + FEEDBACK_MUTE_TAIL_MS
+        feedbackSoundPlayer.play(cue)
     }
 
     private fun initializeAudioRecord(): AudioRecord? {
@@ -679,6 +709,7 @@ class AudioMonitoringService : Service() {
 
         recordingJob?.cancel()
         releaseAudioRecord(currentAudioRecord)
+        feedbackSoundPlayer.release()
 
         unregisterAudioDeviceListeners()
 
