@@ -36,6 +36,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -97,6 +98,8 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.ui.geometry.Offset
@@ -136,6 +139,7 @@ import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
 import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutAccessibilityService
 import io.github.elgrande73.voicememo.shortcuts.ShortcutKeyHost
 import io.github.elgrande73.voicememo.shortcuts.ShortcutRuntime
+import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -364,6 +368,8 @@ fun DashboardScreen(
     val keywordConfidence by AudioMonitoringService.liveKeywordConfidence.collectAsState()
     // Same persisted value the wake-phrase detector uses (Settings > Match confidence threshold)
     val matchConfidenceThresholdPercent by viewModel.matchConfidenceThresholdPercent.collectAsState()
+    val usesRecordedWakePhrase by viewModel.hasKeywordTemplate.collectAsState()
+    val builtInWakePhrase by viewModel.builtInWakePhrase.collectAsState()
 
     val context = LocalContext.current
 
@@ -545,9 +551,11 @@ fun DashboardScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Live similarity to your wake phrase",
+                                text = if (usesRecordedWakePhrase) "Live similarity to your recorded wake phrase"
+                                else "Say \"${builtInWakePhrase.displayName}\" to start and stop a memo",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.testTag("dashboard_wake_phrase_hint")
                             )
                             Text(
                                 text = "Trigger threshold: $matchConfidenceThresholdPercent%",
@@ -1762,6 +1770,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
     val feedbackSoundsEnabled by viewModel.feedbackSoundsEnabled.collectAsState()
 
     val matchConfidenceThresholdPercent by viewModel.matchConfidenceThresholdPercent.collectAsState()
+    val builtInWakePhrase by viewModel.builtInWakePhrase.collectAsState()
     val keywordBehavior by viewModel.keywordBehavior.collectAsState()
     val hasKeywordTemplate by viewModel.hasKeywordTemplate.collectAsState()
     val wakePhraseSamples by viewModel.wakePhraseSamples.collectAsState()
@@ -1832,7 +1841,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
             }
         }
 
-        // Section: Wake Phrase (default: "Ciao Linda") Keyword Spotter
+        // Section: Wake Phrase (built-in phrase or enrolled samples) Keyword Spotter
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
             shape = RoundedCornerShape(20.dp),
@@ -1867,14 +1876,37 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
 
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = "The default wake phrase is \"Ciao Linda\". Record it in your own voice to train a personal, on-device " +
-                        "template. One sample is enough; up to ${WakePhraseStore.MAX_SAMPLES} optional samples can make detection more reliable " +
-                        "when your pace, volume or distance varies. Speak naturally at normal volume — e.g. one sample a little faster, " +
-                        "one from arm's length — rather than exaggerating. If similar-sounding words start memos, raise the Match confidence threshold. " +
-                        "Samples stay on this device. Deleting all samples restores the built-in default.",
+                    text = "The recommended wake phrase is \"Mango Tango\": say it to start a memo and again to stop it. " +
+                        "The built-in phrase works without setup but was made from synthetic voices, so it does not recognise every " +
+                        "voice. Recording the phrase in your own voice (a personal, on-device template) makes detection much more " +
+                        "reliable. You can also record any other phrase instead. One sample is enough; up to ${WakePhraseStore.MAX_SAMPLES} " +
+                        "optional samples help when your pace, volume or distance varies. Speak naturally at normal volume — e.g. one " +
+                        "sample a little faster, one from arm's length — rather than exaggerating. If similar-sounding words start memos, " +
+                        "raise the Match confidence threshold. Samples stay on this device. Deleting all samples restores the built-in phrase.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = if (hasKeywordTemplate) "Built-in phrase (used only after all samples are deleted)" else "Built-in phrase",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.selectableGroup()) {
+                    BuiltInWakePhrase.entries.forEach { phrase ->
+                        FilterChip(
+                            selected = builtInWakePhrase == phrase,
+                            onClick = { viewModel.setBuiltInWakePhrase(phrase) },
+                            label = {
+                                Text(if (phrase == BuiltInWakePhrase.DEFAULT) "${phrase.displayName} (recommended)" else "${phrase.displayName} (earlier default)")
+                            },
+                            modifier = Modifier
+                                .semantics { role = Role.RadioButton }
+                                .testTag("built_in_phrase_${phrase.id}")
+                        )
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(12.dp))
 

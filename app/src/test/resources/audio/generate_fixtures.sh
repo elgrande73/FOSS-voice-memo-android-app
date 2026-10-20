@@ -49,3 +49,40 @@ gen it 160 45 neg_speech_2 "Che tempo fa oggi a Milano"
 gen it 140 55 neg_speech_3 "Ricordati di comprare il pane e le uova"
 gen en 155 50 neg_speech_4 "Let us meet at the station at nine"
 gen en 165 45 neg_speech_5 "Can you send me the file later"
+
+# --- "Mango Tango" (default wake phrase of new installations since settings v3) ---
+# Reference renditions: their features form the built-in "Mango Tango" reference bundled with the app
+# (app/src/main/resources/wakephrase/mango_tango.bin, rebuilt and checked by BuiltInWakePhraseTest). Never evaluation clips.
+gen en-us 150 50 mango_ref_1 "Mango Tango"
+gen en 140 40 mango_ref_2 "Mango Tango"
+gen en-us+f3 155 60 mango_ref_3 "Mango Tango"
+gen en+m3 145 45 mango_ref_4 "Mango Tango" 1
+gen de 150 50 mango_ref_5 "Mango Tango"
+# Held-out voices, accents and speaking rates (none of them used for the reference)
+gen en-gb-x-rp 135 50 mango_eval_1 "Mango Tango"
+gen en-us+f2 170 55 mango_eval_2 "Mango Tango"
+gen en-029 150 45 mango_eval_3 "Mango Tango"
+gen en-gb-scotland 160 50 mango_eval_4 "Mango Tango"
+gen en+m7 130 40 mango_eval_5 "Mango Tango"
+gen it 150 50 mango_eval_6 "Mango Tango"
+gen es 150 50 mango_eval_7 "Mango Tango"
+gen nl 145 55 mango_eval_8 "Mango Tango"
+gen en-us 185 50 mango_eval_9 "Mango, Tango" 2
+gen en+f4 125 65 mango_eval_10 "Mango Tango"
+# Similar-sounding phrases, partial phrases and the words in ordinary sentences (must not trigger)
+gen en-us+m2 150 50 mango_neg_1 "Mango"
+gen en-us+m2 150 50 mango_neg_2 "Tango"
+gen en-us+m2 150 50 mango_neg_3 "Tango Mango"
+gen en-us+m2 150 50 mango_neg_4 "Manga Tanga"
+gen en-us+m2 150 50 mango_neg_5 "Bingo Tango"
+gen en-us+m2 150 50 mango_neg_6 "Mango tea"
+gen en-gb-x-rp 150 50 mango_neg_7 "I bought a mango at the market"
+gen en-gb-x-rp 150 50 mango_neg_8 "We danced the tango last night"
+# A user who records "Mango Tango" in their own voice (voice not used above): enrollment samples and separate renditions
+gen en-us+m1 140 50 mango_enroll_1 "Mango Tango"
+gen en-us+m1 155 45 mango_enroll_2 "Mango Tango" 2
+gen en-us+m1 165 55 mango_enroll_3 "Mango Tango"
+gen en-us+m1 130 48 mango_target_1 "Mango Tango"
+gen en-us+m1 175 52 mango_target_2 "Mango Tango" 1
+gen en-us+m1 150 60 mango_target_3 "Mango, Tango" 3
+gen en-us+m1 145 40 mango_target_4 "Mango Tango"

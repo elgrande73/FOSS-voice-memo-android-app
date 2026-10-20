@@ -46,11 +46,13 @@ object WakePhraseEvaluator {
         aggregation: ReferenceAggregation = TemplateKeywordDetector.DEFAULT_AGGREGATION,
         consecutiveMatchFrames: Int = MemoTriggerDetector.DEFAULT_CONSECUTIVE_MATCH_FRAMES,
         localMismatchWeight: Float = TemplateKeywordDetector.DEFAULT_LOCAL_MISMATCH_WEIGHT,
-        distanceScale: Float = TemplateKeywordDetector.DEFAULT_DISTANCE_SCALE
+        distanceScale: Float = TemplateKeywordDetector.DEFAULT_DISTANCE_SCALE,
+        /** Phrase matched when [templates] is empty. */
+        builtInPhrase: BuiltInWakePhrase = BuiltInWakePhrase.DEFAULT
     ): WakePhraseEvaluation {
         fun newMatcher() = TemplateKeywordDetector(
             frontEndConfig = frontEndConfig, aggregation = aggregation, localMismatchWeight = localMismatchWeight,
-            distanceScale = distanceScale
+            distanceScale = distanceScale, builtInPhrase = builtInPhrase
         ).apply {
             loadTemplates(templates)
         }

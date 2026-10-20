@@ -49,12 +49,14 @@ import io.github.elgrande73.voicememo.memo.ErrorLogger
 import io.github.elgrande73.voicememo.memo.VoiceNote
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
+import io.github.elgrande73.voicememo.settings.SettingsMigrator
 import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutHandler
 import io.github.elgrande73.voicememo.shortcuts.RecordingTileService
 import io.github.elgrande73.voicememo.shortcuts.ShortcutSettings
 import io.github.elgrande73.voicememo.shortcuts.ToggleDebouncer
 import io.github.elgrande73.voicememo.transcription.Transcription
 import io.github.elgrande73.voicememo.transcription.TranscriptionStatus
+import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -250,7 +252,9 @@ class AudioMonitoringService : Service() {
                 return START_STICKY
             }
             ACTION_RELOAD_TEMPLATE -> {
-                loadSavedKeywordTemplate()
+                // Never change the phrase during a memo: its stop phrase must be the phrase that started it
+                if (memoDetector.currentState == RecordingLifecycleState.RECORDING) wakePhraseReloadPending = true
+                else loadSavedKeywordTemplate()
                 return START_STICKY
             }
             ACTION_UPDATE_MATCH_CONFIDENCE_THRESHOLD -> {
@@ -611,6 +615,10 @@ class AudioMonitoringService : Service() {
     }
 
     private fun onRecordingStateChanged(state: RecordingLifecycleState) {
+        if (state != RecordingLifecycleState.RECORDING && wakePhraseReloadPending) {
+            wakePhraseReloadPending = false
+            loadSavedKeywordTemplate()
+        }
         _currentRecordingState.value = state
         _isCurrentlyRecording.value = state == RecordingLifecycleState.RECORDING
         if (state != RecordingLifecycleState.RECORDING) _recordingDurationSeconds.value = 0
@@ -681,8 +689,14 @@ class AudioMonitoringService : Service() {
         memoDetector.matchConfidenceThreshold = MatchConfidenceThreshold.toDetectorConfidence(percent)
     }
 
+    /** Wake-phrase settings changed during a memo; applied when it ends (see ACTION_RELOAD_TEMPLATE). */
+    @Volatile
+    private var wakePhraseReloadPending = false
+
     private fun loadSavedKeywordTemplate() {
         try {
+            (memoDetector.keywordDetector as? TemplateKeywordDetector)?.builtInPhrase =
+                SettingsMigrator.builtInWakePhrase(SettingsMigrator.preferences(this))
             val templates = WakePhraseStore(filesDir).loadSampleTemplates()
             // No enrolled samples (or all deleted): the built-in default wake phrase is used
             val loaded = memoDetector.keywordDetector.loadTemplates(templates)

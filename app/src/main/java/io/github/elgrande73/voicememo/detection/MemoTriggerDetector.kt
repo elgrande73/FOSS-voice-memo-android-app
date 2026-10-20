@@ -12,7 +12,7 @@ import kotlin.math.log10
  * Detection mode for triggering voice note recordings.
  */
 enum class DetectionMode(val title: String, val description: String) {
-    KEYWORD_ONLY("Wake Phrase Only", "Starts recording only when the wake phrase (default 'Ciao Linda') is spoken and exceeds the loudness threshold."),
+    KEYWORD_ONLY("Wake Phrase Only", "Starts recording only when the wake phrase (recommended: 'Mango Tango') is spoken and exceeds the loudness threshold."),
     AUTO_SOUND("Loudness Only", "Automatically starts recording whenever speech or sound exceeds the dB threshold.");
 
     val displayName: String get() = title
@@ -268,7 +268,7 @@ class MemoTriggerDetector(
                         if (!shouldSuppressSound && kwResult.matched && phraseLoudEnough(kwResult)) {
                             currentState = RecordingLifecycleState.RECORDING
                             // Persisted trigger type of wake-phrase memos; stored in the database, so it must not be renamed
-                            activeTriggerType = "KEYWORD_CIAO_LINDA"
+                            activeTriggerType = "KEYWORD_CIAO_LINDA" // persisted for every wake phrase; never rename
                             triggerStartTime = now
                             lastSpeechTime = now
                             soundSustainStartTime = 0L
@@ -282,7 +282,7 @@ class MemoTriggerDetector(
                             sessionSumDb = vadResult.db.toDouble()
                             sessionDbCount = 1
 
-                            // Prepend the entire pre-trigger ring buffer (containing pre-roll audio + "Ciao Linda")
+                            // Prepend the entire pre-trigger ring buffer (containing pre-roll audio + the wake phrase)
                             activeRecordingChunks.clear()
                             val preChunks = preTriggerBuffer.toList()
                             activeRecordingChunks.addAll(preChunks)

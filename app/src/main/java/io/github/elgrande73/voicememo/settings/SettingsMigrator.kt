@@ -3,6 +3,7 @@ package io.github.elgrande73.voicememo.settings
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
 
 /**
  * Names of persisted preference files and keys. These are stored on the user's device:
@@ -17,6 +18,8 @@ object PreferenceKeys {
     /** Optional minimum audio level of the wake phrase (see WakePhraseLevel). */
     const val WAKE_PHRASE_MIN_LEVEL_ENABLED = "wakePhraseMinLevelEnabled"
     const val WAKE_PHRASE_MIN_LEVEL_DBFS = "wakePhraseMinLevelDbfs"
+    /** Built-in wake phrase used while no sample is enrolled (BuiltInWakePhrase.id). */
+    const val BUILT_IN_WAKE_PHRASE = "builtInWakePhrase"
     /** Loudness-only activation threshold, VAD dB scale (dBFS + 90). Key predates the versioned settings. */
     const val ACTIVATION_THRESHOLD_DB = "thresholdDb"
 
@@ -44,7 +47,7 @@ object PreferenceKeys {
  * saved are never replaced by defaults, and unrelated keys are never touched.
  */
 object SettingsMigrator {
-    const val CURRENT_VERSION = 2
+    const val CURRENT_VERSION = 3
 
     private const val TAG = "SettingsMigrator"
 
@@ -71,6 +74,9 @@ object SettingsMigrator {
         }
         if (version < 2) {
             migrateToV2(prefs, editor, existingInstallation)
+        }
+        if (version < 3) {
+            migrateToV3(prefs, editor, existingInstallation)
         }
 
         // Always validate the authoritative threshold, so a corrupt or out-of-range value can never reach the detector
@@ -129,6 +135,21 @@ object SettingsMigrator {
     }
 
     /**
+     * v3: the default wake phrase of new installations becomes "Mango Tango". Existing installations keep "Ciao Linda",
+     * the phrase they were set up with (it can be changed in Settings); enrolled samples are not affected.
+     */
+    private fun migrateToV3(prefs: SharedPreferences, editor: SharedPreferences.Editor, existingInstallation: Boolean) {
+        if (BuiltInWakePhrase.fromId(readString(prefs, PreferenceKeys.BUILT_IN_WAKE_PHRASE)) == null) {
+            val phrase = if (existingInstallation) BuiltInWakePhrase.CIAO_LINDA else BuiltInWakePhrase.DEFAULT
+            editor.putString(PreferenceKeys.BUILT_IN_WAKE_PHRASE, phrase.id)
+        }
+    }
+
+    /** Built-in wake phrase stored in [prefs]; a missing or unknown value means the default. */
+    fun builtInWakePhrase(prefs: SharedPreferences): BuiltInWakePhrase =
+        BuiltInWakePhrase.fromId(readString(prefs, PreferenceKeys.BUILT_IN_WAKE_PHRASE)) ?: BuiltInWakePhrase.DEFAULT
+
+    /**
      * Effective confidence threshold of the former sensitivity model: a match required
      * `distance <= 0.28 + (s - 0.5) * 0.12` and `confidence >= clamp(0.42 - (s - 0.5) * 0.20, 0.25, 0.75)`,
      * with `confidence = 1 - distance / 0.40`; both reduce to a single minimum confidence.
@@ -148,6 +169,13 @@ object SettingsMigrator {
             Log.w(TAG, "Ignoring corrupt preference '$key'", e)
             null
         }
+    }
+
+    private fun readString(prefs: SharedPreferences, key: String): String? = try {
+        prefs.getString(key, null)
+    } catch (e: ClassCastException) {
+        Log.w(TAG, "Ignoring corrupt preference '$key'", e)
+        null
     }
 
     private fun readFloat(prefs: SharedPreferences, key: String): Float? {

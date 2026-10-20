@@ -62,6 +62,7 @@ import io.github.elgrande73.voicememo.shortcuts.ShortcutSettings
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.settings.SettingsMigrator
 import io.github.elgrande73.voicememo.ui.theme.ThemeMode
+import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseEnrollment
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseEvaluation
@@ -115,7 +116,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     private val voiceNoteRepository: VoiceNoteRepository
     private val database = AppDatabase.getDatabase(context)
     private val exportManager = VoiceNoteExportManager(context)
-    private val keywordDetector = TemplateKeywordDetector()
+    private val keywordDetector = TemplateKeywordDetector(builtInPhrase = SettingsMigrator.builtInWakePhrase(prefs))
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
     // Voice Notes stream
@@ -220,6 +221,10 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         )
     )
     val matchConfidenceThresholdPercent = _matchConfidenceThresholdPercent.asStateFlow()
+
+    // Built-in wake phrase, used while no sample is enrolled (new installations: Mango Tango, see SettingsMigrator v3)
+    private val _builtInWakePhrase = MutableStateFlow<BuiltInWakePhrase>(SettingsMigrator.builtInWakePhrase(prefs))
+    val builtInWakePhrase: StateFlow<BuiltInWakePhrase> = _builtInWakePhrase.asStateFlow()
 
     // Recording shortcuts (hardware buttons, external keyboard) and lock-screen controls
     private val _shortcutConfig = MutableStateFlow<ShortcutConfig>(ShortcutSettings.load(prefs))
@@ -1052,7 +1057,8 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
             frames = frames,
             templates = wakePhraseStore.loadSampleTemplates(),
             matchConfidenceThreshold = MatchConfidenceThreshold.toDetectorConfidence(_matchConfidenceThresholdPercent.value),
-            minLevelDb = wakePhraseMinLevelDb()
+            minLevelDb = wakePhraseMinLevelDb(),
+            builtInPhrase = _builtInWakePhrase.value
         )
         _lastTestEvaluation.value = evaluation
         return evaluation
@@ -1093,6 +1099,18 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         _thresholdDb.value = db
         prefs.edit().putFloat("thresholdDb", db).apply()
         restartServiceIfRunning()
+    }
+
+    /**
+     * Selects the built-in wake phrase. Enrolled samples stay untouched and keep taking precedence; a running monitor
+     * applies the change when no memo is being recorded.
+     */
+    fun setBuiltInWakePhrase(phrase: BuiltInWakePhrase) {
+        if (phrase == _builtInWakePhrase.value) return
+        _builtInWakePhrase.value = phrase
+        keywordDetector.builtInPhrase = phrase
+        prefs.edit().putString(PreferenceKeys.BUILT_IN_WAKE_PHRASE, phrase.id).apply()
+        notifyServiceTemplateChanged()
     }
 
     fun setWakePhraseMinLevelEnabled(enabled: Boolean) {

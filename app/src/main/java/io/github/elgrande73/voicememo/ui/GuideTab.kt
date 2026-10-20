@@ -92,18 +92,18 @@ fun GuideTab() {
             ),
             GuideSection(
                 id = "sec_keyword_spotter",
-                title = "\"Ciao Linda\" Wake Phrase Detection",
+                title = "\"Mango Tango\" Wake Phrase Detection",
                 category = "2. Wake Phrase",
                 summary = "Train and use the custom offline wake phrase to initiate or stop memos hands-free.",
                 content = """
-                    In addition to raw sound level detection, Voice Memo features a built-in offline Keyword Spotter. The default wake phrase is "Ciao Linda".
+                    In addition to raw sound level detection, Voice Memo features a built-in offline Keyword Spotter. The recommended wake phrase is "Mango Tango": say it to start a memo, and say it again to stop.
                     
-                    You can record your personal reference phrase in Settings → Wake Phrase. When monitoring is active, incoming audio is analyzed using local spectral filterbanks and Dynamic Time Warping (DTW) to match your voice.
+                    The built-in phrase works without setup, but it was made from synthetic voices and does not recognise every voice. For reliable detection, record the phrase in your own voice in Settings → Wake Phrase (you can also record a different phrase). Installations set up before "Mango Tango" became the default keep "Ciao Linda"; you can switch the built-in phrase there too. When monitoring is active, incoming audio is analyzed using local spectral filterbanks and Dynamic Time Warping (DTW) to match your voice.
                     
                     You can configure the keyword to Start only, Stop only, or both Start & Stop recording.
                 """.trimIndent(),
                 tips = listOf(
-                    "Record the \"Ciao Linda\" template in a quiet room at your normal conversational speaking distance.",
+                    "Record \"Mango Tango\" (or your own phrase) in a quiet room at your normal conversational speaking distance.",
                     "Use the 'Test Phrase' button in Settings to check the match confidence of your voice; the result is saved and is computed exactly as during monitoring.",
                     "Monitoring pauses automatically while you record or test a phrase in Settings and resumes afterwards.",
                     "Raise the Match confidence threshold (20%–80%, default 50%) if the phrase triggers too easily, lower it if it is hard to trigger. Below 50% ordinary speech can start memos too. The dashboard shows the same value as the Trigger threshold."
@@ -119,7 +119,7 @@ fun GuideTab() {
                     
                     Voice Memo solves this with a Rolling Pre-Trigger Ring Buffer. While passively monitoring, it retains the last 500ms to 1200ms of audio in temporary memory.
                     
-                    When a trigger is detected, the buffered pre-roll audio is immediately prepended to the WAV file. Your initial word ("Remember...", "Idea for...", "Ciao Linda...") is captured in full clarity.
+                    When a trigger is detected, the buffered pre-roll audio is immediately prepended to the WAV file. Your initial word ("Remember...", "Idea for...", "Mango Tango...") is captured in full clarity.
                 """.trimIndent(),
                 tips = listOf(
                     "Configure Pre-Trigger duration in Settings (800ms is optimal for most speech).",
@@ -244,7 +244,7 @@ fun GuideTab() {
 
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "Learn how to configure hands-free voice-note capture, train the wake phrase (default \"Ciao Linda\"), and manage your offline voice memos.",
+                        text = "Learn how to configure hands-free voice-note capture, train the wake phrase (recommended: \"Mango Tango\"), and manage your offline voice memos.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
