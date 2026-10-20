@@ -13,15 +13,14 @@ plugins {
   alias(libs.plugins.kotlin.compose)
   alias(libs.plugins.google.devtools.ksp)
   alias(libs.plugins.roborazzi)
-  alias(libs.plugins.secrets)
 }
 
 android {
-  namespace = "com.aistudio.ciaolinda"
+  namespace = "io.github.elgrande73.voicememo"
   compileSdk = 35
 
   defaultConfig {
-    applicationId = "com.aistudio.ciaolinda"
+    applicationId = "io.github.elgrande73.voicememo"
     minSdk = 24
     targetSdk = 35
     versionCode = 1
@@ -82,11 +81,8 @@ android {
   testOptions { unitTests { isIncludeAndroidResources = true } }
 }
 
-// Configure the Secrets Gradle Plugin to use .env and .env.example files
-// to match the convention used in Web projects.
-secrets {
-    propertiesFileName = ".env"
-    defaultPropertiesFileName = "secrets.defaults.properties"
+ksp {
+  arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {
@@ -103,13 +99,8 @@ dependencies {
   implementation(libs.androidx.lifecycle.viewmodel.compose)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
-  implementation(libs.converter.moshi)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
-  implementation(libs.logging.interceptor)
-  implementation(libs.moshi.kotlin)
-  implementation(libs.okhttp)
-  implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.compose.ui.test.manifest)
   testImplementation(libs.androidx.core)
@@ -130,6 +121,5 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
-  "ksp"(libs.moshi.kotlin.codegen)
 }
 
