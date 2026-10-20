@@ -1,3 +1,6 @@
 <resources>
+    <!-- Launcher / application label -->
     <string name="app_name">Voice Memo</string>
+    <!-- Title shown at the top of the dashboard -->
+    <string name="dashboard_title">Voice memo</string>
 </resources>

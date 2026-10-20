@@ -15,6 +15,8 @@ the app has been accepted by F-Droid. Inclusion is decided by the F-Droid review
 | Build | `./gradlew assembleRelease` from source with the Android SDK; no credentials, API keys, `.env` files or prebuilt binaries required. Dependency metadata is excluded from the APK/AAB (`dependenciesInfo`). | ✅ |
 | Network / tracking | No `INTERNET` permission, no networking code, no analytics, no ads, no runtime downloads of code or assets. | ✅ |
 | Assets | Launcher icon: original artwork (`artwork/icon`), Apache-2.0. Chimes: synthesized at runtime, no audio files. The previous icon bitmap (`img_app_icon.jpg`, unknown provenance) was removed. | ✅ |
+| Test fixtures | `app/src/test/resources/audio`: synthetic speech generated with eSpeak NG (GPL-3.0-or-later tool, used offline once; not a build dependency and not packaged into the APK). Regeneration script included. | ✅ (reviewers may check) |
+| Audio processing | Noise suppression, noise-floor estimation and wake-phrase detection are implemented in Kotlin on platform APIs; no new dependencies, models or runtime downloads. | ✅ |
 | Permissions | Only what the features need; see the table in `README.md`. | ✅ |
 | Anti-features | Likely none. Optional transcription (off by default) delegates to the device's system speech-recognition service, which may be proprietary or online; documented in the README. Reviewers may want to assess this. | ⚠️ review |
 | Store metadata | `fastlane/metadata/android/en-US/` (title, descriptions, changelog, 512 px icon). | ✅ |
@@ -43,7 +45,6 @@ the app has been accepted by F-Droid. Inclusion is decided by the F-Droid review
 - **Gradle wrapper**: `gradle/wrapper/gradle-wrapper.jar` is a binary; F-Droid's `gradle: yes` uses its own Gradle and
   ignores it. The wrapper download is pinned with `distributionSha256Sum`.
 - **System speech recognition**: see the anti-features row above.
-- **Default wake phrase quality**: the built-in "Ciao Linda" template is synthesized from tones. In unit-test probes,
-  adding even faint noise to that synthetic phrase dropped its match confidence to 0 %, so real speech is unlikely to
-  match the default template reliably; recording the phrase in one's own voice (Settings → Wake Phrase) is
-  recommended. This is a pre-existing product limitation, not a compliance issue.
+- **Default wake phrase quality**: the built-in "Ciao Linda" template is synthesized from tones and is not a recording
+  of real speech; recording the phrase in one's own voice (Settings → Wake Phrase) is recommended. Detection accuracy
+  and its limitations are documented in `docs/WAKE_PHRASE_DETECTION.md`.

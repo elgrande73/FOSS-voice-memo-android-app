@@ -24,7 +24,16 @@ import androidx.lifecycle.viewModelScope
 import io.github.elgrande73.voicememo.audio.AmplitudePoint
 import io.github.elgrande73.voicememo.audio.AudioInputDevice
 import io.github.elgrande73.voicememo.audio.AudioInputManager
+import io.github.elgrande73.voicememo.audio.CaptureOutcome
+import io.github.elgrande73.voicememo.audio.CaptureSession
 import io.github.elgrande73.voicememo.audio.FeedbackSoundPlayer
+import io.github.elgrande73.voicememo.audio.MicrophoneArbiter
+import io.github.elgrande73.voicememo.audio.MonitoringControl
+import io.github.elgrande73.voicememo.audio.PcmFrameAssembler
+import io.github.elgrande73.voicememo.audio.PhraseCaptureCoordinator
+import io.github.elgrande73.voicememo.audio.PhraseCaptureKind
+import io.github.elgrande73.voicememo.audio.PhraseCaptureState
+import io.github.elgrande73.voicememo.audio.kind
 import io.github.elgrande73.voicememo.detection.DetectionMode
 import io.github.elgrande73.voicememo.detection.KeywordBehavior
 import io.github.elgrande73.voicememo.memo.AppDatabase
@@ -42,6 +51,8 @@ import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.settings.SettingsMigrator
 import io.github.elgrande73.voicememo.ui.theme.ThemeMode
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
+import io.github.elgrande73.voicememo.wakephrase.WakePhraseEvaluation
+import io.github.elgrande73.voicememo.wakephrase.WakePhraseEvaluator
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseTestResult
 import kotlinx.coroutines.Dispatchers
@@ -52,6 +63,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -78,6 +90,9 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
 
     private companion object {
         const val TAG = "VoiceMemoVM"
+        const val ENROLLMENT_DURATION_MS = 2500L
+        const val TEST_DURATION_MS = 3000L
+        const val MIN_ENROLLMENT_FRAMES = 8
     }
 
     private val context = application.applicationContext
@@ -191,8 +206,39 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     val speechToTextEnabled = _speechToTextEnabled.asStateFlow()
 
     // Keyword Training state
-    private val _isRecordingKeyword = MutableStateFlow(false)
-    val isRecordingKeyword = _isRecordingKeyword.asStateFlow()
+    // Settings phrase recordings (enrollment and test) coordinated with monitoring over the shared microphone
+    private val phraseCapture = PhraseCaptureCoordinator(
+        arbiter = MicrophoneArbiter.shared,
+        monitoring = object : MonitoringControl {
+            override val isRunning: Boolean get() = AudioMonitoringService.isServiceRunning.value
+            override fun stop() = stopServiceDetection()
+            override fun start() = startServiceDetection()
+        },
+        hasPermission = {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        }
+    )
+    val phraseCaptureState: StateFlow<PhraseCaptureState> = phraseCapture.state
+    val phraseCaptureError: StateFlow<String?> = phraseCapture.lastError
+    @Volatile
+    private var stopPhraseRecordingRequested = false
+
+    /** True only while the wake-phrase AudioRecord is really capturing. */
+    val isRecordingKeyword: StateFlow<Boolean> = phraseCapture.state
+        .map { it == PhraseCaptureState.Recording(PhraseCaptureKind.WAKE_PHRASE) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    // Result messages of the phrase workflows (e.g. no phrase found)
+    private val _phraseMessage = MutableStateFlow<String?>(null)
+    val phraseMessage = _phraseMessage.asStateFlow()
+
+    private val _lastTestEvaluation = MutableStateFlow<WakePhraseEvaluation?>(null)
+    /** Full evaluation of the latest phrase test in this session (includes the loudness check). */
+    val lastTestEvaluation = _lastTestEvaluation.asStateFlow()
+
+    private val _isLegacyTemplate = MutableStateFlow(false)
+    /** The enrolled phrase was recorded with an earlier version (legacy features); re-recording is recommended. */
+    val isLegacyTemplate = _isLegacyTemplate.asStateFlow()
 
     private val _hasKeywordTemplate = MutableStateFlow(wakePhraseStore.hasTemplate())
     val hasKeywordTemplate = _hasKeywordTemplate.asStateFlow()
@@ -204,12 +250,11 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     private val _hasSavedTestRecording = MutableStateFlow(false)
     val hasSavedTestRecording = _hasSavedTestRecording.asStateFlow()
 
+    // Re-scoring the saved test recording (no microphone involved)
     private val _isTestingKeyword = MutableStateFlow(false)
-    val isTestingKeyword = _isTestingKeyword.asStateFlow()
-
-    private var keywordAudioRecord: AudioRecord? = null
-    private val keywordTrainingChunks = mutableListOf<ShortArray>()
-    private var keywordTrainingJob: Job? = null
+    val isTestingKeyword: StateFlow<Boolean> = combine(_isTestingKeyword, phraseCapture.state) { retesting, capture ->
+        retesting || (capture !is PhraseCaptureState.Idle && capture.kind() == PhraseCaptureKind.TEST_PHRASE)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     // Theming preferences
     private val savedThemeModeStr = prefs.getString("themeMode", "SYSTEM") ?: "SYSTEM"
@@ -296,6 +341,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
                 if (!keywordDetector.loadTemplate(bytes)) {
                     Log.w(TAG, "Enrolled wake-phrase template is invalid; testing against the default wake phrase")
                 }
+                _isLegacyTemplate.value = keywordDetector.isLegacyTemplate
             }
             _keywordTestResult.value = wakePhraseStore.loadTestResult()
             _hasSavedTestRecording.value = wakePhraseStore.loadTestRecording() != null
@@ -313,6 +359,12 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     // --- SERVICE MONITORING & RECORDING CONTROLS ---
+
+    /** Monitoring started or stopped by the user (dashboard); an ongoing phrase recording will respect this choice. */
+    fun setMonitoringEnabledByUser(enabled: Boolean) {
+        phraseCapture.onUserChangedMonitoring()
+        if (enabled) startServiceDetection() else stopServiceDetection()
+    }
 
     fun startServiceDetection() {
         val intent = Intent(context, AudioMonitoringService::class.java).apply {
@@ -353,6 +405,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun startManualRecording() {
         if (!AudioMonitoringService.isServiceRunning.value) {
+            phraseCapture.onUserChangedMonitoring()
             startServiceDetection()
         }
         try {
@@ -709,106 +762,28 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
 
     // --- KEYWORD TRAINING & TESTING ---
 
+    /**
+     * Records a new wake phrase (up to 2.5 s, "Stop Recording" ends it early). Monitoring is stopped first and the
+     * recording only starts once monitoring has released the microphone; see [PhraseCaptureCoordinator].
+     */
     fun startRecordingKeywordTemplate() {
-        if (_isRecordingKeyword.value) return
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            Log.e(TAG, "RECORD_AUDIO permission not granted for keyword recording")
-            _isRecordingKeyword.value = false
-            return
-        }
-        _isRecordingKeyword.value = true
-        keywordTrainingChunks.clear()
-
-        keywordTrainingJob = viewModelScope.launch(Dispatchers.Default) {
-            val sampleRate = 16000
-            val channelConfig = AudioFormat.CHANNEL_IN_MONO
-            val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-            val minBuf = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat).coerceAtLeast(4096)
-
-            try {
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                    Log.e(TAG, "RECORD_AUDIO permission not granted")
-                    return@launch
-                }
-                val record = AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
-                    sampleRate,
-                    channelConfig,
-                    audioFormat,
-                    minBuf
-                )
-                if (record.state != AudioRecord.STATE_INITIALIZED) {
-                    Log.e(TAG, "AudioRecord failed to initialize for keyword training")
-                    record.release()
-                    return@launch
-                }
-                keywordAudioRecord = record
-                record.startRecording()
-
-                val buffer = ShortArray(800) // 50ms chunks
-                val startTime = System.currentTimeMillis()
-
-                // Record up to 2.5 seconds for the wake phrase (default: "Ciao Linda")
-                while (isActive && _isRecordingKeyword.value && (System.currentTimeMillis() - startTime < 2500L)) {
-                    val read = record.read(buffer, 0, buffer.size)
-                    if (read > 0) {
-                        keywordTrainingChunks.add(buffer.copyOf(read))
-                    }
-                }
-            } catch (e: SecurityException) {
-                Log.e(TAG, "SecurityException during keyword recording", e)
-            } catch (e: Exception) {
-                Log.e(TAG, "Keyword recording failed", e)
-            } finally {
-                stopRecordingKeywordTemplateInternal()
+        if (phraseCapture.isBusy) return // repeated taps
+        _phraseMessage.value = null
+        stopPhraseRecordingRequested = false
+        viewModelScope.launch(Dispatchers.Default) {
+            val outcome = phraseCapture.runCapture(PhraseCaptureKind.WAKE_PHRASE) { session ->
+                val frames = capturePhrase(session, ENROLLMENT_DURATION_MS) { stopPhraseRecordingRequested }
+                // Enrolled and saved before monitoring is restored, so the restarted service loads the new phrase
+                enrollWakePhrase(frames)
+            }
+            if (outcome is CaptureOutcome.Completed && !outcome.value) {
+                _phraseMessage.value = "No clear phrase was detected. Please record again in a quiet place."
             }
         }
     }
 
     fun stopRecordingKeywordTemplate() {
-        stopRecordingKeywordTemplateInternal()
-    }
-
-    private fun stopRecordingKeywordTemplateInternal() {
-        _isRecordingKeyword.value = false
-        keywordTrainingJob?.cancel()
-        keywordTrainingJob = null
-
-        try {
-            keywordAudioRecord?.stop()
-            keywordAudioRecord?.release()
-        } catch (_: Exception) {}
-        keywordAudioRecord = null
-
-        if (keywordTrainingChunks.size >= 8) {
-            viewModelScope.launch(Dispatchers.IO) {
-                val success = keywordDetector.recordTemplate(keywordTrainingChunks)
-                if (success) {
-                    val bytes = keywordDetector.getTemplateData()
-                    if (bytes != null) {
-                        try {
-                            wakePhraseStore.saveTemplate(bytes)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to save enrolled wake phrase", e)
-                            return@launch
-                        }
-                        _hasKeywordTemplate.value = true
-
-                        // Notify service to reload template if running
-                        try {
-                            if (AudioMonitoringService.isServiceRunning.value) {
-                                val intent = Intent(context, AudioMonitoringService::class.java).apply {
-                                    action = AudioMonitoringService.ACTION_RELOAD_TEMPLATE
-                                }
-                                context.startService(intent)
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to send ACTION_RELOAD_TEMPLATE", e)
-                        }
-                    }
-                }
-            }
-        }
+        stopPhraseRecordingRequested = true
     }
 
     /** Explicit user action: deletes the enrolled wake phrase. The saved test recording and result are kept. */
@@ -816,122 +791,136 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         wakePhraseStore.deleteTemplate()
         keywordDetector.clearTemplate()
         _hasKeywordTemplate.value = false
-
-        try {
-            if (AudioMonitoringService.isServiceRunning.value) {
-                val intent = Intent(context, AudioMonitoringService::class.java).apply {
-                    action = AudioMonitoringService.ACTION_RELOAD_TEMPLATE
-                }
-                context.startService(intent)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to send ACTION_RELOAD_TEMPLATE on clear", e)
-        }
+        _isLegacyTemplate.value = false
+        notifyServiceTemplateChanged()
     }
 
+    /**
+     * Records a 3 s test phrase (monitoring is paused exactly as for enrollment) and evaluates it with the monitoring
+     * pipeline ([WakePhraseEvaluator]); the recording and the result are saved.
+     */
     fun testKeywordAudio() {
-        if (_isTestingKeyword.value) return
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            // The previously saved test result is left untouched
-            Log.e(TAG, "RECORD_AUDIO permission not granted for keyword test")
-            return
-        }
-        _isTestingKeyword.value = true
-
+        if (phraseCapture.isBusy) return
+        _phraseMessage.value = null
         viewModelScope.launch(Dispatchers.Default) {
-            val sampleRate = 16000
-            val channelConfig = AudioFormat.CHANNEL_IN_MONO
-            val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-            val minBuf = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat).coerceAtLeast(4096)
-
-            var testRecord: AudioRecord? = null
-            val testChunks = mutableListOf<ShortArray>()
-
-            try {
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                    Log.e(TAG, "RECORD_AUDIO permission not granted")
-                    return@launch
-                }
-                val record = AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
-                    sampleRate,
-                    channelConfig,
-                    audioFormat,
-                    minBuf
-                )
-                if (record.state != AudioRecord.STATE_INITIALIZED) {
-                    Log.e(TAG, "AudioRecord failed to initialize for keyword testing")
-                    record.release()
-                    return@launch
-                }
-                testRecord = record
-                record.startRecording()
-
-                val buffer = ShortArray(800)
-                val startTime = System.currentTimeMillis()
-
-                // Test for 3.0 seconds
-                while (isActive && System.currentTimeMillis() - startTime < 3000L) {
-                    val read = record.read(buffer, 0, buffer.size)
-                    if (read > 0) {
-                        testChunks.add(buffer.copyOf(read))
-                    }
-                }
-            } catch (e: SecurityException) {
-                Log.e(TAG, "SecurityException during keyword test", e)
-            } catch (e: Exception) {
-                Log.e(TAG, "Keyword test error", e)
-            } finally {
-                try {
-                    testRecord?.stop()
-                    testRecord?.release()
-                } catch (_: Exception) {}
-                if (testChunks.isNotEmpty()) {
-                    val result = WakePhraseTestResult(scoreTestRecording(testChunks), System.currentTimeMillis())
-                    _keywordTestResult.value = result
-                    persistTestRecording(testChunks, result)
-                }
-                _isTestingKeyword.value = false
+            val outcome = phraseCapture.runCapture(PhraseCaptureKind.TEST_PHRASE) { session ->
+                capturePhrase(session, TEST_DURATION_MS) { false }
+            }
+            if (outcome is CaptureOutcome.Completed && outcome.value.isNotEmpty()) {
+                val evaluation = evaluateTestFrames(outcome.value)
+                persistTestRecording(outcome.value, WakePhraseTestResult(evaluation.bestConfidence, System.currentTimeMillis()))
             }
         }
     }
 
-    /** Re-scores the saved test recording against the current wake phrase (e.g. after re-enrolling). */
+    /** Re-scores the saved test recording against the current wake phrase and settings (no microphone needed). */
     fun retestSavedRecording() {
-        if (_isTestingKeyword.value) return
+        if (_isTestingKeyword.value || phraseCapture.isBusy) return
         _isTestingKeyword.value = true
         viewModelScope.launch(Dispatchers.Default) {
             try {
-                val chunks = wakePhraseStore.loadTestRecording()
-                if (chunks == null) {
-                    Log.w(TAG, "No readable saved test recording")
+                val frames = wakePhraseStore.loadTestRecording()
+                if (frames == null) {
+                    _phraseMessage.value = "The saved test recording could not be read."
                     return@launch
                 }
-                val result = WakePhraseTestResult(scoreTestRecording(chunks), System.currentTimeMillis())
+                val evaluation = evaluateTestFrames(frames)
+                val result = WakePhraseTestResult(evaluation.bestConfidence, System.currentTimeMillis())
                 _keywordTestResult.value = result
                 wakePhraseStore.saveTestResult(result)
             } catch (e: Exception) {
                 Log.e(TAG, "Re-testing saved recording failed", e)
+                _phraseMessage.value = "Re-testing failed: ${e.message ?: e.javaClass.simpleName}"
             } finally {
                 _isTestingKeyword.value = false
             }
         }
     }
 
-    private fun scoreTestRecording(chunks: List<ShortArray>): Float {
-        keywordDetector.resetWindow()
-        var maxConfidence = 0f
-        for (chunk in chunks) {
-            val result = keywordDetector.processFrame(chunk, 0.5f, 50f)
-            if (result.confidence > maxConfidence) maxConfidence = result.confidence
+    /**
+     * Captures 16 kHz mono PCM from the microphone (the same format as monitoring) into 50 ms frames. Only called by
+     * [PhraseCaptureCoordinator] while it holds the microphone; the AudioRecord is released before returning.
+     */
+    private suspend fun capturePhrase(session: CaptureSession, maxDurationMs: Long, stopRequested: () -> Boolean): List<ShortArray> =
+        withContext(Dispatchers.Default) {
+            val sampleRate = 16000
+            val channelConfig = AudioFormat.CHANNEL_IN_MONO
+            val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+            val minBuf = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat).coerceAtLeast(4096)
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                throw SecurityException("RECORD_AUDIO permission not granted")
+            }
+            val record = AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, audioFormat, minBuf)
+            val frames = mutableListOf<ShortArray>()
+            try {
+                check(record.state == AudioRecord.STATE_INITIALIZED) { "The microphone could not be opened" }
+                record.startRecording()
+                check(record.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "The microphone did not start recording" }
+                session.recordingStarted()
+
+                val assembler = PcmFrameAssembler()
+                val buffer = ShortArray(PcmFrameAssembler.DEFAULT_FRAME_SIZE)
+                val startTime = System.currentTimeMillis()
+                while (isActive && !stopRequested() && System.currentTimeMillis() - startTime < maxDurationMs) {
+                    val read = record.read(buffer, 0, buffer.size)
+                    if (read < 0) throw IllegalStateException("Microphone read failed ($read)")
+                    assembler.push(buffer, read) { frames += it }
+                }
+            } finally {
+                try {
+                    if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) record.stop()
+                } catch (e: IllegalStateException) {
+                    Log.w(TAG, "AudioRecord stop failed", e)
+                }
+                record.release()
+            }
+            frames
         }
-        keywordDetector.resetWindow()
-        return maxConfidence
+
+    /** Returns true if a phrase was found and saved. */
+    private fun enrollWakePhrase(frames: List<ShortArray>): Boolean {
+        if (frames.size < MIN_ENROLLMENT_FRAMES || !keywordDetector.recordTemplate(frames)) return false
+        val bytes = keywordDetector.getTemplateData() ?: return false
+        try {
+            wakePhraseStore.saveTemplate(bytes)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save enrolled wake phrase", e)
+            _phraseMessage.value = "The wake phrase could not be saved."
+            return true
+        }
+        _hasKeywordTemplate.value = true
+        _isLegacyTemplate.value = false
+        notifyServiceTemplateChanged()
+        return true
     }
 
-    private fun persistTestRecording(chunks: List<ShortArray>, result: WakePhraseTestResult) {
+    private fun evaluateTestFrames(frames: List<ShortArray>): WakePhraseEvaluation {
+        val evaluation = WakePhraseEvaluator.evaluate(
+            frames = frames,
+            templateBytes = wakePhraseStore.loadTemplate(),
+            matchConfidenceThreshold = MatchConfidenceThreshold.toDetectorConfidence(_matchConfidenceThresholdPercent.value),
+            activationThresholdDb = _thresholdDb.value
+        )
+        _lastTestEvaluation.value = evaluation
+        return evaluation
+    }
+
+    private fun notifyServiceTemplateChanged() {
         try {
-            wakePhraseStore.saveTestRecording(chunks)
+            if (AudioMonitoringService.isServiceRunning.value) {
+                context.startService(Intent(context, AudioMonitoringService::class.java).apply {
+                    action = AudioMonitoringService.ACTION_RELOAD_TEMPLATE
+                })
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send ACTION_RELOAD_TEMPLATE", e)
+        }
+    }
+
+    private fun persistTestRecording(frames: List<ShortArray>, result: WakePhraseTestResult) {
+        _keywordTestResult.value = result
+        try {
+            wakePhraseStore.saveTestRecording(frames)
             wakePhraseStore.saveTestResult(result)
             _hasSavedTestRecording.value = true
         } catch (e: Exception) {

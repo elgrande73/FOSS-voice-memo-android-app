@@ -33,21 +33,40 @@ interface KeywordDetector {
 
     /** Removes an enrolled template so the built-in default wake phrase is used again. */
     fun clearTemplate()
+
+    /** Clears the matching window (e.g. after a trigger) but keeps the adaptive noise-floor state. */
     fun resetWindow()
+
+    /** Starts a new audio stream: clears the matching window and the front end's adaptive state. */
+    fun resetStream() = resetWindow()
 }
 
 /**
- * High-performance, 100% offline Dynamic Time Warping (DTW) and Filterbank Energy Keyword Spotter.
- * Supports built-in "Ciao Linda" reference model, custom voice template learning, persistence,
- * and continuous sliding-window phrase matching.
+ * Offline Dynamic Time Warping (DTW) keyword spotter over 16-band spectral features.
+ * Supports the built-in "Ciao Linda" reference, enrolled (custom) templates, persistence and continuous
+ * sliding-window matching.
+ *
+ * Score semantics: for each candidate window the DTW path cost between the template and the most recent frames is
+ * divided by the path length (mean Euclidean distance between L2-normalised feature vectors, range 0..√2) and mapped to
+ * `confidence = clamp(1 − distance / 0.40, 0, 1)`. This is a heuristic *similarity score*, not a calibrated probability;
+ * the UI shows it as "match" percentage and compares it with the Match confidence threshold (percent / 100).
+ *
+ * Every frame of a stream must be passed to [processFrame] in order (the matcher needs contiguous temporal context and
+ * the front end tracks the background noise continuously). Monitoring and the Settings phrase test both do this.
+ *
+ * Feature versions: templates enrolled with this version ('CIA2') use [WakePhraseFrontEnd]; templates saved by earlier
+ * versions ('CIAO') keep being matched with the legacy feature extractor they were recorded with, so existing user
+ * templates continue to work (re-recording is recommended to benefit from the new front end).
  */
 class TemplateKeywordDetector(
     private val frameSize: Int = 800, // 50ms at 16kHz
     private val fftSize: Int = 512,
-    private val numBands: Int = 16
+    private val numBands: Int = 16,
+    private val frontEndConfig: FrontEndConfig = FrontEndConfig.DEFAULT
 ) : KeywordDetector {
 
     private val fft = FFT(fftSize)
+    private val frontEnd = WakePhraseFrontEnd(frontEndConfig)
     // Minimum confidence for a match; see MatchConfidenceThreshold for the user-facing mapping
     private var matchConfidenceThreshold: Float =
         MatchConfidenceThreshold.toDetectorConfidence(MatchConfidenceThreshold.DEFAULT_PERCENT)
@@ -56,8 +75,23 @@ class TemplateKeywordDetector(
     private val slidingWindow = mutableListOf<FloatArray>()
     private val maxWindowFrames = 50 // Up to 2.5 seconds history
 
-    // Custom user voice template (if enrolled)
+    // Custom user voice template (if enrolled) and the feature version it was recorded with
     private var referenceTemplate: List<FloatArray>? = null
+    private var referenceIsLegacy = false
+
+    /** Measurements of the most recent frame processed by the front end (levels and statistics only). */
+    val diagnostics: FrontEndDiagnostics get() = frontEnd.diagnostics
+
+    /** Background level estimated by the front end, in dBFS, or null before any audio was processed. */
+    val noiseFloorDbfs: Float? get() = frontEnd.noiseFloorDbfs
+
+    /** True when the enrolled template was saved by an older version and uses the legacy features. */
+    val isLegacyTemplate: Boolean
+        @Synchronized get() = referenceTemplate != null && referenceIsLegacy
+
+    /** Number of frames (50 ms each) of the active template. */
+    val templateFrameCount: Int
+        @Synchronized get() = (referenceTemplate ?: defaultTemplate).size
 
     // Canonical default reference template for "Ciao Linda"
     private val defaultTemplate: List<FloatArray> by lazy {
@@ -85,7 +119,11 @@ class TemplateKeywordDetector(
             if (templateBytes.size < 12) return false
             val buffer = ByteBuffer.wrap(templateBytes).order(ByteOrder.LITTLE_ENDIAN)
             val magic = buffer.int
-            if (magic != 0x4349414F) return false // 'CIAO'
+            val legacy = when (magic) {
+                MAGIC_FRONT_END_TEMPLATE -> false
+                MAGIC_LEGACY_TEMPLATE -> true
+                else -> return false
+            }
 
             val frameCount = buffer.int
             val bands = buffer.int
@@ -97,9 +135,12 @@ class TemplateKeywordDetector(
                 for (b in 0 until numBands) {
                     vec[b] = buffer.float
                 }
+                if (vec.any { it.isNaN() || it.isInfinite() }) return false
                 template.add(vec)
             }
             referenceTemplate = template
+            referenceIsLegacy = legacy
+            slidingWindow.clear()
             return true
         } catch (_: Exception) {
             return false
@@ -113,7 +154,7 @@ class TemplateKeywordDetector(
     fun getTemplateData(): ByteArray? {
         val template = referenceTemplate ?: return null
         val buffer = ByteBuffer.allocate(12 + template.size * numBands * 4).order(ByteOrder.LITTLE_ENDIAN)
-        buffer.putInt(0x4349414F) // Magic
+        buffer.putInt(if (referenceIsLegacy) MAGIC_LEGACY_TEMPLATE else MAGIC_FRONT_END_TEMPLATE)
         buffer.putInt(template.size)
         buffer.putInt(numBands)
         for (vec in template) {
@@ -125,28 +166,36 @@ class TemplateKeywordDetector(
     }
 
     /**
-     * Records a new template from a sequence of training PCM audio chunks.
+     * Enrolls a new template from a recording (consecutive 50 ms frames, e.g. the 2.5 s Settings recording).
+     *
+     * The recording is processed by a fresh [WakePhraseFrontEnd] that is first primed with the same recording, so its
+     * noise floor is converged as it is during monitoring. Only the spoken part is kept (endpointing, see
+     * [findSpeechSpan]); leading and trailing silence would otherwise dominate the template and the matcher.
+     *
+     * @return false if no phrase of at least [MIN_TEMPLATE_FRAMES] frames was found (nothing is changed then).
      */
     @Synchronized
     fun recordTemplate(chunks: List<ShortArray>): Boolean {
-        val features = mutableListOf<FloatArray>()
-        for (chunk in chunks) {
-            val vec = extractFeatureVector(chunk)
-            val energy = vec.sum()
-            if (energy > 0.05f) {
-                features.add(vec)
-            }
+        val enrollFrontEnd = WakePhraseFrontEnd(frontEndConfig)
+        chunks.forEach { enrollFrontEnd.process(it) } // prime the noise floor
+        val features = ArrayList<FloatArray>(chunks.size)
+        val levels = FloatArray(chunks.size)
+        chunks.forEachIndexed { i, chunk ->
+            features += enrollFrontEnd.process(chunk)
+            levels[i] = enrollFrontEnd.diagnostics.inputRmsDbfs
         }
+        val span = findSpeechSpan(levels, enrollFrontEnd.noiseFloorDbfs ?: -120f) ?: return false
 
-        if (features.size < 6) return false // Too short to be a valid "Ciao Linda" phrase
-
-        referenceTemplate = features
+        referenceTemplate = features.subList(span.first, span.last + 1).toList()
+        referenceIsLegacy = false
+        slidingWindow.clear()
         return true
     }
 
     @Synchronized
     override fun clearTemplate() {
         referenceTemplate = null
+        referenceIsLegacy = false
         slidingWindow.clear()
     }
 
@@ -156,8 +205,25 @@ class TemplateKeywordDetector(
     }
 
     @Synchronized
+    override fun resetStream() {
+        slidingWindow.clear()
+        frontEnd.reset()
+    }
+
+    /**
+     * Primes the front end's noise floor with [frames] without matching, so a short recording (Settings test) is
+     * evaluated with a converged background estimate, as during continuous monitoring.
+     */
+    @Synchronized
+    fun primeNoiseFloor(frames: List<ShortArray>) {
+        frames.forEach { frontEnd.process(it) }
+    }
+
+    @Synchronized
     override fun processFrame(frame: ShortArray, rms: Float, db: Float): KeywordMatchResult {
-        val featureVec = extractFeatureVector(frame)
+        // The front end always runs (noise floor, diagnostics); legacy templates are matched with legacy features
+        val frontEndFeatures = frontEnd.process(frame)
+        val featureVec = if (referenceTemplate != null && referenceIsLegacy) extractFeatureVector(frame) else frontEndFeatures
         slidingWindow.add(featureVec)
         if (slidingWindow.size > maxWindowFrames) {
             slidingWindow.removeAt(0)
@@ -226,6 +292,7 @@ class TemplateKeywordDetector(
         )
     }
 
+    /** Legacy (version 1) feature extractor, kept only for templates enrolled with earlier versions. */
     fun extractFeatureVector(frame: ShortArray): FloatArray {
         val fftBuffer = DoubleArray(fftSize)
         val len = min(frame.size, fftSize)
@@ -321,14 +388,46 @@ class TemplateKeywordDetector(
 
     private fun buildDefaultCiaoLindaTemplate(): List<FloatArray> {
         val audioChunks = generateCanonicalCiaoLindaAudio(sampleRate = 16000, amplitude = 12000.0)
-        val template = mutableListOf<FloatArray>()
-        for (chunk in audioChunks) {
-            template.add(extractFeatureVector(chunk))
-        }
-        return template
+        val builtInFrontEnd = WakePhraseFrontEnd(frontEndConfig)
+        return audioChunks.map { builtInFrontEnd.process(it) }
     }
 
     companion object {
+        const val MAGIC_LEGACY_TEMPLATE = 0x4349414F // 'CIAO': legacy features
+        const val MAGIC_FRONT_END_TEMPLATE = 0x32414943 // 'CIA2' (little endian): WakePhraseFrontEnd features
+        const val MIN_TEMPLATE_FRAMES = 6
+
+        /** A frame belongs to the phrase if it is this far above the recording's noise floor... */
+        const val SPEECH_ABOVE_NOISE_DB = 10f
+        /** ...and within this range of the recording's loudest frame. */
+        const val SPEECH_BELOW_PEAK_DB = 35f
+        const val SPEECH_PADDING_FRAMES = 1
+        /** A recording whose loudest frame is below this level contains no usable phrase. */
+        const val SILENT_RECORDING_DBFS = -70f
+
+        /**
+         * Energy-based endpointing: first..last frame that is clearly above the background, extended by
+         * [SPEECH_PADDING_FRAMES] on each side. If the recording has no quiet part to estimate the background from
+         * (sound throughout), all frames within [SPEECH_BELOW_PEAK_DB] of the peak are used. Returns null if the span
+         * is shorter than [MIN_TEMPLATE_FRAMES] or the recording is silent.
+         */
+        fun findSpeechSpan(levelsDbfs: FloatArray, noiseFloorDbfs: Float): IntRange? {
+            if (levelsDbfs.isEmpty()) return null
+            val peak = levelsDbfs.max()
+            if (peak < SILENT_RECORDING_DBFS) return null
+            val hasBackground = peak >= noiseFloorDbfs + SPEECH_ABOVE_NOISE_DB
+            val threshold = if (hasBackground) {
+                maxOf(noiseFloorDbfs + SPEECH_ABOVE_NOISE_DB, peak - SPEECH_BELOW_PEAK_DB)
+            } else {
+                peak - SPEECH_BELOW_PEAK_DB
+            }
+            val first = levelsDbfs.indexOfFirst { it >= threshold }
+            val last = levelsDbfs.indexOfLast { it >= threshold }
+            if (first < 0) return null
+            val span = (first - SPEECH_PADDING_FRAMES).coerceAtLeast(0)..(last + SPEECH_PADDING_FRAMES).coerceAtMost(levelsDbfs.size - 1)
+            return if (span.last - span.first + 1 >= MIN_TEMPLATE_FRAMES) span else null
+        }
+
         /**
          * Synthesizes canonical acoustic PCM sequence representing the phrase "Ciao Linda".
          * 16kHz, 50ms (800 samples) per frame.

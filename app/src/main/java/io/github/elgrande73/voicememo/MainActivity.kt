@@ -95,6 +95,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -103,7 +104,11 @@ import androidx.core.content.ContextCompat
 import io.github.elgrande73.voicememo.memo.VoiceNote
 import io.github.elgrande73.voicememo.detection.DetectionMode
 import io.github.elgrande73.voicememo.detection.KeywordBehavior
+import io.github.elgrande73.voicememo.audio.PhraseCaptureKind
+import io.github.elgrande73.voicememo.audio.PhraseCaptureState
+import io.github.elgrande73.voicememo.audio.kind
 import io.github.elgrande73.voicememo.monitoring.AudioMonitoringService
+import io.github.elgrande73.voicememo.monitoring.MonitoringEngineState
 import io.github.elgrande73.voicememo.ui.GuideTab
 import io.github.elgrande73.voicememo.ui.theme.MyApplicationTheme
 import io.github.elgrande73.voicememo.ui.theme.ThemeMode
@@ -285,6 +290,8 @@ fun DashboardScreen(
     onRequestPermission: () -> Unit
 ) {
     val isServiceRunning by AudioMonitoringService.isServiceRunning.collectAsState()
+    val engineState by AudioMonitoringService.engineState.collectAsState()
+    val phraseCaptureState by viewModel.phraseCaptureState.collectAsState()
     val isCurrentlyRecording by AudioMonitoringService.isCurrentlyRecording.collectAsState()
     val recordingDurationSeconds by AudioMonitoringService.recordingDurationSeconds.collectAsState()
     val liveDb by AudioMonitoringService.liveDbLevel.collectAsState()
@@ -310,6 +317,13 @@ fun DashboardScreen(
             .testTag("dashboard_screen"),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        Text(
+            text = stringResource(R.string.dashboard_title),
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.testTag("dashboard_title")
+        )
+
         // Permission Warning Card
         if (!hasMicPermission) {
             Card(
@@ -346,7 +360,7 @@ fun DashboardScreen(
             colors = CardDefaults.cardColors(
                 containerColor = when {
                     isCurrentlyRecording -> MaterialTheme.colorScheme.errorContainer
-                    isServiceRunning -> MaterialTheme.colorScheme.primaryContainer
+                    engineState == MonitoringEngineState.ACTIVE -> MaterialTheme.colorScheme.primaryContainer
                     else -> MaterialTheme.colorScheme.surfaceVariant
                 }
             ),
@@ -370,20 +384,19 @@ fun DashboardScreen(
                                 .background(
                                     when {
                                         isCurrentlyRecording -> Color.Red
-                                        isServiceRunning -> Color(0xFF4CAF50)
+                                        engineState == MonitoringEngineState.ACTIVE -> Color(0xFF4CAF50)
+                                        engineState == MonitoringEngineState.UNAVAILABLE -> Color(0xFFFF9800)
+                                        phraseCaptureState != PhraseCaptureState.Idle -> Color(0xFFFF9800)
                                         else -> Color.Gray
                                     }
                                 )
                         )
                         Column {
                             Text(
-                                text = when {
-                                    isCurrentlyRecording -> "Recording Voice Note..."
-                                    isServiceRunning -> "Monitoring Active"
-                                    else -> "Monitoring Paused"
-                                },
+                                text = monitoringStatusText(isCurrentlyRecording, engineState, phraseCaptureState),
                                 style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.testTag("monitoring_status")
                             )
                             Text(
                                 text = "Mode: ${detectionMode.displayName}",
@@ -569,13 +582,7 @@ fun DashboardScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Button(
-                onClick = {
-                    if (isServiceRunning) {
-                        viewModel.stopServiceDetection()
-                    } else {
-                        viewModel.startServiceDetection()
-                    }
-                },
+                onClick = { viewModel.setMonitoringEnabledByUser(!isServiceRunning) },
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (isServiceRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
@@ -646,10 +653,10 @@ fun DashboardScreen(
                     }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = if (isServiceRunning) "Active" else "Idle",
+                            text = if (engineState == MonitoringEngineState.ACTIVE) "Active" else "Idle",
                             style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold,
-                            color = if (isServiceRunning) Color(0xFF4CAF50) else Color.Gray
+                            color = if (engineState == MonitoringEngineState.ACTIVE) Color(0xFF4CAF50) else Color.Gray
                         )
                         Text(
                             text = "Service State",
@@ -696,6 +703,25 @@ fun DashboardScreen(
                 }
             }
         }
+    }
+}
+
+/** Monitoring status derived from the real engine state, never from the service's mere existence. */
+fun monitoringStatusText(
+    isRecordingMemo: Boolean,
+    engineState: MonitoringEngineState,
+    phraseCaptureState: PhraseCaptureState
+): String = when {
+    isRecordingMemo -> "Recording Voice Note..."
+    phraseCaptureState is PhraseCaptureState.StoppingMonitoring -> "Stopping monitoring…"
+    phraseCaptureState != PhraseCaptureState.Idle -> "Paused: recording a phrase in Settings"
+    else -> when (engineState) {
+        MonitoringEngineState.ACTIVE -> "Monitoring Active"
+        MonitoringEngineState.STARTING -> "Starting monitoring…"
+        MonitoringEngineState.WAITING_FOR_MICROPHONE -> "Waiting for the microphone…"
+        MonitoringEngineState.UNAVAILABLE -> "Microphone unavailable"
+        MonitoringEngineState.STOPPING -> "Stopping monitoring…"
+        MonitoringEngineState.STOPPED -> "Monitoring Stopped"
     }
 }
 
@@ -1198,6 +1224,11 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
     val isRecordingKeyword by viewModel.isRecordingKeyword.collectAsState()
     val isTestingKeyword by viewModel.isTestingKeyword.collectAsState()
     val keywordTestResult by viewModel.keywordTestResult.collectAsState()
+    val lastTestEvaluation by viewModel.lastTestEvaluation.collectAsState()
+    val phraseCaptureState by viewModel.phraseCaptureState.collectAsState()
+    val phraseCaptureError by viewModel.phraseCaptureError.collectAsState()
+    val phraseMessage by viewModel.phraseMessage.collectAsState()
+    val isLegacyTemplate by viewModel.isLegacyTemplate.collectAsState()
     val hasSavedTestRecording by viewModel.hasSavedTestRecording.collectAsState()
 
     val speechToTextEnabled by viewModel.speechToTextEnabled.collectAsState()
@@ -1296,6 +1327,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
 
                 Spacer(modifier = Modifier.height(12.dp))
 
+                val captureKind = phraseCaptureState.kind()
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
@@ -1305,23 +1337,68 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                                 viewModel.startRecordingKeywordTemplate()
                             }
                         },
+                        // Disabled while monitoring is being stopped or another recording is running
+                        enabled = isRecordingKeyword || phraseCaptureState == PhraseCaptureState.Idle,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (isRecordingKeyword) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                         ),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("record_wake_phrase_button")
                     ) {
-                        Text(if (isRecordingKeyword) "Stop Recording" else "Record Phrase")
+                        Text(
+                            when {
+                                isRecordingKeyword -> "Stop Recording"
+                                captureKind == PhraseCaptureKind.WAKE_PHRASE &&
+                                    phraseCaptureState is PhraseCaptureState.StoppingMonitoring -> "Stopping monitoring…"
+                                captureKind == PhraseCaptureKind.WAKE_PHRASE -> "Starting…"
+                                else -> "Record Phrase"
+                            }
+                        )
                     }
 
                     if (hasKeywordTemplate) {
                         OutlinedButton(
                             onClick = { viewModel.testKeywordAudio() },
-                            enabled = !isTestingKeyword,
-                            modifier = Modifier.weight(1f)
+                            enabled = !isTestingKeyword && phraseCaptureState == PhraseCaptureState.Idle,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("test_phrase_button")
                         ) {
-                            Text(if (isTestingKeyword) "Listening..." else "Test Phrase")
+                            Text(
+                                when {
+                                    phraseCaptureState == PhraseCaptureState.Recording(PhraseCaptureKind.TEST_PHRASE) -> "Listening..."
+                                    phraseCaptureState is PhraseCaptureState.StoppingMonitoring &&
+                                        captureKind == PhraseCaptureKind.TEST_PHRASE -> "Stopping monitoring…"
+                                    isTestingKeyword -> "Evaluating…"
+                                    else -> "Test Phrase"
+                                }
+                            )
                         }
                     }
+                }
+
+                if (captureKind != null) {
+                    Text(
+                        text = "Automatic monitoring is paused while a phrase is recorded and resumes afterwards.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                (phraseCaptureError ?: phraseMessage)?.let { message ->
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.testTag("phrase_capture_error")
+                    )
+                }
+                if (isLegacyTemplate) {
+                    Text(
+                        text = "Your phrase was recorded with an earlier version. Record it again for more reliable detection.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
 
                 if (hasKeywordTemplate) {
@@ -1336,17 +1413,27 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
 
                 keywordTestResult?.let { result ->
                     val scorePercent = (result.confidence * 100).toInt()
-                    val wouldTrigger = result.confidence >= MatchConfidenceThreshold.toDetectorConfidence(matchConfidenceThresholdPercent)
+                    val reachesThreshold = result.confidence >= MatchConfidenceThreshold.toDetectorConfidence(matchConfidenceThresholdPercent)
+                    // The loudness check is known only for tests evaluated in this session
+                    val tooQuiet = lastTestEvaluation?.let { it.peakLevelDb < thresholdDb } == true
                     val testedAt = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(result.timestamp))
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = "Last test ($testedAt): $scorePercent% match — " +
-                            if (wouldTrigger) "would trigger" else "below the threshold",
+                            if (reachesThreshold) "reaches the trigger threshold" else "below the trigger threshold",
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Bold,
-                        color = if (wouldTrigger) Color(0xFF4CAF50) else Color.Red,
+                        color = if (reachesThreshold && !tooQuiet) Color(0xFF4CAF50) else Color.Red,
                         modifier = Modifier.testTag("wake_phrase_test_result")
                     )
+                    if (tooQuiet) {
+                        Text(
+                            text = "The phrase was quieter than the activation threshold (${thresholdDb.toInt()} dB), " +
+                                "so monitoring would not start a recording. Speak louder or lower the activation threshold.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
                 if (hasSavedTestRecording) {
                     TextButton(

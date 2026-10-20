@@ -32,6 +32,9 @@ import io.github.elgrande73.voicememo.audio.AudioInputDevice
 import io.github.elgrande73.voicememo.audio.AudioInputManager
 import io.github.elgrande73.voicememo.audio.FeedbackSoundPlayer
 import io.github.elgrande73.voicememo.audio.MediaPlaybackDetector
+import io.github.elgrande73.voicememo.audio.MicrophoneArbiter
+import io.github.elgrande73.voicememo.audio.MicrophoneOwner
+import io.github.elgrande73.voicememo.audio.PcmFrameAssembler
 import io.github.elgrande73.voicememo.audio.WavWriter
 import io.github.elgrande73.voicememo.detection.DetectionMode
 import io.github.elgrande73.voicememo.detection.KeywordBehavior
@@ -152,6 +155,13 @@ class AudioMonitoringService : Service() {
 
         private val _isFallbackActive = MutableStateFlow(false)
         val isFallbackActive = _isFallbackActive.asStateFlow()
+
+        private val _engineState = MutableStateFlow(MonitoringEngineState.STOPPED)
+        /** Real state of the capture/detection engine (not just whether the service exists). */
+        val engineState = _engineState.asStateFlow()
+
+        /** Microphone ownership shared with the Settings phrase recordings. */
+        val microphoneArbiter: MicrophoneArbiter get() = MicrophoneArbiter.shared
     }
 
     override fun onCreate() {
@@ -270,13 +280,25 @@ class AudioMonitoringService : Service() {
             var consecutiveReadErrors = 0
             memoDetector.reset(startMonitoring = true)
             _currentRecordingState.value = RecordingLifecycleState.MONITORING
+            val historyPoints = mutableListOf<AmplitudePoint>()
+            val frameAssembler = PcmFrameAssembler(chunkSize)
+            val diagnostics = if (BuildConfig.DEBUG) WakePhraseDiagnosticsLog() else null
 
             while (isActive) {
+                // Never capture while a Settings phrase recording owns the microphone
+                if (!microphoneArbiter.tryAcquire(MicrophoneOwner.MONITORING)) {
+                    _engineState.value = MonitoringEngineState.WAITING_FOR_MICROPHONE
+                    microphoneArbiter.awaitAvailableFor(MicrophoneOwner.MONITORING)
+                    continue
+                }
+                _engineState.value = MonitoringEngineState.STARTING
                 var activeRecord: AudioRecord? = null
                 try {
                     val record = initializeAudioRecord()
                     if (record == null) {
                         ErrorLogger.log(this@AudioMonitoringService, "AudioService", "Failed to initialize AudioRecord hardware")
+                        microphoneArbiter.release(MicrophoneOwner.MONITORING)
+                        _engineState.value = MonitoringEngineState.UNAVAILABLE
                         delay(2000)
                         continue
                     }
@@ -288,6 +310,7 @@ class AudioMonitoringService : Service() {
                     } catch (e: IllegalStateException) {
                         ErrorLogger.log(this@AudioMonitoringService, "AudioService", "startRecording failed with IllegalStateException", e)
                         releaseAudioRecord(record)
+                        _engineState.value = MonitoringEngineState.UNAVAILABLE
                         delay(1500)
                         continue
                     }
@@ -295,12 +318,16 @@ class AudioMonitoringService : Service() {
                     if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
                         ErrorLogger.log(this@AudioMonitoringService, "AudioService", "AudioRecord not recording after startRecording()")
                         releaseAudioRecord(record)
+                        _engineState.value = MonitoringEngineState.UNAVAILABLE
                         delay(1500)
                         continue
                     }
 
+                    _engineState.value = MonitoringEngineState.ACTIVE
+                    // A new capture stream: re-learn the background (the input device may have changed)
+                    memoDetector.restartStream()
+                    frameAssembler.reset()
                     val buffer = ShortArray(chunkSize)
-                    val historyPoints = mutableListOf<AmplitudePoint>()
 
                     while (isActive && record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                         val readResult = try {
@@ -321,65 +348,8 @@ class AudioMonitoringService : Service() {
                         }
 
                         consecutiveReadErrors = 0
-
-                        // Check system media playback status
-                        val mediaStatus = mediaPlaybackDetector.checkPlaybackStatus()
-
-                        // Suppress our own feedback chime (plus output latency tail) from the mic stream
-                        val isFeedbackMuted = System.currentTimeMillis() < feedbackMuteUntilMs
-                        if (isFeedbackMuted) {
-                            buffer.fill(0)
-                        }
-
-                        // Process frame via State Machine
-                        val events = memoDetector.processFrame(
-                            buffer,
-                            isMediaPlaying = mediaStatus.isMediaPlaying,
-                            isFeedbackMuted = isFeedbackMuted
-                        )
-                        _isVoiceDetected.value = memoDetector.isVoiceDetected
-                        _liveNoiseFloorDb.value = memoDetector.noiseFloorDb
-                        _liveKeywordConfidence.value = memoDetector.keywordConfidence
-
-                        for (event in events) {
-                            when (event) {
-                                is MemoDetectionEvent.StateChanged -> {
-                                    _currentRecordingState.value = event.newState
-                                    _isCurrentlyRecording.value = (event.newState == RecordingLifecycleState.RECORDING)
-                                    if (event.newState != RecordingLifecycleState.RECORDING) {
-                                        _recordingDurationSeconds.value = 0
-                                    }
-                                    updateNotificationStatus(event.newState)
-                                }
-                                is MemoDetectionEvent.TriggerStarted -> {
-                                    playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STARTED)
-                                }
-                                is MemoDetectionEvent.ChunkRecorded -> {
-                                    _liveDbLevel.value = event.peakDb
-                                    if (_isCurrentlyRecording.value) {
-                                        _recordingDurationSeconds.value = (memoDetector.currentRecordingDurationMs() / 1000L).toInt()
-                                    }
-                                    val point = AmplitudePoint(
-                                        timestamp = System.currentTimeMillis(),
-                                        amplitudeDb = event.peakDb,
-                                        isTriggered = _currentRecordingState.value == RecordingLifecycleState.RECORDING,
-                                        isKeyword = memoDetector.detectionMode == DetectionMode.KEYWORD_ONLY
-                                    )
-                                    historyPoints.add(point)
-                                    if (historyPoints.size > 80) {
-                                        historyPoints.removeAt(0)
-                                    }
-                                    _currentSessionData.value = historyPoints.toList()
-                                }
-                                is MemoDetectionEvent.RecordingCompleted -> {
-                                    _isCurrentlyRecording.value = false
-                                    _recordingDurationSeconds.value = 0
-                                    playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STOPPED)
-                                    saveCompletedVoiceNote(event)
-                                }
-                                else -> {}
-                            }
-                        }
+                        // Partial reads are completed into exact 50 ms frames (never padded with stale samples)
+                        frameAssembler.push(buffer, readResult) { frame -> processCapturedFrame(frame, historyPoints, diagnostics) }
                     }
                 } catch (e: Exception) {
                     if (e !is kotlinx.coroutines.CancellationException) {
@@ -388,7 +358,75 @@ class AudioMonitoringService : Service() {
                     }
                 } finally {
                     releaseAudioRecord(activeRecord)
+                    microphoneArbiter.release(MicrophoneOwner.MONITORING)
                 }
+            }
+        }
+    }
+
+    private fun processCapturedFrame(
+        frame: ShortArray,
+        historyPoints: MutableList<AmplitudePoint>,
+        diagnostics: WakePhraseDiagnosticsLog?
+    ) {
+        // Check system media playback status
+        val mediaStatus = mediaPlaybackDetector.checkPlaybackStatus()
+
+        // Suppress our own feedback chime (plus output latency tail) from the mic stream
+        val isFeedbackMuted = System.currentTimeMillis() < feedbackMuteUntilMs
+        if (isFeedbackMuted) {
+            frame.fill(0)
+        }
+
+        // Process frame via State Machine
+        val startNanos = System.nanoTime()
+        val events = memoDetector.processFrame(
+            frame,
+            isMediaPlaying = mediaStatus.isMediaPlaying,
+            isFeedbackMuted = isFeedbackMuted
+        )
+        diagnostics?.record(frame, memoDetector, System.nanoTime() - startNanos)
+        _isVoiceDetected.value = memoDetector.isVoiceDetected
+        _liveNoiseFloorDb.value = memoDetector.noiseFloorDb
+        _liveKeywordConfidence.value = memoDetector.keywordConfidence
+
+        for (event in events) {
+            when (event) {
+                is MemoDetectionEvent.StateChanged -> {
+                    _currentRecordingState.value = event.newState
+                    _isCurrentlyRecording.value = (event.newState == RecordingLifecycleState.RECORDING)
+                    if (event.newState != RecordingLifecycleState.RECORDING) {
+                        _recordingDurationSeconds.value = 0
+                    }
+                    updateNotificationStatus(event.newState)
+                }
+                is MemoDetectionEvent.TriggerStarted -> {
+                    playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STARTED)
+                }
+                is MemoDetectionEvent.ChunkRecorded -> {
+                    _liveDbLevel.value = event.peakDb
+                    if (_isCurrentlyRecording.value) {
+                        _recordingDurationSeconds.value = (memoDetector.currentRecordingDurationMs() / 1000L).toInt()
+                    }
+                    val point = AmplitudePoint(
+                        timestamp = System.currentTimeMillis(),
+                        amplitudeDb = event.peakDb,
+                        isTriggered = _currentRecordingState.value == RecordingLifecycleState.RECORDING,
+                        isKeyword = memoDetector.detectionMode == DetectionMode.KEYWORD_ONLY
+                    )
+                    historyPoints.add(point)
+                    if (historyPoints.size > 80) {
+                        historyPoints.removeAt(0)
+                    }
+                    _currentSessionData.value = historyPoints.toList()
+                }
+                is MemoDetectionEvent.RecordingCompleted -> {
+                    _isCurrentlyRecording.value = false
+                    _recordingDurationSeconds.value = 0
+                    playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STOPPED)
+                    saveCompletedVoiceNote(event)
+                }
+                else -> {}
             }
         }
     }
@@ -456,6 +494,11 @@ class AudioMonitoringService : Service() {
         } catch (_: Exception) {}
     }
 
+    /**
+     * Stops and releases [record]. Called from the capture loop and from [onDestroy]; once the active AudioRecord is
+     * released, the microphone is handed back to [microphoneArbiter] so a Settings phrase recording may start.
+     */
+    @Synchronized
     private fun releaseAudioRecord(record: AudioRecord?) {
         if (record == null) return
         try {
@@ -463,9 +506,12 @@ class AudioMonitoringService : Service() {
                 record.stop()
             }
             record.release()
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.w("AudioService", "AudioRecord release failed", e)
+        }
         if (currentAudioRecord == record) {
             currentAudioRecord = null
+            microphoneArbiter.release(MicrophoneOwner.MONITORING)
         }
     }
 
@@ -721,6 +767,7 @@ class AudioMonitoringService : Service() {
     }
 
     override fun onDestroy() {
+        _engineState.value = MonitoringEngineState.STOPPING
         _isServiceRunning.value = false
         _liveKeywordConfidence.value = 0f
         _currentRecordingState.value = RecordingLifecycleState.IDLE
@@ -736,6 +783,7 @@ class AudioMonitoringService : Service() {
 
         recordingJob?.cancel()
         releaseAudioRecord(currentAudioRecord)
+        _engineState.value = MonitoringEngineState.STOPPED
         feedbackSoundPlayer.release()
 
         unregisterAudioDeviceListeners()

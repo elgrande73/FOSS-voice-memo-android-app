@@ -102,6 +102,18 @@ class WakePhraseStoreTest {
     }
 
     @Test
+    fun testRecordingInAnUnsupportedFormatIsRejected() {
+        val dir = File(filesDir, WakePhraseStore.DIRECTORY_NAME).apply { mkdirs() }
+        val target = File(dir, WakePhraseStore.TEST_RECORDING_FILE_NAME)
+        for ((rate, channels) in listOf(44100 to 1, 16000 to 2, 8000 to 1)) {
+            io.github.elgrande73.voicememo.audio.WavWriter.writeWavFile(target, listOf(ShortArray(1600) { 100 }), rate, channels)
+            assertNull("rate $rate channels $channels", WakePhraseStore(filesDir).loadTestRecording())
+        }
+        io.github.elgrande73.voicememo.audio.WavWriter.writeWavFile(target, listOf(ShortArray(1600) { 100 }), 16000, 1)
+        assertEquals(2, WakePhraseStore(filesDir).loadTestRecording()!!.size)
+    }
+
+    @Test
     fun deletingEnrolledPhraseKeepsTestRecording() {
         val store = WakePhraseStore(filesDir)
         store.saveTemplate(enrolledTemplate())

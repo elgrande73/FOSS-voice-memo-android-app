@@ -12,7 +12,8 @@ The default wake phrase is **"Ciao Linda"**.
 ## ✨ Features
 
 - **Automatic recording**: starts when speech or sound exceeds the activation threshold and stops after a configurable silence timeout.
-- **Wake phrase**: say **"Ciao Linda"** to start (and optionally stop) a memo. An offline keyword spotter (spectral filterbanks + Dynamic Time Warping) is built in; you can record the phrase in your own voice to train a personal on-device template.
+- **Wake phrase**: say **"Ciao Linda"** to start (and optionally stop) a memo. An offline keyword spotter (spectral filterbanks + Dynamic Time Warping) is built in; you can record the phrase in your own voice to train a personal on-device template. Monitoring and the Settings phrase test use the same detection pipeline, and monitoring pauses automatically while a phrase is recorded in Settings.
+- **Adaptive noise handling**: the background noise floor is estimated automatically and conservative spectral noise suppression keeps background sounds from being mistaken for the wake phrase (see [`docs/WAKE_PHRASE_DETECTION.md`](docs/WAKE_PHRASE_DETECTION.md)).
 - **Match confidence threshold**: one setting (50 %–80 %) controls how closely speech must match the wake phrase; the dashboard shows the same value as the *Trigger threshold* next to a live match gauge.
 - **Rolling pre-trigger buffer**: keeps the start of your sentence.
 - **Playback queue**: playing a memo from the list automatically continues with the next memo of the list you are viewing (filters and search respected), framed by short beginning and ending chimes.

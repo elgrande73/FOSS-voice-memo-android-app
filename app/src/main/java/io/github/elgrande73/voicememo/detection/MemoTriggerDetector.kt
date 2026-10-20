@@ -2,8 +2,11 @@ package io.github.elgrande73.voicememo.detection
 
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import io.github.elgrande73.voicememo.wakephrase.KeywordDetector
+import io.github.elgrande73.voicememo.wakephrase.KeywordMatchResult
+import io.github.elgrande73.voicememo.wakephrase.NoiseFloorEstimator
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
 import java.util.ArrayDeque
+import kotlin.math.log10
 
 /**
  * Detection mode for triggering voice note recordings.
@@ -91,10 +94,14 @@ class MemoTriggerDetector(
     // Observable DSP States
     var isVoiceDetected: Boolean = false
         private set
+    /** Adaptive background level (VAD dB scale: dBFS + 90), see [NoiseFloorEstimator]. */
     var noiseFloorDb: Float = 30.0f
         private set
     // Live wake-phrase match confidence (0..1) with peak-hold decay so short matches stay visible
     var keywordConfidence: Float = 0f
+        private set
+    /** Raw (undecayed) result of the wake-phrase matcher for the most recent frame, or null if it did not run. */
+    var lastKeywordResult: KeywordMatchResult? = null
         private set
 
     // State
@@ -114,10 +121,14 @@ class MemoTriggerDetector(
     private var sessionMaxDb: Float = 0f
     private var sessionSumDb: Double = 0.0
     private var sessionDbCount: Int = 0
-    private var peakUtteranceDb: Float = 0f
-    private var consecutiveQuietFrames: Int = 10
+    private val noiseFloorEstimator = NoiseFloorEstimator(1)
+    private val frameMeanSquare = DoubleArray(1)
+    // Levels of the most recent frames (VAD dB scale), covering the longest window the wake-phrase matcher evaluates
+    private val recentFrameDb = FloatArray(RECENT_LEVEL_FRAMES)
+    private var recentFrameCount = 0
 
     private val chunkDurationMs: Long = 50L // 800 samples at 16kHz = 50ms
+    private var framesSinceTrigger = 0
 
     @Synchronized
     fun reset(startMonitoring: Boolean = true) {
@@ -129,22 +140,37 @@ class MemoTriggerDetector(
         soundSustainStartTime = 0L
         consecutiveSilentChunks = 0
         consecutiveSoundChunks = 0
-        peakUtteranceDb = 0f
-        consecutiveQuietFrames = 10
+        noiseFloorEstimator.reset()
+        recentFrameCount = 0
         keywordConfidence = 0f
+        lastKeywordResult = null
         sessionMaxDb = 0f
         sessionSumDb = 0.0
         sessionDbCount = 0
-        keywordDetector.resetWindow()
+        keywordDetector.resetStream()
 
         currentState = if (startMonitoring) RecordingLifecycleState.MONITORING else RecordingLifecycleState.IDLE
     }
 
     /**
-     * Processes an incoming 16-bit PCM audio frame (e.g. 50ms / 800 samples).
-     * Implements a CPU-efficient Two-Stage Detection Pipeline:
-     * - Stage 1 (Cheap): Continuous RMS & dB SPL evaluation + pre-trigger ring buffer maintenance.
-     * - Stage 2 (Wake-Phrase Spotting): Invoked ONLY if loudness exceeds threshold in Wake Phrase Only mode.
+     * Called when the capture stream (re)starts, e.g. after an AudioRecord restart or input-device change: the noise
+     * floor and the wake-phrase window are re-learned from the new stream. An ongoing memo is not interrupted.
+     */
+    @Synchronized
+    fun restartStream() {
+        noiseFloorEstimator.reset()
+        recentFrameCount = 0
+        keywordDetector.resetStream()
+    }
+
+    /**
+     * Processes an incoming 16-bit PCM audio frame (50 ms / 800 samples at 16 kHz).
+     * - Level analysis (VAD), adaptive noise floor and pre-trigger ring buffer on every frame.
+     * - Wake Phrase mode: every frame is passed to the wake-phrase matcher, exactly as the Settings phrase test does,
+     *   so the matcher always sees contiguous audio. A trigger requires a match (confidence ≥ Match confidence
+     *   threshold) and that the recent audio reached the activation (loudness) threshold.
+     *   (Earlier versions only passed frames above the loudness threshold; the matcher then saw fragments of the phrase
+     *   and its confidence stayed near zero.)
      *
      * @param isFeedbackMuted true while the frame is muted for an app feedback chime; such frames
      *   do not count towards the silence timeout so the user can wait for the chime before speaking.
@@ -161,12 +187,12 @@ class MemoTriggerDetector(
         val now = System.currentTimeMillis()
         keywordConfidence *= KEYWORD_CONFIDENCE_DECAY
 
-        // --- STAGE 1: Low-CPU Volume & RMS / dB Analysis ---
+        // --- Level analysis ---
         val vadResult = vad.processFrame(frame, thresholdDb)
         isVoiceDetected = vadResult.isSpeechLikely
-        if (!vadResult.isAboveThreshold && vadResult.db > 10f) {
-            noiseFloorDb = noiseFloorDb * 0.95f + vadResult.db * 0.05f
-        }
+        updateNoiseFloor(vadResult.rms)
+        recentFrameDb[recentFrameCount % RECENT_LEVEL_FRAMES] = vadResult.db
+        recentFrameCount++
 
         // Rolling pre-trigger ring buffer maintenance
         // In KEYWORD_ONLY mode, buffer is large enough to retain the full wake phrase plus pre-phrase padding
@@ -188,32 +214,12 @@ class MemoTriggerDetector(
             RecordingLifecycleState.MONITORING -> {
                 when (detectionMode) {
                     DetectionMode.KEYWORD_ONLY -> {
-                        // --- TWO-STAGE GATING FOR WAKE PHRASE ONLY MODE ---
-                        // Rule 1: Low CPU - If audio is below loudness threshold and no active utterance in progress,
-                        // do NOT invoke the wake-phrase spotter.
-                        val isAudioActive = vadResult.isAboveThreshold ||
-                                (vadResult.isSpeechBand && vadResult.db >= maxOf(thresholdDb - 8.0f, 32.0f))
+                        // Every frame reaches the matcher (contiguous context, same as the Settings phrase test)
+                        val kwResult = matchWakePhrase(frame, vadResult)
 
-                        if (shouldSuppressSound || (!isAudioActive && consecutiveQuietFrames > 3)) {
-                            consecutiveQuietFrames++
-                            return events
-                        }
-
-                        if (isAudioActive) {
-                            consecutiveQuietFrames = 0
-                            if (vadResult.db > peakUtteranceDb) {
-                                peakUtteranceDb = vadResult.db
-                            }
-                        } else {
-                            consecutiveQuietFrames++
-                        }
-
-                        // Rule 2: Run Stage 2: Wake-phrase spotter
-                        val kwResult = keywordDetector.processFrame(frame, vadResult.rms, vadResult.db)
-                        keywordConfidence = maxOf(keywordConfidence, kwResult.confidence)
-
-                        // Rule 3: Trigger ONLY if the phrase "Ciao Linda" was matched AND the loudness criterion is met
-                        if (kwResult.matched && (peakUtteranceDb >= thresholdDb || vadResult.isAboveThreshold)) {
+                        // Trigger only if the wake phrase matched AND the phrase reached the activation (loudness)
+                        // threshold; during media playback (noise filter on) wake-phrase triggers are suppressed
+                        if (!shouldSuppressSound && kwResult.matched && recentPeakDb() >= thresholdDb) {
                             currentState = RecordingLifecycleState.RECORDING
                             // Persisted trigger type of wake-phrase memos; stored in the database, so it must not be renamed
                             activeTriggerType = "KEYWORD_CIAO_LINDA"
@@ -222,9 +228,8 @@ class MemoTriggerDetector(
                             soundSustainStartTime = 0L
                             consecutiveSilentChunks = 0
                             consecutiveSoundChunks = 0
-                            peakUtteranceDb = 0f
-                            consecutiveQuietFrames = 0
                             keywordDetector.resetWindow()
+                            framesSinceTrigger = 0
 
                             sessionMaxDb = vadResult.db
                             sessionSumDb = vadResult.db.toDouble()
@@ -315,15 +320,16 @@ class MemoTriggerDetector(
 
                 // Check stop conditions:
                 // 1. Keyword stop command (if Wake Phrase mode and configured to START_AND_STOP)
+                // The matcher keeps receiving every frame while recording (contiguous context for the stop phrase)
                 var keywordStopTriggered = false
-                if (detectionMode == DetectionMode.KEYWORD_ONLY &&
-                    keywordBehavior == KeywordBehavior.START_AND_STOP &&
-                    vadResult.isAboveThreshold &&
-                    (now - triggerStartTime > 1500L) // Debounce from start phrase
-                ) {
-                    val kwStopResult = keywordDetector.processFrame(frame, vadResult.rms, vadResult.db)
-                    keywordConfidence = maxOf(keywordConfidence, kwStopResult.confidence)
-                    if (kwStopResult.matched) {
+                framesSinceTrigger++
+                if (detectionMode == DetectionMode.KEYWORD_ONLY) {
+                    val kwStopResult = matchWakePhrase(frame, vadResult)
+                    if (keywordBehavior == KeywordBehavior.START_AND_STOP &&
+                        framesSinceTrigger * chunkDurationMs > STOP_PHRASE_DEBOUNCE_MS && // not the start phrase
+                        kwStopResult.matched &&
+                        recentPeakDb() >= thresholdDb
+                    ) {
                         keywordStopTriggered = true
                     }
                 }
@@ -348,6 +354,8 @@ class MemoTriggerDetector(
                     )
 
                     currentState = RecordingLifecycleState.MONITORING
+                    // The window still holds the stop phrase; clear it so it cannot immediately start a new memo
+                    keywordDetector.resetWindow()
                     events.add(finishedEvent)
                     events.add(MemoDetectionEvent.StateChanged(currentState))
 
@@ -378,6 +386,7 @@ class MemoTriggerDetector(
     fun startManualRecording(): MemoDetectionEvent.TriggerStarted {
         val now = System.currentTimeMillis()
         currentState = RecordingLifecycleState.RECORDING
+        framesSinceTrigger = 0
         activeTriggerType = "MANUAL"
         triggerStartTime = now
         lastSpeechTime = now
@@ -420,6 +429,7 @@ class MemoTriggerDetector(
         )
 
         currentState = RecordingLifecycleState.MONITORING
+        keywordDetector.resetWindow()
         activeRecordingChunks.clear()
         activeTriggerType = ""
         triggerStartTime = 0L
@@ -443,8 +453,35 @@ class MemoTriggerDetector(
         return keywordDetector.loadTemplate(templateBytes)
     }
 
+    private fun matchWakePhrase(frame: ShortArray, vadResult: VoiceFrameResult): KeywordMatchResult {
+        val result = keywordDetector.processFrame(frame, vadResult.rms, vadResult.db)
+        lastKeywordResult = result
+        keywordConfidence = maxOf(keywordConfidence, result.confidence)
+        return result
+    }
+
+    /** Loudest frame (VAD dB scale) within the longest window the wake-phrase matcher evaluates. */
+    private fun recentPeakDb(): Float {
+        val count = minOf(recentFrameCount, RECENT_LEVEL_FRAMES)
+        var peak = 0f
+        for (i in 0 until count) peak = maxOf(peak, recentFrameDb[i])
+        return peak
+    }
+
+    private fun updateNoiseFloor(rms: Float) {
+        val normalized = rms / 32767.0
+        frameMeanSquare[0] = normalized * normalized
+        if (noiseFloorEstimator.update(frameMeanSquare)) {
+            val dbfs = 10.0 * log10(maxOf(noiseFloorEstimator.estimate(0), 1e-10))
+            noiseFloorDb = (dbfs + 90.0).toFloat().coerceIn(0f, 120f) // same scale as VoiceActivityDetector.db
+        }
+    }
+
     companion object {
         private const val KEYWORD_CONFIDENCE_DECAY = 0.92f // per 50ms frame
+        private const val STOP_PHRASE_DEBOUNCE_MS = 1500L
+        /** 2.5 s: matches the matcher's sliding window (50 frames). */
+        private const val RECENT_LEVEL_FRAMES = 50
     }
 }
 

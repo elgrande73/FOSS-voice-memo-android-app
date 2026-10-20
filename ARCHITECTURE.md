@@ -175,3 +175,20 @@ The former "keyword sensitivity" (0.10–0.95) required `distance ≤ 0.28 + (s 
 - Unplayable memos are skipped during automatic advance; an unplayable memo selected explicitly stops playback.
 - Chimes are synthesized at runtime by `FeedbackSoundPlayer` (no bundled or downloaded audio).
 
+---
+
+## 8. Wake-Phrase Recognition & Microphone Ownership
+
+- **One recognition pipeline**: `WakePhraseFrontEnd` (adaptive noise floor, spectral noise suppression, level-invariant
+  features) → `TemplateKeywordDetector` (DTW) → `MemoTriggerDetector` (threshold and loudness decision). Monitoring and
+  the Settings phrase test (`WakePhraseEvaluator`) both feed every 50 ms frame in order. See
+  [`docs/WAKE_PHRASE_DETECTION.md`](docs/WAKE_PHRASE_DETECTION.md) for the root-cause analysis, parameters and measurements.
+- **Microphone ownership**: `MicrophoneArbiter` (process-wide) grants the microphone to exactly one owner,
+  `MONITORING` or `PHRASE_CAPTURE`. The service's capture loop acquires it before creating its `AudioRecord` and releases
+  it after releasing the `AudioRecord`; while another owner holds it, the service waits (`WAITING_FOR_MICROPHONE`).
+- **Phrase recordings** (`PhraseCaptureCoordinator`): ignore repeated taps → check permission → remember whether
+  monitoring ran → stop it → wait (suspending, 3 s timeout) until the microphone is released, otherwise report an error
+  and do not record → record → release → restore monitoring if it ran before and the user did not start/stop it
+  meanwhile (also after failures and cancellation). `AudioMonitoringService.engineState` exposes the real engine state
+  to the dashboard.
+

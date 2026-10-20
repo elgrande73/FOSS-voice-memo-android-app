@@ -104,7 +104,8 @@ fun GuideTab() {
                 """.trimIndent(),
                 tips = listOf(
                     "Record the \"Ciao Linda\" template in a quiet room at your normal conversational speaking distance.",
-                    "Use the 'Test Phrase' button in Settings to check the match confidence of your voice; the result is saved.",
+                    "Use the 'Test Phrase' button in Settings to check the match confidence of your voice; the result is saved and is computed exactly as during monitoring.",
+                    "Monitoring pauses automatically while you record or test a phrase in Settings and resumes afterwards.",
                     "Raise the Match confidence threshold (50%–80%) if the phrase triggers too easily, lower it if it is hard to trigger. The dashboard shows the same value as the Trigger threshold."
                 )
             ),

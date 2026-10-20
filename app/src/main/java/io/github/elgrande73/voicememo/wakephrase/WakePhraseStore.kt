@@ -2,6 +2,7 @@ package io.github.elgrande73.voicememo.wakephrase
 
 import android.util.AtomicFile
 import android.util.Log
+import io.github.elgrande73.voicememo.audio.PcmFrameAssembler
 import io.github.elgrande73.voicememo.audio.WavWriter
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -57,12 +58,12 @@ class WakePhraseStore(filesDir: File) {
     fun loadTestRecording(): List<ShortArray>? {
         val bytes = readBytes(testRecordingFile) ?: return null
         val pcm = extractPcmData(bytes) ?: run {
-            Log.w(TAG, "Saved test recording is not a valid WAV file")
+            Log.w(TAG, "Saved test recording is not a 16 kHz mono 16-bit PCM WAV file")
             return null
         }
         val samples = ShortArray(pcm.remaining() / 2)
         pcm.asShortBuffer().get(samples)
-        return samples.toList().chunked(FRAME_SIZE).map { it.toShortArray() }
+        return PcmFrameAssembler.frames(samples, FRAME_SIZE)
     }
 
     fun saveTestResult(result: WakePhraseTestResult) {
@@ -112,16 +113,30 @@ class WakePhraseStore(filesDir: File) {
         }
     }
 
+    /**
+     * Returns the PCM payload if [wav] is a RIFF/WAVE file in the detector's format (PCM, mono, 16 kHz, 16-bit);
+     * any other sample rate, channel count or encoding is rejected rather than misinterpreted.
+     */
     private fun extractPcmData(wav: ByteArray): ByteBuffer? {
         if (wav.size < 12) return null
         val buffer = ByteBuffer.wrap(wav).order(ByteOrder.LITTLE_ENDIAN)
         if (String(wav, 0, 4, Charsets.US_ASCII) != "RIFF" || String(wav, 8, 4, Charsets.US_ASCII) != "WAVE") return null
         var offset = 12
+        var formatValid = false
         while (offset + 8 <= wav.size) {
             val id = String(wav, offset, 4, Charsets.US_ASCII)
             val size = buffer.getInt(offset + 4)
             if (size < 0) return null
+            if (id == "fmt " && size >= 16 && offset + 24 <= wav.size) {
+                val encoding = buffer.getShort(offset + 8).toInt()
+                val channels = buffer.getShort(offset + 10).toInt()
+                val sampleRate = buffer.getInt(offset + 12)
+                val bitsPerSample = buffer.getShort(offset + 22).toInt()
+                formatValid = encoding == 1 && channels == 1 && sampleRate == SAMPLE_RATE && bitsPerSample == 16
+                if (!formatValid) return null
+            }
             if (id == "data") {
+                if (!formatValid) return null
                 val length = minOf(size, wav.size - offset - 8)
                 return ByteBuffer.wrap(wav, offset + 8, length).slice().order(ByteOrder.LITTLE_ENDIAN)
             }

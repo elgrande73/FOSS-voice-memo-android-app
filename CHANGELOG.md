@@ -6,7 +6,20 @@ First release under the new name **Voice Memo** and the new application ID `io.g
 (previously **Ciao Linda**, `com.aistudio.ciaolinda`). Android installs it as a separate app; data of the old app is
 not accessible to it (see README, "New application identity").
 
+### Fixed (wake-phrase detection)
+- Automatic monitoring reported far lower match confidence than the Settings phrase test (0 % vs. > 50 % on identical
+  audio): monitoring passed only loud frames to the matcher and enrolled templates contained the whole recording,
+  mostly silence. Monitoring and the test now share one front end, matcher and decision logic, every frame is matched,
+  and enrollment keeps only the spoken phrase. Details and measurements: `docs/WAKE_PHRASE_DETECTION.md`.
+- In background noise above the activation threshold, any speech could trigger a wake-phrase memo; it no longer does in
+  the test scenarios.
+
 ### Added
+- Dashboard title "Voice memo".
+- Adaptive noise-floor estimation and conservative spectral noise suppression for wake-phrase detection.
+- Monitoring pauses while a wake phrase or test phrase is recorded in Settings and resumes afterwards; the dashboard
+  shows the real monitoring state (active, starting, waiting for the microphone, unavailable, stopping, stopped).
+- Debug-build diagnostics (`WakePhraseDiag` logcat tag, no audio content).
 - Automatic playback of the next memo in the currently displayed list (filters and search respected), with short
   beginning and ending chimes; stops at the end of the list.
 - Recording start/stop chimes (Settings → Recording Sounds, with a Test button).

@@ -66,6 +66,18 @@ class FFT(private val n: Int) {
     }
 
     /**
+     * Allocation-free variant of [computePowerSpectrum] for real-time use: [real] holds the input and is overwritten,
+     * [imag] is scratch space, and the n/2+1 power values are written to [powerOut].
+     */
+    fun powerSpectrumInPlace(real: DoubleArray, imag: DoubleArray, powerOut: DoubleArray) {
+        imag.fill(0.0)
+        transform(real, imag)
+        for (i in 0..n / 2) {
+            powerOut[i] = real[i] * real[i] + imag[i] * imag[i]
+        }
+    }
+
+    /**
      * Computes the power spectrum magnitude for the given real input frame.
      */
     fun computePowerSpectrum(input: DoubleArray): DoubleArray {

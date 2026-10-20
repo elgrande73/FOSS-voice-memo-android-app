@@ -79,8 +79,8 @@ class DetectionEngineTest {
     }
 
     @Test
-    fun testTwoStageGating_WakePhraseNotInvokedBelowLoudnessThreshold() {
-        // Spy KeywordDetector to track invocations
+    fun testWakePhraseMatcherSeesEveryFrameButQuietAudioNeverTriggers() {
+        // Spy matcher that always reports a match: only the loudness criterion can prevent a trigger
         var invocationCount = 0
         val spyKeywordDetector = object : KeywordDetector {
             override fun processFrame(frame: ShortArray, rms: Float, db: Float): KeywordMatchResult {
@@ -100,17 +100,14 @@ class DetectionEngineTest {
         triggerDetector.thresholdDb = 50.0f
         triggerDetector.reset(startMonitoring = true)
 
-        // Feed 10 silent frames (< 30 dB)
         val silence = ShortArray(800) { 0 }
         for (i in 0 until 10) {
-            triggerDetector.processFrame(silence)
+            val events = triggerDetector.processFrame(silence)
+            assertFalse(events.any { it is MemoDetectionEvent.TriggerStarted })
         }
 
-        assertEquals(
-            "Stage 2 (Keyword Detector) MUST NOT be invoked when audio is below loudness threshold",
-            0,
-            invocationCount
-        )
+        // Contiguous context: the matcher receives every frame, like the Settings phrase test
+        assertEquals(10, invocationCount)
         assertEquals(RecordingLifecycleState.MONITORING, triggerDetector.currentState)
     }
 
