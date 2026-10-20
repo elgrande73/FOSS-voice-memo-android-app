@@ -20,6 +20,12 @@ object PreferenceKeys {
     /** Loudness-only activation threshold, VAD dB scale (dBFS + 90). Key predates the versioned settings. */
     const val ACTIVATION_THRESHOLD_DB = "thresholdDb"
 
+    /** On-device transcription (see transcription.Transcription). */
+    const val TRANSCRIPTION_LANGUAGE = "transcriptionLanguage"
+    const val TRANSCRIPTION_QUALITY = "transcriptionQuality"
+    /** Automatic transcription of new memos (key predates the versioned settings). */
+    const val SPEECH_TO_TEXT_ENABLED = "speechToTextEnabled"
+
     /** Shortcut settings (see shortcuts.ShortcutSettings); absent means the default. */
     const val HARDWARE_SHORTCUT_ENABLED = "hardwareShortcutEnabled"
     const val HARDWARE_SHORTCUT_GESTURE = "hardwareShortcutGesture"

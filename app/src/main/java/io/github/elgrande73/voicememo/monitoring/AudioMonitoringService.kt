@@ -53,8 +53,8 @@ import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutHandler
 import io.github.elgrande73.voicememo.shortcuts.RecordingTileService
 import io.github.elgrande73.voicememo.shortcuts.ShortcutSettings
 import io.github.elgrande73.voicememo.shortcuts.ToggleDebouncer
-import io.github.elgrande73.voicememo.transcription.AndroidOnDeviceSpeechEngine
-import io.github.elgrande73.voicememo.transcription.SpeechToTextEngine
+import io.github.elgrande73.voicememo.transcription.Transcription
+import io.github.elgrande73.voicememo.transcription.TranscriptionStatus
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -86,7 +86,6 @@ class AudioMonitoringService : Service() {
     private lateinit var memoDetector: MemoTriggerDetector
     private lateinit var mediaPlaybackDetector: MediaPlaybackDetector
     private lateinit var database: AppDatabase
-    private lateinit var speechEngine: SpeechToTextEngine
     private lateinit var feedbackSoundPlayer: FeedbackSoundPlayer
 
     private var configuredInputId: Int = -1
@@ -210,7 +209,6 @@ class AudioMonitoringService : Service() {
         memoDetector = MemoTriggerDetector()
         mediaPlaybackDetector = MediaPlaybackDetector(this)
         database = AppDatabase.getDatabase(this)
-        speechEngine = AndroidOnDeviceSpeechEngine(this)
         feedbackSoundPlayer = FeedbackSoundPlayer(this)
 
         createNotificationChannels()
@@ -656,7 +654,7 @@ class AudioMonitoringService : Service() {
                     audioFilePath = wavFile.absolutePath,
                     triggerType = event.triggerType,
                     transcriptionText = null,
-                    transcriptionStatus = if (speechToTextEnabled) "PENDING" else "SKIPPED",
+                    transcriptionStatus = if (speechToTextEnabled) TranscriptionStatus.PENDING else TranscriptionStatus.SKIPPED,
                     peakDb = event.peakDb,
                     avgDb = event.avgDb
                 )
@@ -670,23 +668,8 @@ class AudioMonitoringService : Service() {
                 // Notify user safely
                 showNoteSavedNotification(title, durationSeconds)
 
-                // Trigger offline Speech-to-Text transcription if enabled
-                if (speechToTextEnabled) {
-                    launch(Dispatchers.Main) {
-                        try {
-                            val text = speechEngine.transcribeAudioFile(wavFile)
-                            withContext(Dispatchers.IO) {
-                                if (!text.isNullOrBlank()) {
-                                    database.voiceNoteDao().updateTranscription(insertedId, text, "COMPLETED")
-                                } else {
-                                    database.voiceNoteDao().updateTranscription(insertedId, null, "SKIPPED")
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.e("AudioService", "Transcription failed", e)
-                        }
-                    }
-                }
+                // Automatic on-device transcription (opt-in), from the saved file, on the transcription worker
+                if (speechToTextEnabled) Transcription.manager(this@AudioMonitoringService).enqueue(insertedId)
             } catch (e: Exception) {
                 ErrorLogger.log(this@AudioMonitoringService, "AudioService", "Error saving voice note", e)
             }

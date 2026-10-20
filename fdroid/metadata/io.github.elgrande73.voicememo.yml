@@ -22,8 +22,10 @@ Builds:
     # MAINTAINER: set to the release tag or full commit hash once the release is tagged (none exists yet).
     commit:
     subdir: app
+    submodules: true
     gradle:
       - yes
+    ndk: r28c
 
 # MAINTAINER: SHA-256 of the maintainer's release signing certificate (kept from the previous metadata; verify).
 AllowedAPKSigningKeys: 134e479ce6977d81363dd3696fb1ae4dd714c35792045154b235a3a9ebc77da7

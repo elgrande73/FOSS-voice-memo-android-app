@@ -27,6 +27,39 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    // On-device speech-to-text (whisper.cpp, built from source: app/src/main/cpp, third_party/whisper.cpp)
+    ndk {
+      abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+    }
+    externalNativeBuild {
+      cmake {
+        arguments += listOf("-DANDROID_STL=c++_static")
+      }
+    }
+  }
+
+  ndkVersion = "28.2.13676358"
+
+  externalNativeBuild {
+    cmake {
+      path = file("src/main/cpp/CMakeLists.txt")
+      version = "3.31.6"
+    }
+  }
+
+  packaging {
+    jniLibs {
+      // ggml chooses its CPU backend (by instruction set) by scanning the extracted native library directory
+      useLegacyPackaging = true
+      // Built as part of whisper.cpp but not used by Voice Memo
+      excludes += "**/libparakeet.so"
+    }
+  }
+
+  androidResources {
+    // The bundled speech model is read from a file; keep it uncompressed so it can be copied quickly
+    noCompress += listOf("bin")
   }
   
   dependenciesInfo {

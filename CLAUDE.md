@@ -17,6 +17,8 @@ Architecture, persistence rules and pipelines: `ARCHITECTURE.md`, `docs/WAKE_PHR
 - Wake-phrase samples are optional, max 5, matched with `ReferenceAggregation.MAX`; store features only, never raw enrollment audio, and keep them on the device.
 - Memo endings: only a `KEYWORD` stop removes audio (the stop phrase); timeouts, user/service stops and errors keep every captured frame. Finalize exactly once in `MemoTriggerDetector.finalizeRecording`.
 - Accuracy claims need measurements from `WakePhraseEvaluationTest` (synthetic fixtures; say so).
+- Speech-to-text: whisper.cpp from the pinned submodule `third_party/whisper.cpp`, built with NDK r28c; bundled model `assets/models/ggml-base-q5_0.bin` (MIT, reproducible with `scripts/whisper-model/build-bundled-model.sh`, SHA-256 pinned in `SpeechModelStore`). Transcribe only on request or with automatic transcription enabled, on the background worker; never modify the WAV; keep previous text on failure. No model downloads (no `INTERNET`); extra models only by user file import with validation. Keep the wake-phrase detector lightweight and separate from transcription.
+- Levels are digital (dBFS); never label them dB SPL. The optional wake-phrase minimum level applies to the matched phrase, identically for start and stop, and never removes memo audio.
 - Recording controls (dashboard button, notification, tile, shortcuts) go through `AudioMonitoringService` start/stop/toggle actions; background controls only act while monitoring runs. Shortcuts are off by default; the accessibility service only filters key events (no window content). Never show app content over the lock screen. See `docs/SHORTCUTS_AND_LOCK_SCREEN.md`.
 - Microphone: only one owner at a time via `MicrophoneArbiter`. Settings phrase recordings go through `PhraseCaptureCoordinator` (stop monitoring → confirm release → record → restore unless the user changed monitoring). Dashboard status must reflect `AudioMonitoringService.engineState`, not just whether the service exists.
 
@@ -46,6 +48,7 @@ Architecture, persistence rules and pipelines: `ARCHITECTURE.md`, `docs/WAKE_PHR
 - Needs JDK 17+ and Android SDK 35 (`local.properties` → `sdk.dir`). Maven Central may answer HTTP 429: retry with backoff.
 - Gradle build cache is on: use `--no-build-cache --rerun-tasks` when re-running tests with changed environment variables.
 - Instrumented tests need an emulator/device; if none is available, say so.
+- Clone with submodules (`git submodule update --init`). `WhisperNativeHostTest` runs the real engine on the JVM after `scripts/host-whisper-jni/build.sh` (skipped otherwise).
 - Report results truthfully: never claim a build, test, migration or device behaviour that was not actually verified.
 
 ## Working conventions

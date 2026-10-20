@@ -149,14 +149,30 @@ fun GuideTab() {
                 )
             ),
             GuideSection(
+                id = "sec_transcription",
+                title = "Speech-to-Text on Your Phone",
+                category = "5. Transcription",
+                summary = "Turn memos into text without any internet connection.",
+                content = """
+                    Voice Memo includes a speech-recognition model (OpenAI Whisper "base", multilingual) that runs entirely on your phone with whisper.cpp. Tap Transcribe on a memo in History; you can edit or delete the text afterwards. The recording itself is never changed.
+
+                    Transcription only runs when you ask for it, unless you turn on "Transcribe new memos automatically" in Settings. It runs in the background at low priority; a long memo can take a while on older phones.
+                """.trimIndent(),
+                tips = listOf(
+                    "Choose the language in Settings → Speech-to-Text: it is more accurate than automatic detection.",
+                    "\"Fast\" quality is quicker; \"Accurate\" (default) makes fewer mistakes.",
+                    "Optional: import a larger or smaller whisper.cpp model file (ggml .bin) in Settings. The included model always stays available."
+                )
+            ),
+            GuideSection(
                 id = "sec_privacy_foss",
                 title = "100% Offline, Privacy-First & FOSS",
-                category = "5. Privacy & Offline FOSS",
+                category = "6. Privacy & Offline FOSS",
                 summary = "Your voice recordings never leave your device. Zero cloud, zero tracking.",
                 content = """
                     Voice Memo is built according to strict Free and Open Source Software (FOSS) principles and privacy standards:
                     
-                    - All audio processing (RMS, DSP, FFT, Keyword Spotting) runs 100% locally on your device CPU.
+                    - All audio processing (levels, noise suppression, wake phrase, speech-to-text) runs locally on your device CPU.
                     - No audio is ever uploaded to the cloud or third-party servers.
                     - No telemetry, analytics, or advertising SDKs.
                     - Standard open formats: Audio is stored as standard 16-bit PCM WAV.

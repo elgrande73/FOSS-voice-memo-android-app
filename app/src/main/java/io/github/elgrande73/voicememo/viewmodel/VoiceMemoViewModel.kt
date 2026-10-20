@@ -47,6 +47,12 @@ import io.github.elgrande73.voicememo.playback.MemoAudioOutput
 import io.github.elgrande73.voicememo.playback.MemoPlaybackSequencer
 import io.github.elgrande73.voicememo.playback.PlaybackCue
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
+import io.github.elgrande73.voicememo.transcription.SpeechModelStore
+import io.github.elgrande73.voicememo.transcription.Transcription
+import io.github.elgrande73.voicememo.transcription.TranscriptionJobState
+import io.github.elgrande73.voicememo.transcription.TranscriptionQuality
+import io.github.elgrande73.voicememo.transcription.TranscriptionSettings
+import io.github.elgrande73.voicememo.transcription.TranscriptionStatus
 import io.github.elgrande73.voicememo.settings.WakePhraseLevel
 import io.github.elgrande73.voicememo.shortcuts.HardwareGesture
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
@@ -1174,8 +1180,136 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setSpeechToTextEnabled(enabled: Boolean) {
         _speechToTextEnabled.value = enabled
-        prefs.edit().putBoolean("speechToTextEnabled", enabled).apply()
+        prefs.edit().putBoolean(PreferenceKeys.SPEECH_TO_TEXT_ENABLED, enabled).apply()
         restartServiceIfRunning()
+    }
+
+    // --- ON-DEVICE TRANSCRIPTION ---
+
+    private val transcriptionManager by lazy { Transcription.manager(context) }
+    private val modelStore by lazy { Transcription.modelStore(context) }
+
+    /** Queue/progress state per memo id (memos not listed are idle). */
+    val transcriptionJobs: StateFlow<Map<Int, TranscriptionJobState>> get() = transcriptionManager.jobs
+
+    private val _transcriptionLanguage = MutableStateFlow<String>(
+        prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, null) ?: TranscriptionSettings.AUTO_LANGUAGE
+    )
+    val transcriptionLanguage: StateFlow<String> = _transcriptionLanguage.asStateFlow()
+
+    private val _transcriptionQuality = MutableStateFlow<TranscriptionQuality>(Transcription.settings(context).quality)
+    val transcriptionQuality: StateFlow<TranscriptionQuality> = _transcriptionQuality.asStateFlow()
+
+    private val _speechModels = MutableStateFlow<List<SpeechModelSummary>>(emptyList())
+    val speechModels: StateFlow<List<SpeechModelSummary>> = _speechModels.asStateFlow()
+
+    private val _activeSpeechModelId = MutableStateFlow<String>(prefs.getString(SpeechModelStore.PREF_ACTIVE_MODEL, null) ?: SpeechModelStore.BUNDLED_ID)
+    val activeSpeechModelId: StateFlow<String> = _activeSpeechModelId.asStateFlow()
+
+    private val _modelMessage = MutableStateFlow<String?>(null)
+    val modelMessage: StateFlow<String?> = _modelMessage.asStateFlow()
+
+    private val _modelImportRunning = MutableStateFlow(false)
+    val modelImportRunning: StateFlow<Boolean> = _modelImportRunning.asStateFlow()
+
+    fun transcribeNote(note: VoiceNote) = transcriptionManager.enqueue(note.id)
+
+    fun cancelTranscription(note: VoiceNote) = transcriptionManager.cancel(note.id)
+
+    /** Saves a corrected transcript (the audio is not changed). */
+    fun editTranscript(note: VoiceNote, text: String) {
+        transcriptionManager.clearState(note.id)
+        viewModelScope.launch(Dispatchers.IO) {
+            val trimmed = text.trim()
+            if (trimmed.isEmpty()) {
+                database.voiceNoteDao().updateTranscription(note.id, null, TranscriptionStatus.SKIPPED)
+            } else {
+                database.voiceNoteDao().updateTranscription(note.id, trimmed, TranscriptionStatus.COMPLETED)
+            }
+        }
+    }
+
+    /** Removes only the transcript; the recording stays. */
+    fun deleteTranscript(note: VoiceNote) {
+        transcriptionManager.cancel(note.id)
+        transcriptionManager.clearState(note.id)
+        viewModelScope.launch(Dispatchers.IO) {
+            database.voiceNoteDao().updateTranscription(note.id, null, TranscriptionStatus.SKIPPED)
+        }
+    }
+
+    fun setTranscriptionLanguage(code: String) {
+        _transcriptionLanguage.value = code
+        prefs.edit().putString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, code).apply()
+    }
+
+    fun setTranscriptionQuality(quality: TranscriptionQuality) {
+        _transcriptionQuality.value = quality
+        prefs.edit().putString(PreferenceKeys.TRANSCRIPTION_QUALITY, quality.name).apply()
+    }
+
+    fun refreshSpeechModels() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = mutableListOf<SpeechModelSummary>()
+            list += SpeechModelSummary(
+                SpeechModelStore.BUNDLED_ID, SpeechModelStore.BUNDLED_NAME,
+                "Whisper base, multilingual, ${SpeechModelStore.BUNDLED_SIZE / 1_000_000} MB", bundled = true
+            )
+            modelStore.importedModels().forEach { list += SpeechModelSummary(it.id, it.displayName, it.description, bundled = false) }
+            _speechModels.value = list
+            _activeSpeechModelId.value = modelStore.activeModelId.takeIf { id -> list.any { it.id == id } } ?: SpeechModelStore.BUNDLED_ID
+        }
+    }
+
+    fun selectSpeechModel(id: String) {
+        modelStore.activeModelId = id
+        _activeSpeechModelId.value = id
+        transcriptionManager.releaseModel()
+    }
+
+    fun deleteSpeechModel(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (modelStore.delete(id)) {
+                transcriptionManager.releaseModel()
+                _modelMessage.value = "Model removed."
+            }
+            refreshSpeechModels()
+        }
+    }
+
+    /** Imports a whisper.cpp model file chosen by the user (no network access involved). */
+    fun importSpeechModel(uri: android.net.Uri) {
+        if (_modelImportRunning.value) return
+        _modelImportRunning.value = true
+        _modelMessage.value = "Checking the model…"
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val resolver = context.contentResolver
+                var name = ""
+                var size: Long? = null
+                resolver.query(uri, null, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val n = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        val s = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                        if (n >= 0) name = cursor.getString(n) ?: ""
+                        if (s >= 0 && !cursor.isNull(s)) size = cursor.getLong(s)
+                    }
+                }
+                val result = resolver.openInputStream(uri)?.use { input ->
+                    modelStore.import(input, name.removeSuffix(".bin"), size) { file -> Transcription.engine(context).canLoad(file) }
+                } ?: SpeechModelStore.ImportResult.Rejected("The file could not be opened.")
+                _modelMessage.value = when (result) {
+                    is SpeechModelStore.ImportResult.Imported -> "Imported ${result.model.displayName} (${result.model.description}). Select it to use it."
+                    is SpeechModelStore.ImportResult.Rejected -> result.reason
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Model import failed", e)
+                _modelMessage.value = "The model could not be imported."
+            } finally {
+                _modelImportRunning.value = false
+                refreshSpeechModels()
+            }
+        }
     }
 
     fun setSelectedAudioInput(device: AudioInputDevice) {
@@ -1252,3 +1386,6 @@ private fun WakePhraseSample.toSummary() = WakePhraseSampleSummary(
     phraseDurationMs = phraseDurationMs,
     legacyFeatures = TemplateKeywordDetector().apply { loadTemplate(templateBytes) }.isLegacyTemplate
 )
+
+/** A speech-to-text model as shown in Settings. */
+data class SpeechModelSummary(val id: String, val name: String, val description: String, val bundled: Boolean)

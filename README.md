@@ -18,6 +18,8 @@ The default wake phrase is **"Ciao Linda"**.
 - **Rolling pre-trigger buffer**: keeps the start of your sentence.
 - **Playback queue**: playing a memo from the list automatically continues with the next memo of the list you are viewing (filters and search respected), framed by short beginning and ending chimes.
 - **Recording controls**: a large Quick Memo / Stop Memo button at the bottom of the dashboard; Start/Stop from the lock screen through the monitoring notification and a Quick Settings tile; optional volume-button and Bluetooth/USB keyboard shortcuts (see [`docs/SHORTCUTS_AND_LOCK_SCREEN.md`](docs/SHORTCUTS_AND_LOCK_SCREEN.md) for what Android allows).
+- **On-device speech-to-text**: transcribe memos with the bundled multilingual Whisper model (works immediately after installation, no account, no download); edit, retry or delete transcripts; optional automatic transcription.
+- **Live audio level**: the dashboard shows the real microphone level (dBFS, about 10 updates per second) while monitoring, and an optional *Minimum audio level* can be required for the wake phrase (start and stop alike).
 - **Recording chimes**: optional sounds when a recording starts and stops.
 - **Audio routing**: built-in microphone, USB audio and Bluetooth headsets.
 - **Local storage & export**: 16-bit PCM WAV files indexed in a local Room database; search, favorites, playback speed, ZIP export.
@@ -45,7 +47,7 @@ Changing the application ID is a deliberate breaking change. Android treats Voic
 ## 🔒 Privacy & Permissions
 
 - **No network access**: the app does not request the `INTERNET` permission and contains no networking libraries, analytics, trackers or ads.
-- **Optional transcription** (off by default): uses the device's system speech-recognition service (`android.speech.SpeechRecognizer`). That service is provided by the device (on many phones a proprietary service) and may itself use the network; the app requests offline recognition (`EXTRA_PREFER_OFFLINE`). *Known limitation:* the current implementation listens to the microphone after a memo is saved instead of transcribing the saved file.
+- **Speech-to-text on the device**: memos are transcribed with whisper.cpp and the included OpenAI Whisper "base" model (MIT), on the phone, from the saved recording; nothing is sent anywhere. Transcription runs only when you tap *Transcribe* (or for new memos if you turn on automatic transcription). Further models can be imported from a file; the app never downloads anything. Details and measurements: [`docs/TRANSCRIPTION.md`](docs/TRANSCRIPTION.md).
 - **Optional accessibility service** ("Voice Memo recording shortcuts", off until you enable it in Android's settings): only checks key presses for your configured shortcut so it works in other apps and on the lock screen; it requests no accessibility events and cannot read screen content or typed text.
 - **Lock screen**: while monitoring runs, anyone holding the locked phone can start or stop a memo from the notification or the Quick Settings tile (turn this off under *Settings → Shortcuts & Lock Screen*). Memos can only be listened to after unlocking.
 - **Backups**: Android's standard app backup is enabled (`allowBackup`), so memos and settings can be included in device backups configured by the user.
@@ -66,6 +68,14 @@ Changing the application ID is a deliberate breaking change. Android treats Voic
 - **Kotlin** & **Jetpack Compose** (Material 3)
 - **Room** (local database), **Kotlin Coroutines & Flow**
 - **Android AudioRecord / AudioTrack / MediaPlayer** (platform APIs)
+- **whisper.cpp** (MIT, git submodule `third_party/whisper.cpp`, compiled with the NDK) for on-device speech-to-text
+
+### Building
+```bash
+git clone --recurse-submodules https://github.com/elgrande73/FOSS-voice-memo-android-app.git
+# or, in an existing clone: git submodule update --init
+./gradlew assembleRelease   # needs Android SDK 35, NDK 28.2.13676358 and CMake 3.31.6 (installed by Gradle/sdkmanager)
+```
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the architecture, data persistence rules, the match-confidence mapping and playback sequencing.
 

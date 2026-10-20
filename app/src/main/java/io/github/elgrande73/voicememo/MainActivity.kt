@@ -60,6 +60,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -125,6 +127,10 @@ import io.github.elgrande73.voicememo.viewmodel.VoiceMemoViewModel
 import io.github.elgrande73.voicememo.viewmodel.VoiceNoteFilter
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import io.github.elgrande73.voicememo.settings.WakePhraseLevel
+import io.github.elgrande73.voicememo.transcription.TranscriptionJobState
+import io.github.elgrande73.voicememo.transcription.TranscriptionQuality
+import io.github.elgrande73.voicememo.transcription.TranscriptionSettings
+import io.github.elgrande73.voicememo.transcription.TranscriptionStatus
 import io.github.elgrande73.voicememo.shortcuts.HardwareGesture
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
 import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutAccessibilityService
@@ -941,6 +947,218 @@ fun LiveLevelCard(
     }
 }
 
+/** Transcript of a memo with its on-device transcription status and actions. */
+@Composable
+fun TranscriptSection(
+    note: VoiceNote,
+    job: TranscriptionJobState?,
+    onTranscribe: () -> Unit,
+    onCancel: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val transcript = note.transcriptionText
+    Column(modifier = Modifier.fillMaxWidth().testTag("transcript_section_${note.id}")) {
+        if (transcript != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = transcript.ifBlank { "(no speech recognised)" },
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(8.dp).testTag("transcript_text_${note.id}")
+                )
+            }
+        }
+        val status = when {
+            job == TranscriptionJobState.Running -> "Transcribing on this device…"
+            job == TranscriptionJobState.Queued -> "Waiting to be transcribed…"
+            job is TranscriptionJobState.Failed -> "Transcription failed: ${job.message}"
+            note.transcriptionStatus == TranscriptionStatus.FAILED -> "The last transcription failed."
+            else -> null
+        }
+        status?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (job is TranscriptionJobState.Failed || note.transcriptionStatus == TranscriptionStatus.FAILED) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.padding(top = 4.dp).testTag("transcript_status_${note.id}")
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (job == TranscriptionJobState.Running || job == TranscriptionJobState.Queued) {
+                TextButton(onClick = onCancel, modifier = Modifier.testTag("transcript_cancel_${note.id}")) { Text("Cancel") }
+            } else {
+                val failed = job is TranscriptionJobState.Failed || note.transcriptionStatus == TranscriptionStatus.FAILED
+                TextButton(onClick = onTranscribe, modifier = Modifier.testTag("transcript_start_${note.id}")) {
+                    Text(
+                        when {
+                            failed -> "Retry Transcription"
+                            transcript != null -> "Transcribe Again"
+                            else -> "Transcribe"
+                        }
+                    )
+                }
+                if (transcript != null) {
+                    TextButton(onClick = onEdit, modifier = Modifier.testTag("transcript_edit_${note.id}")) { Text("Edit") }
+                    TextButton(onClick = onDelete, modifier = Modifier.testTag("transcript_delete_${note.id}")) { Text("Delete Text") }
+                }
+            }
+        }
+    }
+}
+
+/** Languages offered in Settings (Whisper supports more; "auto" detects the language per memo). */
+private val TRANSCRIPTION_LANGUAGES = listOf(
+    TranscriptionSettings.AUTO_LANGUAGE to "Automatic", "it" to "Italiano", "en" to "English", "de" to "Deutsch",
+    "fr" to "Français", "es" to "Español", "pt" to "Português", "nl" to "Nederlands", "pl" to "Polski",
+    "cs" to "Čeština", "sv" to "Svenska", "da" to "Dansk", "no" to "Norsk", "fi" to "Suomi", "ro" to "Română",
+    "hu" to "Magyar", "el" to "Ελληνικά", "tr" to "Türkçe", "ru" to "Русский", "uk" to "Українська"
+)
+
+/** Settings > Speech-to-Text: automatic transcription, language, quality and the speech model. */
+@Composable
+fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boolean) {
+    val language by viewModel.transcriptionLanguage.collectAsState()
+    val quality by viewModel.transcriptionQuality.collectAsState()
+    val models by viewModel.speechModels.collectAsState()
+    val activeModel by viewModel.activeSpeechModelId.collectAsState()
+    val modelMessage by viewModel.modelMessage.collectAsState()
+    val importing by viewModel.modelImportRunning.collectAsState()
+    var languageMenu by remember { mutableStateOf(false) }
+    var showLicenses by remember { mutableStateOf(false) }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { viewModel.importSpeechModel(it) }
+    }
+    LaunchedEffect(Unit) { viewModel.refreshSpeechModels() }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth().testTag("transcription_settings")
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = "Speech-to-Text (on this device)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                text = "Memos are transcribed on the phone with the included Whisper model; no audio or text leaves the device " +
+                    "and no internet connection is used. Tap Transcribe on a memo in History.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "Transcribe new memos automatically", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = "Off: only memos you choose are transcribed. Uses battery while it runs.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = autoTranscribe,
+                    onCheckedChange = { viewModel.setSpeechToTextEnabled(it) },
+                    modifier = Modifier.testTag("auto_transcribe_switch")
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = "Language", fontWeight = FontWeight.SemiBold)
+            Box {
+                OutlinedButton(onClick = { languageMenu = true }, modifier = Modifier.testTag("transcription_language")) {
+                    Text(TRANSCRIPTION_LANGUAGES.firstOrNull { it.first == language }?.second ?: language)
+                }
+                DropdownMenu(expanded = languageMenu, onDismissRequest = { languageMenu = false }) {
+                    TRANSCRIPTION_LANGUAGES.forEach { (code, label) ->
+                        DropdownMenuItem(text = { Text(label) }, onClick = { viewModel.setTranscriptionLanguage(code); languageMenu = false })
+                    }
+                }
+            }
+            Text(
+                text = "Choosing the language is more accurate than automatic detection.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = "Quality", fontWeight = FontWeight.SemiBold)
+            TranscriptionQuality.entries.forEach { q ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().clickable { viewModel.setTranscriptionQuality(q) }
+                ) {
+                    RadioButton(selected = quality == q, onClick = { viewModel.setTranscriptionQuality(q) })
+                    Text(q.title, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = "Speech model", fontWeight = FontWeight.SemiBold)
+            models.forEach { model ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().clickable { viewModel.selectSpeechModel(model.id) }.testTag("speech_model_${model.id}")
+                ) {
+                    RadioButton(selected = activeModel == model.id, onClick = { viewModel.selectSpeechModel(model.id) })
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(model.name, style = MaterialTheme.typography.bodyMedium)
+                        Text(model.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (!model.bundled) {
+                        TextButton(onClick = { viewModel.deleteSpeechModel(model.id) }) { Text("Remove") }
+                    }
+                }
+            }
+            OutlinedButton(
+                onClick = { importLauncher.launch(arrayOf("application/octet-stream", "*/*")) },
+                enabled = !importing,
+                modifier = Modifier.testTag("import_speech_model")
+            ) { Text(if (importing) "Checking model…" else "Import Model File…") }
+            Text(
+                text = "Optional: larger whisper.cpp models (ggml .bin, e.g. \"small\") are more accurate but slower and need " +
+                    "more memory; \"tiny\" is faster. Download one on a computer or in a browser, then import the file here. " +
+                    "The included model always stays available.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            modelMessage?.let {
+                Text(text = it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("speech_model_message"))
+            }
+            TextButton(onClick = { showLicenses = true }, modifier = Modifier.testTag("open_source_licenses")) { Text("Open-source licenses") }
+        }
+    }
+
+    if (showLicenses) {
+        val context = LocalContext.current
+        val notices = remember {
+            try {
+                context.assets.open("licenses/THIRD_PARTY_NOTICES.txt").bufferedReader().use { it.readText() }
+            } catch (e: Exception) {
+                "License information is not available."
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { showLicenses = false },
+            title = { Text("Open-source licenses") },
+            text = {
+                Text(
+                    text = notices,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                )
+            },
+            confirmButton = { TextButton(onClick = { showLicenses = false }) { Text("Close") } }
+        )
+    }
+}
+
 /** Height reserved at the bottom of the dashboard for [MemoRecordBar]. */
 val RECORD_BAR_HEIGHT = 140.dp
 
@@ -1107,6 +1325,9 @@ fun WakePhraseConfidenceGauge(
 
 @Composable
 fun HistoryScreen(viewModel: VoiceMemoViewModel) {
+    val transcriptionJobs by viewModel.transcriptionJobs.collectAsState()
+    var noteToEditTranscript by remember { mutableStateOf<VoiceNote?>(null) }
+    var transcriptDraft by remember { mutableStateOf("") }
     val notes by viewModel.filteredVoiceNotes.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val activeFilter by viewModel.activeFilter.collectAsState()
@@ -1332,27 +1553,22 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
                                 }
 
                                 Text(
-                                    text = "Peak: ${note.peakDb.toInt()} dB",
+                                    text = "Peak: ${Math.round(WakePhraseLevel.fromDetectorDb(note.peakDb))} dBFS",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
 
-                            // Transcription Box if available
-                            note.transcriptionText?.let { transcript ->
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Surface(
-                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        text = transcript,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        modifier = Modifier.padding(8.dp)
-                                    )
-                                }
-                            }
+                            // On-device transcript: status, text and actions
+                            Spacer(modifier = Modifier.height(8.dp))
+                            TranscriptSection(
+                                note = note,
+                                job = transcriptionJobs[note.id],
+                                onTranscribe = { viewModel.transcribeNote(note) },
+                                onCancel = { viewModel.cancelTranscription(note) },
+                                onEdit = { noteToEditTranscript = note; transcriptDraft = note.transcriptionText ?: "" },
+                                onDelete = { viewModel.deleteTranscript(note) }
+                            )
 
                             Spacer(modifier = Modifier.height(12.dp))
 
@@ -1431,6 +1647,29 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
                 item { Spacer(modifier = Modifier.height(24.dp)) }
             }
         }
+    }
+
+    // Transcript editor
+    noteToEditTranscript?.let { note ->
+        AlertDialog(
+            onDismissRequest = { noteToEditTranscript = null },
+            title = { Text("Edit Transcript") },
+            text = {
+                OutlinedTextField(
+                    value = transcriptDraft,
+                    onValueChange = { transcriptDraft = it },
+                    minLines = 3,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { ShortcutRuntime.textInputFocused = it.isFocused }
+                        .testTag("transcript_editor")
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.editTranscript(note, transcriptDraft); noteToEditTranscript = null }) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { noteToEditTranscript = null }) { Text("Cancel") } }
+        )
     }
 
     // Rename Dialog
@@ -1998,28 +2237,10 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                         onCheckedChange = { viewModel.setFeedbackSoundsEnabled(it) }
                     )
                 }
-
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(text = "Speech-to-Text Transcription", fontWeight = FontWeight.SemiBold)
-                        Text(
-                            text = "Runs on-device transcription asynchronously when a memo is saved",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = speechToTextEnabled,
-                        onCheckedChange = { viewModel.setSpeechToTextEnabled(it) }
-                    )
-                }
             }
         }
+
+        TranscriptionSettingsCard(viewModel, speechToTextEnabled)
 
         ShortcutSettingsCard(viewModel)
 

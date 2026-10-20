@@ -6,6 +6,29 @@ First release under the new name **Voice Memo** and the new application ID `io.g
 (previously **Ciao Linda**, `com.aistudio.ciaolinda`). Android installs it as a separate app; data of the old app is
 not accessible to it (see README, "New application identity").
 
+### Added (offline speech-to-text and audio level)
+- On-device transcription of saved memos with whisper.cpp (built from source) and the bundled multilingual OpenAI
+  Whisper "base" model (55 MB, MIT): transcribe, cancel, retry, edit and delete transcripts in History; optional
+  automatic transcription of new memos (off by default); language and quality settings; optional import of other
+  whisper.cpp model files (validated and test-loaded before use). No download, no network permission.
+  See `docs/TRANSCRIPTION.md`.
+- Optional *Minimum audio level* (dBFS) for the wake phrase, measured on the spoken phrase and applied identically to
+  starting and stopping. New installations: on, −50 dBFS; existing installations keep their previous level.
+
+### Fixed (monitoring and wake phrase)
+- The dashboard's audio level only moved while a memo was being recorded; it now shows the real microphone level
+  during monitoring (about 10 updates per second) and no stale value when there is no input.
+- Saying the wake phrase to stop a memo shortly after speaking failed more often than starting (synthetic benchmark,
+  0.2 s pause: 17/36 vs 25/36). Cause: noise-suppression gains opened by the memo speech closed too slowly. Now 22/36
+  (0.2 s pause) and equal to starting (25/36) after 0.5 s and 1 s pauses. The loudness check for stopping no longer
+  counts the preceding memo speech.
+
+### Changed
+- Levels are shown in dBFS (digital level) instead of an uncalibrated "dB" scale.
+- The device's system speech recogniser is no longer used (it listened to the microphone instead of transcribing the
+  saved memo and could be proprietary or online).
+- The app now contains native code for arm64-v8a, armeabi-v7a and x86_64 only; the release APK is about 68 MB.
+
 ### Added (recording controls)
 - Large round Quick Memo / Stop Memo button at the bottom centre of the dashboard (96 dp, distinct colour, symbol and
   label for start and stop; TalkBack labels).
