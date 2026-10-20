@@ -214,6 +214,20 @@ class StopBehaviorTest {
         assertTrue(detector.processFrame(loud).none { it is MemoDetectionEvent.RecordingCompleted })
     }
 
+    @Test
+    fun microphoneFailureOrShutdownKeepsEverythingCapturedSoFar() {
+        for (reason in listOf(RecordingStopReason.ERROR, RecordingStopReason.SERVICE_STOPPED)) {
+            val detector = scriptedDetector(matchOnCall = 1)
+            repeat(30) { detector.processFrame(loudFrame) }
+            val memo = detector.stopManualRecording(reason)!!
+            assertEquals(reason, memo.stopReason)
+            assertEquals(30, memo.audioChunks.size)
+            assertEquals(0, memo.removedStopPhraseFrames)
+            assertNull("exactly once", detector.stopManualRecording(reason))
+            assertNull(detector.finalizePendingStop())
+        }
+    }
+
     /** Matches on a chosen frame only, reporting a fixed matched-window length. */
     private class ScriptedKeywordDetector(private val matchOnCall: Int, private val windowFrames: Int) : KeywordDetector {
         var calls = 0

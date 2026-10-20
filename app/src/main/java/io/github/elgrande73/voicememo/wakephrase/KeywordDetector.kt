@@ -33,6 +33,15 @@ interface KeywordDetector {
     fun hasTemplate(): Boolean
     fun hasCustomTemplate(): Boolean
 
+    /**
+     * Uses all valid [templates] (one per enrolled sample) as references; returns how many were loaded.
+     * With none, the built-in default wake phrase is used.
+     */
+    fun loadTemplates(templates: List<ByteArray>): Int {
+        clearTemplate()
+        return if (templates.isNotEmpty() && loadTemplate(templates.first())) 1 else 0
+    }
+
     /** Removes an enrolled template so the built-in default wake phrase is used again. */
     fun clearTemplate()
 
@@ -76,7 +85,14 @@ class TemplateKeywordDetector(
     private val fftSize: Int = 512,
     private val numBands: Int = 16,
     private val frontEndConfig: FrontEndConfig = FrontEndConfig.DEFAULT,
-    private val aggregation: ReferenceAggregation = DEFAULT_AGGREGATION
+    private val aggregation: ReferenceAggregation = DEFAULT_AGGREGATION,
+    /**
+     * Weight of the worst-matching 3-step segment of the alignment path in the distance (0 = plain mean distance).
+     * See docs/WAKE_PHRASE_DETECTION.md for the evaluation.
+     */
+    private val localMismatchWeight: Float = DEFAULT_LOCAL_MISMATCH_WEIGHT,
+    /** Distance that maps to a score of 0 (score = 1 − distance / distanceScale). */
+    private val distanceScale: Float = DEFAULT_DISTANCE_SCALE
 ) : KeywordDetector {
 
     /** One enrolled sample: its feature sequence and the feature extractor it was recorded with. */
@@ -143,7 +159,7 @@ class TemplateKeywordDetector(
      * built-in default wake phrase is used.
      */
     @Synchronized
-    fun loadTemplates(templates: List<ByteArray>): Int {
+    override fun loadTemplates(templates: List<ByteArray>): Int {
         references = templates.mapNotNull { parseTemplate(it) }.take(MAX_REFERENCES)
         slidingWindow.clear()
         legacyWindow.clear()
@@ -161,11 +177,12 @@ class TemplateKeywordDetector(
             }
             val frameCount = buffer.int
             val bands = buffer.int
-            if (frameCount <= 0 || frameCount > 200 || bands != numBands) return null
-            if (templateBytes.size < 12 + frameCount * numBands * 4) return null
+            // 16 shape values, optionally followed by the speech-presence value (17); legacy templates have 16
+            if (frameCount <= 0 || frameCount > 200 || bands !in numBands..numBands + 1 || (legacy && bands != numBands)) return null
+            if (templateBytes.size < 12 + frameCount * bands * 4) return null
             val template = ArrayList<FloatArray>(frameCount)
             for (f in 0 until frameCount) {
-                val vec = FloatArray(numBands) { buffer.float }
+                val vec = FloatArray(bands) { buffer.float }
                 if (vec.any { it.isNaN() || it.isInfinite() }) return null
                 template.add(vec)
             }
@@ -282,11 +299,25 @@ class TemplateKeywordDetector(
                 if (cost < Float.MAX_VALUE / 4f) {
                     val normalizedDist = cost / stepCount
                     // Confidence scale used by the user-facing match confidence threshold (percent / 100)
-                    val conf = (1.0f - (normalizedDist / 0.40f)).coerceIn(0.0f, 1.0f)
+                    val conf = (1.0f - (normalizedDist / distanceScale)).coerceIn(0.0f, 1.0f)
                     if (best == null || conf > best.confidence) best = ReferenceMatch(conf, normalizedDist, candLen)
                 }
             }
             candLen = if (candLen < maxLen && candLen + 2 > maxLen) maxLen else candLen + 2
+        }
+        if (best != null && localMismatchWeight > 0f) {
+            // Penalise a locally bad alignment (e.g. one different syllable) that the mean distance dilutes
+            val path = dtwPathCosts(template, window.subList(window.size - best.windowFrames, window.size))
+            if (path != null && path.size >= LOCAL_SEGMENT_STEPS) {
+                var worst = 0f
+                for (i in 0..path.size - LOCAL_SEGMENT_STEPS) {
+                    var sum = 0f
+                    for (k in 0 until LOCAL_SEGMENT_STEPS) sum += path[i + k]
+                    worst = maxOf(worst, sum / LOCAL_SEGMENT_STEPS)
+                }
+                val distance = best.distance + localMismatchWeight * (worst - best.distance).coerceAtLeast(0f)
+                best = ReferenceMatch((1.0f - distance / distanceScale).coerceIn(0f, 1f), distance, best.windowFrames)
+            }
         }
         return best
     }
@@ -333,57 +364,10 @@ class TemplateKeywordDetector(
         return features
     }
 
-    private fun computeDtwDistance(template: List<FloatArray>, input: List<FloatArray>): Pair<Float, Int> {
-        val n = template.size
-        val m = input.size
-        val maxDist = Float.MAX_VALUE / 2f
-        val dtw = Array(n + 1) { FloatArray(m + 1) { maxDist } }
-        val steps = Array(n + 1) { IntArray(m + 1) { 0 } }
-        dtw[0][0] = 0f
+    private fun computeDtwDistance(template: List<FloatArray>, input: List<FloatArray>): Pair<Float, Int> =
+        dtwDistance(template, input)
 
-        // Sakoe-Chiba corridor prevents pathological warping from single sounds/breaths
-        val corridorWidth = maxOf(4, (n * 0.35).toInt())
-
-        for (i in 1..n) {
-            val expectedJ = (i.toFloat() / n.toFloat() * m.toFloat()).toInt()
-            val minJ = maxOf(1, expectedJ - corridorWidth)
-            val maxJ = minOf(m, expectedJ + corridorWidth)
-
-            for (j in minJ..maxJ) {
-                val cost = euclideanDistance(template[i - 1], input[j - 1])
-                var minPrev = dtw[i - 1][j - 1]
-                var prevStep = steps[i - 1][j - 1]
-
-                if (dtw[i - 1][j] < minPrev) {
-                    minPrev = dtw[i - 1][j]
-                    prevStep = steps[i - 1][j]
-                }
-                if (dtw[i][j - 1] < minPrev) {
-                    minPrev = dtw[i][j - 1]
-                    prevStep = steps[i][j - 1]
-                }
-
-                if (minPrev < maxDist) {
-                    dtw[i][j] = minPrev + cost
-                    steps[i][j] = prevStep + 1
-                }
-            }
-        }
-
-        val totalCost = dtw[n][m]
-        val totalSteps = maxOf(1, steps[n][m])
-        return Pair(totalCost, totalSteps)
-    }
-
-    private fun euclideanDistance(a: FloatArray, b: FloatArray): Float {
-        var sum = 0f
-        val len = min(a.size, b.size)
-        for (i in 0 until len) {
-            val diff = a[i] - b[i]
-            sum += diff * diff
-        }
-        return sqrt(sum)
-    }
+    private fun euclideanDistance(a: FloatArray, b: FloatArray): Float = featureDistance(a, b)
 
     private fun buildDefaultCiaoLindaTemplate(): List<FloatArray> {
         val audioChunks = generateCanonicalCiaoLindaAudio(sampleRate = 16000, amplitude = 12000.0)
@@ -392,6 +376,101 @@ class TemplateKeywordDetector(
     }
 
     companion object {
+        /** DTW path cost and path length between two feature sequences (Sakoe-Chiba corridor). */
+        fun dtwDistance(template: List<FloatArray>, input: List<FloatArray>): Pair<Float, Int> {
+            val n = template.size
+            val m = input.size
+            val maxDist = Float.MAX_VALUE / 2f
+            val dtw = Array(n + 1) { FloatArray(m + 1) { maxDist } }
+            val steps = Array(n + 1) { IntArray(m + 1) { 0 } }
+            dtw[0][0] = 0f
+
+            // Sakoe-Chiba corridor prevents pathological warping from single sounds/breaths
+            val corridorWidth = maxOf(4, (n * 0.35).toInt())
+
+            for (i in 1..n) {
+                val expectedJ = (i.toFloat() / n.toFloat() * m.toFloat()).toInt()
+                val minJ = maxOf(1, expectedJ - corridorWidth)
+                val maxJ = minOf(m, expectedJ + corridorWidth)
+
+                for (j in minJ..maxJ) {
+                    val cost = featureDistance(template[i - 1], input[j - 1])
+                    var minPrev = dtw[i - 1][j - 1]
+                    var prevStep = steps[i - 1][j - 1]
+
+                    if (dtw[i - 1][j] < minPrev) {
+                        minPrev = dtw[i - 1][j]
+                        prevStep = steps[i - 1][j]
+                    }
+                    if (dtw[i][j - 1] < minPrev) {
+                        minPrev = dtw[i][j - 1]
+                        prevStep = steps[i][j - 1]
+                    }
+
+                    if (minPrev < maxDist) {
+                        dtw[i][j] = minPrev + cost
+                        steps[i][j] = prevStep + 1
+                    }
+                }
+            }
+
+            val totalCost = dtw[n][m]
+            val totalSteps = maxOf(1, steps[n][m])
+            return Pair(totalCost, totalSteps)
+        }
+
+        fun featureDistance(a: FloatArray, b: FloatArray): Float {
+            var sum = 0f
+            val len = min(a.size, b.size)
+            for (i in 0 until len) {
+                val diff = a[i] - b[i]
+                sum += diff * diff
+            }
+            return sqrt(sum)
+        }
+
+
+        /** Per-step frame distances along the optimal DTW path (same recurrence as [dtwDistance]), or null. */
+        fun dtwPathCosts(template: List<FloatArray>, input: List<FloatArray>): FloatArray? {
+            val n = template.size
+            val m = input.size
+            val maxDist = Float.MAX_VALUE / 2f
+            val dtw = Array(n + 1) { FloatArray(m + 1) { maxDist } }
+            val from = Array(n + 1) { ByteArray(m + 1) }
+            dtw[0][0] = 0f
+            val corridorWidth = maxOf(4, (n * 0.35).toInt())
+            for (i in 1..n) {
+                val expectedJ = (i.toFloat() / n.toFloat() * m.toFloat()).toInt()
+                for (j in maxOf(1, expectedJ - corridorWidth)..minOf(m, expectedJ + corridorWidth)) {
+                    var minPrev = dtw[i - 1][j - 1]
+                    var dir: Byte = 0
+                    if (dtw[i - 1][j] < minPrev) { minPrev = dtw[i - 1][j]; dir = 1 }
+                    if (dtw[i][j - 1] < minPrev) { minPrev = dtw[i][j - 1]; dir = 2 }
+                    if (minPrev < maxDist) {
+                        dtw[i][j] = minPrev + featureDistance(template[i - 1], input[j - 1])
+                        from[i][j] = dir
+                    }
+                }
+            }
+            if (dtw[n][m] >= maxDist) return null
+            val costs = ArrayList<Float>()
+            var i = n
+            var j = m
+            while (i > 0 && j > 0) {
+                costs += featureDistance(template[i - 1], input[j - 1])
+                when (from[i][j].toInt()) {
+                    0 -> { i--; j-- }
+                    1 -> i--
+                    else -> j--
+                }
+            }
+            return costs.reversed().toFloatArray()
+        }
+
+        const val LOCAL_SEGMENT_STEPS = 3
+        const val DEFAULT_LOCAL_MISMATCH_WEIGHT = 0f
+        const val DEFAULT_DISTANCE_SCALE = 0.40f
+
         /** Maximum number of enrolled samples (references) of the wake phrase. */
         const val MAX_REFERENCES = 5
         val DEFAULT_AGGREGATION = ReferenceAggregation.MAX
@@ -412,16 +491,46 @@ class TemplateKeywordDetector(
          * Returns null if no phrase was found.
          */
         fun extractPhraseFeatures(chunks: List<ShortArray>, config: FrontEndConfig = FrontEndConfig.DEFAULT): List<FloatArray>? {
+            val analysis = analyzeRecording(chunks, config)
+            val span = analysis.speechSpan ?: return null
+            return analysis.features.subList(span.first, span.last + 1).toList()
+        }
+
+        /** Per-frame features and levels of a phrase recording, with the detected speech span (see [findSpeechSpan]). */
+        class RecordingAnalysis(
+            val features: List<FloatArray>,
+            val levelsDbfs: FloatArray,
+            val clippedSamples: IntArray,
+            val noiseFloorDbfs: Float,
+            val speechSpan: IntRange?
+        )
+
+        fun analyzeRecording(chunks: List<ShortArray>, config: FrontEndConfig = FrontEndConfig.DEFAULT): RecordingAnalysis {
             val enrollFrontEnd = WakePhraseFrontEnd(config)
             chunks.forEach { enrollFrontEnd.process(it) } // prime the noise floor
             val features = ArrayList<FloatArray>(chunks.size)
             val levels = FloatArray(chunks.size)
+            val clipped = IntArray(chunks.size)
             chunks.forEachIndexed { i, chunk ->
                 features += enrollFrontEnd.process(chunk)
                 levels[i] = enrollFrontEnd.diagnostics.inputRmsDbfs
+                clipped[i] = enrollFrontEnd.diagnostics.clippedSamples
             }
-            val span = findSpeechSpan(levels, enrollFrontEnd.noiseFloorDbfs ?: -120f) ?: return null
-            return features.subList(span.first, span.last + 1).toList()
+            val noise = enrollFrontEnd.noiseFloorDbfs ?: -120f
+            return RecordingAnalysis(features, levels, clipped, noise, findSpeechSpan(levels, noise))
+        }
+
+        /** Parses a serialized template into its feature sequence, or null if invalid (legacy flag ignored). */
+        fun parseFeatures(templateBytes: ByteArray): List<FloatArray>? = try {
+            val buffer = ByteBuffer.wrap(templateBytes).order(ByteOrder.LITTLE_ENDIAN)
+            val magic = buffer.int
+            val frames = buffer.int
+            val bands = buffer.int
+            if ((magic != MAGIC_FRONT_END_TEMPLATE && magic != MAGIC_LEGACY_TEMPLATE) || frames !in 1..200 || bands <= 0 ||
+                templateBytes.size < 12 + frames * bands * 4
+            ) null else List(frames) { FloatArray(bands) { buffer.float } }
+        } catch (_: Exception) {
+            null
         }
 
         const val MAGIC_LEGACY_TEMPLATE = 0x4349414F // 'CIAO': legacy features

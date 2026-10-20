@@ -40,15 +40,15 @@ class WakePhraseStoreTest {
     @Test
     fun enrolledWakePhraseSurvivesRestart() {
         val template = enrolledTemplate()
-        WakePhraseStore(filesDir).saveTemplate(template)
+        WakePhraseStore(filesDir).addSample(template, 800L, -10f)
 
         // A new store instance simulates an application restart
         val reloaded = WakePhraseStore(filesDir)
-        assertTrue(reloaded.hasTemplate())
-        assertArrayEquals(template, reloaded.loadTemplate())
+        assertTrue(reloaded.hasSamples())
+        assertArrayEquals(template, reloaded.loadSampleTemplates().single())
 
         val detector = TemplateKeywordDetector()
-        assertTrue(detector.loadTemplate(reloaded.loadTemplate()!!))
+        assertEquals(1, detector.loadTemplates(reloaded.loadSampleTemplates()))
         assertTrue("Custom phrase must not be replaced by the default", detector.hasCustomTemplate())
     }
 
@@ -70,8 +70,8 @@ class WakePhraseStoreTest {
     @Test
     fun freshInstallationHasNoStoredWakePhraseData() {
         val store = WakePhraseStore(filesDir)
-        assertFalse(store.hasTemplate())
-        assertNull(store.loadTemplate())
+        assertFalse(store.hasSamples())
+        assertTrue(store.loadSamples().isEmpty())
         assertNull(store.loadTestRecording())
         assertNull(store.loadTestResult())
     }
@@ -80,23 +80,23 @@ class WakePhraseStoreTest {
     fun corruptTestDataIsIgnoredWithoutDeletingTheEnrolledPhrase() {
         val template = enrolledTemplate()
         val store = WakePhraseStore(filesDir)
-        store.saveTemplate(template)
+        store.addSample(template, 800L, -10f)
         val dir = File(filesDir, WakePhraseStore.DIRECTORY_NAME)
         File(dir, WakePhraseStore.TEST_RECORDING_FILE_NAME).writeBytes(byteArrayOf(1, 2, 3, 4, 5))
         File(dir, WakePhraseStore.TEST_RESULT_FILE_NAME).writeBytes(byteArrayOf(9))
 
         assertNull(store.loadTestRecording())
         assertNull(store.loadTestResult())
-        assertArrayEquals(template, store.loadTemplate())
+        assertArrayEquals(template, store.loadSampleTemplates().single())
         assertTrue(File(dir, WakePhraseStore.TEST_RECORDING_FILE_NAME).exists())
     }
 
     @Test
     fun corruptTemplateIsRejectedByDetectorWhichKeepsDefaultPhrase() {
         val store = WakePhraseStore(filesDir)
-        store.saveTemplate(byteArrayOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12))
+        store.addSample(byteArrayOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12), 800L, -10f)
         val detector = TemplateKeywordDetector()
-        assertFalse(detector.loadTemplate(store.loadTemplate()!!))
+        assertEquals(0, detector.loadTemplates(store.loadSampleTemplates()))
         assertFalse(detector.hasCustomTemplate())
         assertTrue(detector.hasTemplate())
     }
@@ -116,11 +116,11 @@ class WakePhraseStoreTest {
     @Test
     fun deletingEnrolledPhraseKeepsTestRecording() {
         val store = WakePhraseStore(filesDir)
-        store.saveTemplate(enrolledTemplate())
+        store.addSample(enrolledTemplate(), 800L, -10f)
         store.saveTestRecording(TemplateKeywordDetector.generateCanonicalCiaoLindaAudio())
-        store.deleteTemplate()
+        store.clearSamples()
 
-        assertFalse(store.hasTemplate())
+        assertFalse(store.hasSamples())
         assertNotNull(store.loadTestRecording())
     }
 }

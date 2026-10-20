@@ -33,9 +33,25 @@ object WakePhraseEvaluator {
         matchConfidenceThreshold: Float,
         activationThresholdDb: Float,
         frontEndConfig: FrontEndConfig = FrontEndConfig.DEFAULT
+    ): WakePhraseEvaluation = evaluate(frames, listOfNotNull(templateBytes), matchConfidenceThreshold, activationThresholdDb, frontEndConfig)
+
+    /** Evaluates against all enrolled samples ([templates]; empty = built-in default wake phrase). */
+    fun evaluate(
+        frames: List<ShortArray>,
+        templates: List<ByteArray>,
+        matchConfidenceThreshold: Float,
+        activationThresholdDb: Float,
+        frontEndConfig: FrontEndConfig = FrontEndConfig.DEFAULT,
+        aggregation: ReferenceAggregation = TemplateKeywordDetector.DEFAULT_AGGREGATION,
+        consecutiveMatchFrames: Int = MemoTriggerDetector.DEFAULT_CONSECUTIVE_MATCH_FRAMES,
+        localMismatchWeight: Float = TemplateKeywordDetector.DEFAULT_LOCAL_MISMATCH_WEIGHT,
+        distanceScale: Float = TemplateKeywordDetector.DEFAULT_DISTANCE_SCALE
     ): WakePhraseEvaluation {
-        fun newMatcher() = TemplateKeywordDetector(frontEndConfig = frontEndConfig).apply {
-            if (templateBytes != null) loadTemplate(templateBytes)
+        fun newMatcher() = TemplateKeywordDetector(
+            frontEndConfig = frontEndConfig, aggregation = aggregation, localMismatchWeight = localMismatchWeight,
+            distanceScale = distanceScale
+        ).apply {
+            loadTemplates(templates)
         }
 
         // Scoring pass: the matcher alone, every frame in order, never reset by a trigger
@@ -49,6 +65,7 @@ object WakePhraseEvaluator {
             detectionMode = DetectionMode.KEYWORD_ONLY
             thresholdDb = activationThresholdDb
             this.matchConfidenceThreshold = matchConfidenceThreshold
+            this.consecutiveMatchFrames = consecutiveMatchFrames
             reset(startMonitoring = true)
         }
         matcher.primeNoiseFloor(frames)

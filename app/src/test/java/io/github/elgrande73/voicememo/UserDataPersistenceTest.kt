@@ -102,13 +102,13 @@ class UserDataPersistenceTest {
         val detector = TemplateKeywordDetector()
         assertTrue(detector.recordTemplate(TemplateKeywordDetector.generateCanonicalCiaoLindaAudio(amplitude = 7000.0)))
         val template = detector.getTemplateData()!!
-        WakePhraseStore(app.filesDir).saveTemplate(template)
+        WakePhraseStore(app.filesDir).addSample(template, 800L, -10f)
 
         repeat(2) {
             val viewModel = VoiceMemoViewModel(app)
             assertTrue(viewModel.hasKeywordTemplate.value)
         }
-        assertArrayEquals(template, WakePhraseStore(app.filesDir).loadTemplate())
+        assertArrayEquals(template, WakePhraseStore(app.filesDir).loadSampleTemplates().single())
     }
 
     @Test

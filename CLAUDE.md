@@ -14,6 +14,9 @@ Architecture, persistence rules and pipelines: `ARCHITECTURE.md`, `docs/WAKE_PHR
 - Detector semantics: `score = clamp(1 − DTW distance / 0.40, 0, 1)` (similarity score, not a probability); match when `score ≥ percent / 100`. Do not rescale scores to make numbers look better.
 - Monitoring and the Settings phrase test must share one pipeline: `WakePhraseFrontEnd` → `TemplateKeywordDetector` → `MemoTriggerDetector` (test via `WakePhraseEvaluator`). Feed every 50 ms frame in order (`PcmFrameAssembler`); never gate frames before the matcher.
 - Noise handling stays conservative and validated by fixture tests (`WakePhraseNoiseRobustnessTest`); justify parameter changes with measurements on held-out conditions.
+- Wake-phrase samples are optional, max 5, matched with `ReferenceAggregation.MAX`; store features only, never raw enrollment audio, and keep them on the device.
+- Memo endings: only a `KEYWORD` stop removes audio (the stop phrase); timeouts, user/service stops and errors keep every captured frame. Finalize exactly once in `MemoTriggerDetector.finalizeRecording`.
+- Accuracy claims need measurements from `WakePhraseEvaluationTest` (synthetic fixtures; say so).
 - Microphone: only one owner at a time via `MicrophoneArbiter`. Settings phrase recordings go through `PhraseCaptureCoordinator` (stop monitoring → confirm release → record → restore unless the user changed monitoring). Dashboard status must reflect `AudioMonitoringService.engineState`, not just whether the service exists.
 
 ## Playback (mandatory)
@@ -22,7 +25,7 @@ Architecture, persistence rules and pipelines: `ARCHITECTURE.md`, `docs/WAKE_PHR
 
 ## Data integrity (mandatory)
 - Never delete or overwrite user data: memos, WAV files, settings, enrolled wake phrase, test recording/result.
-- Persisted identifiers are frozen: `voice_memo_preferences`, `voice_memo_database`, `filesDir/memos`, `filesDir/wake_phrase/*`.
+- Persisted identifiers are frozen: `voice_memo_preferences`, `voice_memo_database`, `filesDir/memos`, `filesDir/wake_phrase/*` (samples: `wake_phrase/samples/sample_<id>.bin`, magic `VMWS`; legacy `enrolled_template.bin` migrated once).
 - Room: schema exported to `app/schemas`; no destructive migration fallback. Every schema change needs a version bump, an explicit migration in `AppDatabase.MIGRATIONS` and a test.
 - Settings changes go through `SettingsMigrator` (versioned, idempotent, never replace values the user saved).
 

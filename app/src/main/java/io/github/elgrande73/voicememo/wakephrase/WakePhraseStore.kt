@@ -22,29 +22,134 @@ import java.nio.ByteOrder
 data class WakePhraseTestResult(val confidence: Float, val timestamp: Long)
 
 /**
+ * One enrolled recording of the wake phrase. Only derived features ([templateBytes]) and metadata are stored —
+ * never the audio itself.
+ *
+ * @param id Stable identifier (used to replace or delete this sample).
+ * @param phraseDurationMs Length of the detected phrase, or -1 if unknown (migrated from an earlier version).
+ * @param peakDbfs Peak level of the recording, or NaN if unknown.
+ */
+data class WakePhraseSample(
+    val id: Long,
+    val createdAt: Long,
+    val phraseDurationMs: Long,
+    val peakDbfs: Float,
+    val templateBytes: ByteArray
+)
+
+/**
  * Durable, app-private storage for wake-phrase user data (never the cache directory):
- * - the enrolled (custom) wake-phrase template recorded by the user,
+ * - up to [MAX_SAMPLES] enrolled samples of the wake phrase (features + metadata, one file each, `samples/`),
  * - the most recent test recording (16 kHz mono WAV) and
  * - its test result.
  *
  * The built-in default wake phrase ("Ciao Linda") is part of the detector and is never written here,
- * so an enrolled template is never replaced by the default. All writes are atomic; a missing or
+ * so enrolled samples are never replaced by the default. All writes are atomic; a missing or
  * unreadable file is reported as absent without deleting other data.
+ *
+ * Earlier versions stored a single template in [TEMPLATE_FILE_NAME]; [migrateLegacyTemplate] turns it into the first
+ * sample (idempotent, the old file is removed only after the new one has been verified).
  */
 class WakePhraseStore(filesDir: File) {
 
     private val directory = File(filesDir, DIRECTORY_NAME)
-    private val templateFile = AtomicFile(File(directory, TEMPLATE_FILE_NAME))
     private val testRecordingFile = AtomicFile(File(directory, TEST_RECORDING_FILE_NAME))
     private val testResultFile = AtomicFile(File(directory, TEST_RESULT_FILE_NAME))
 
-    fun hasTemplate(): Boolean = templateFile.baseFile.length() > 0
+    private val samplesDirectory = File(directory, SAMPLES_DIRECTORY_NAME)
 
-    fun loadTemplate(): ByteArray? = readBytes(templateFile)
+    fun hasSamples(): Boolean = loadSamples().isNotEmpty()
 
-    fun saveTemplate(bytes: ByteArray) = writeBytes(templateFile, bytes)
+    /** All readable samples, oldest first. Unreadable files are skipped (and kept, see class comment). */
+    fun loadSamples(): List<WakePhraseSample> {
+        migrateLegacyTemplate()
+        val files = samplesDirectory.listFiles { f -> f.name.startsWith(SAMPLE_PREFIX) && f.name.endsWith(SAMPLE_SUFFIX) } ?: return emptyList()
+        return files.mapNotNull { readSample(AtomicFile(it)) }.sortedWith(compareBy({ it.createdAt }, { it.id })).take(MAX_SAMPLES)
+    }
 
-    fun deleteTemplate() = templateFile.delete()
+    /** Templates of all samples, for the matcher. */
+    fun loadSampleTemplates(): List<ByteArray> = loadSamples().map { it.templateBytes }
+
+    /**
+     * Adds a sample. Returns null (and stores nothing) if [MAX_SAMPLES] samples are already enrolled.
+     */
+    fun addSample(templateBytes: ByteArray, phraseDurationMs: Long, peakDbfs: Float, now: Long = System.currentTimeMillis()): WakePhraseSample? =
+        synchronized(LOCK) {
+            val existing = loadSamples()
+            if (existing.size >= MAX_SAMPLES) return null
+            val id = maxOf(now, (existing.maxOfOrNull { it.id } ?: 0L) + 1)
+            WakePhraseSample(id, now, phraseDurationMs, peakDbfs, templateBytes).also { writeSample(it) }
+        }
+
+    /** Replaces the sample [id] (keeps its id and position). Returns false if it does not exist. */
+    fun replaceSample(id: Long, templateBytes: ByteArray, phraseDurationMs: Long, peakDbfs: Float): Boolean = synchronized(LOCK) {
+        val old = loadSamples().firstOrNull { it.id == id } ?: return false
+        writeSample(old.copy(phraseDurationMs = phraseDurationMs, peakDbfs = peakDbfs, templateBytes = templateBytes))
+        true
+    }
+
+    fun deleteSample(id: Long): Boolean = synchronized(LOCK) { sampleFile(id).let { it.baseFile.exists().also { _ -> it.delete() } } }
+
+    /** Explicit user action: removes all enrolled samples (the built-in default wake phrase is used again). */
+    fun clearSamples() = synchronized(LOCK) {
+        samplesDirectory.listFiles()?.forEach { it.delete() }
+        AtomicFile(File(directory, TEMPLATE_FILE_NAME)).delete()
+    }
+
+    /**
+     * Converts the single template of earlier versions into the first sample. Safe to call any number of times:
+     * the old file is deleted only after the sample has been written and read back identically.
+     */
+    fun migrateLegacyTemplate() = synchronized(LOCK) {
+        val legacy = AtomicFile(File(directory, TEMPLATE_FILE_NAME))
+        if (!legacy.baseFile.exists()) return@synchronized
+        val bytes = readBytes(legacy) ?: return@synchronized // unreadable: leave it untouched
+        val target = sampleFile(LEGACY_SAMPLE_ID)
+        val existing = readSample(target)
+        if (existing == null) {
+            writeSample(WakePhraseSample(LEGACY_SAMPLE_ID, legacy.baseFile.lastModified(), -1L, Float.NaN, bytes))
+        }
+        if (readSample(target)?.templateBytes?.contentEquals(bytes) == true) legacy.delete()
+    }
+
+    private fun sampleFile(id: Long) = AtomicFile(File(samplesDirectory, "$SAMPLE_PREFIX$id$SAMPLE_SUFFIX"))
+
+    private fun writeSample(sample: WakePhraseSample) {
+        samplesDirectory.mkdirs()
+        val out = ByteArrayOutputStream()
+        DataOutputStream(out).use {
+            it.writeInt(SAMPLE_MAGIC)
+            it.writeInt(SAMPLE_FORMAT_VERSION)
+            it.writeLong(sample.id)
+            it.writeLong(sample.createdAt)
+            it.writeLong(sample.phraseDurationMs)
+            it.writeFloat(sample.peakDbfs)
+            it.writeInt(sample.templateBytes.size)
+            it.write(sample.templateBytes)
+        }
+        writeBytes(sampleFile(sample.id), out.toByteArray())
+    }
+
+    private fun readSample(file: AtomicFile): WakePhraseSample? {
+        val bytes = readBytes(file) ?: return null
+        return try {
+            DataInputStream(bytes.inputStream()).use {
+                if (it.readInt() != SAMPLE_MAGIC || it.readInt() != SAMPLE_FORMAT_VERSION) return null
+                val id = it.readLong()
+                val createdAt = it.readLong()
+                val duration = it.readLong()
+                val peak = it.readFloat()
+                val length = it.readInt()
+                if (length !in 12..MAX_TEMPLATE_BYTES) return null
+                val template = ByteArray(length)
+                it.readFully(template)
+                WakePhraseSample(id, createdAt, duration, peak, template)
+            }
+        } catch (e: IOException) {
+            Log.w(TAG, "Unreadable wake-phrase sample ${file.baseFile.name}", e)
+            null
+        }
+    }
 
     fun saveTestRecording(chunks: List<ShortArray>) {
         directory.mkdirs()
@@ -150,7 +255,19 @@ class WakePhraseStore(filesDir: File) {
 
         /** Persisted locations inside the app's private files directory. Never rename. */
         const val DIRECTORY_NAME = "wake_phrase"
+        /** Single template of earlier versions (migrated to the first sample). */
         const val TEMPLATE_FILE_NAME = "enrolled_template.bin"
+        const val SAMPLES_DIRECTORY_NAME = "samples"
+        const val SAMPLE_PREFIX = "sample_"
+        const val SAMPLE_SUFFIX = ".bin"
+        const val MAX_SAMPLES = TemplateKeywordDetector.MAX_REFERENCES
+        /** Id of the sample created from the template of an earlier version. */
+        const val LEGACY_SAMPLE_ID = 1L
+
+        private const val SAMPLE_MAGIC = 0x564D5753 // 'VMWS'
+        private const val SAMPLE_FORMAT_VERSION = 1
+        private const val MAX_TEMPLATE_BYTES = 12 + 200 * 17 * 4
+        private val LOCK = Any()
         const val TEST_RECORDING_FILE_NAME = "test_recording.wav"
         const val TEST_RESULT_FILE_NAME = "test_result.bin"
 

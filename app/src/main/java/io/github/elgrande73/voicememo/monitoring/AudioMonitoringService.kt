@@ -357,12 +357,15 @@ class AudioMonitoringService : Service() {
                 } catch (e: Exception) {
                     if (e !is kotlinx.coroutines.CancellationException) {
                         ErrorLogger.log(this@AudioMonitoringService, "AudioService", "Unexpected exception in audio loop", e)
+                        finalizeAfterStreamFailure()
                         delay(1500)
                     }
                 } finally {
                     releaseAudioRecord(activeRecord)
                     microphoneArbiter.release(MicrophoneOwner.MONITORING)
                 }
+                // The stream ended (read errors, device lost): a memo must not continue across the gap
+                if (isActive) finalizeAfterStreamFailure()
             }
         }
     }
@@ -530,6 +533,14 @@ class AudioMonitoringService : Service() {
         }
     }
 
+    /** Saves a memo interrupted by a microphone failure (no-op when not recording). */
+    private fun finalizeAfterStreamFailure() {
+        memoDetector.stopManualRecording(RecordingStopReason.ERROR)?.let { completed ->
+            onRecordingCompleted(completed)
+            onRecordingStateChanged(RecordingLifecycleState.MONITORING)
+        }
+    }
+
     /** Single completion path for every stop reason: state, stop cue and saving. */
     private fun onRecordingCompleted(event: MemoDetectionEvent.RecordingCompleted) {
         _isCurrentlyRecording.value = false
@@ -629,18 +640,15 @@ class AudioMonitoringService : Service() {
 
     private fun loadSavedKeywordTemplate() {
         try {
-            val bytes = WakePhraseStore(filesDir).loadTemplate()
-            if (bytes == null) {
-                // No enrolled phrase (or it was deleted): fall back to the built-in default wake phrase
-                memoDetector.keywordDetector.clearTemplate()
-            } else if (memoDetector.loadKeywordTemplate(bytes)) {
-                Log.d("AudioService", "Loaded keyword template (${bytes.size} bytes)")
-            } else {
-                ErrorLogger.log(this, "AudioService", "Enrolled wake-phrase template is invalid; using the default wake phrase")
-                memoDetector.keywordDetector.clearTemplate()
+            val templates = WakePhraseStore(filesDir).loadSampleTemplates()
+            // No enrolled samples (or all deleted): the built-in default wake phrase is used
+            val loaded = memoDetector.keywordDetector.loadTemplates(templates)
+            if (loaded < templates.size) {
+                ErrorLogger.log(this, "AudioService", "${templates.size - loaded} enrolled wake-phrase sample(s) are invalid and were skipped")
             }
+            Log.d("AudioService", "Loaded $loaded wake-phrase sample(s)")
         } catch (e: Exception) {
-            ErrorLogger.log(this, "AudioService", "Failed to load keyword template", e)
+            ErrorLogger.log(this, "AudioService", "Failed to load wake-phrase samples", e)
         }
     }
 

@@ -6,6 +6,18 @@ First release under the new name **Voice Memo** and the new application ID `io.g
 (previously **Ciao Linda**, `com.aistudio.ciaolinda`). Android installs it as a separate app; data of the old app is
 not accessible to it (see README, "New application identity").
 
+### Added (stop handling and multi-sample enrollment)
+- Memos ended by repeating the wake phrase no longer contain the spoken stop phrase (cut at the pause before it, with a
+  short fade-out). Memos ended by the silence timeout, the maximum length, the Stop button, stopping monitoring or a
+  microphone failure keep every captured frame, including the final words. Each memo is finalized exactly once, and WAV
+  files are written atomically.
+- Optional enrollment of 1–5 wake-phrase samples (Settings shows "n of 5"; add, replace, delete). Samples are
+  validated (silence, clipping, length, duplicates) and stored as features only, never as audio. A phrase recorded with
+  an earlier version is migrated to sample 1.
+- Reproducible accuracy benchmark on synthetic speech (confusion matrix, threshold sweep, false activations per hour);
+  results in `docs/WAKE_PHRASE_DETECTION.md`. On these fixtures 5 samples raised recall at 50 % from 0.667 to 0.778
+  (held-out: 0.639 to 0.806), with slightly more false activations on similar-sounding phrases.
+
 ### Fixed (wake-phrase detection)
 - Automatic monitoring reported far lower match confidence than the Settings phrase test (0 % vs. > 50 % on identical
   audio): monitoring passed only loud frames to the matcher and enrolled templates contained the whole recording,

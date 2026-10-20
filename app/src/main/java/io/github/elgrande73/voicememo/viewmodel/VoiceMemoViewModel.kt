@@ -51,7 +51,9 @@ import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.settings.SettingsMigrator
 import io.github.elgrande73.voicememo.ui.theme.ThemeMode
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
+import io.github.elgrande73.voicememo.wakephrase.WakePhraseEnrollment
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseEvaluation
+import io.github.elgrande73.voicememo.wakephrase.WakePhraseSample
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseEvaluator
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseTestResult
@@ -92,7 +94,6 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         const val TAG = "VoiceMemoVM"
         const val ENROLLMENT_DURATION_MS = 2500L
         const val TEST_DURATION_MS = 3000L
-        const val MIN_ENROLLMENT_FRAMES = 8
     }
 
     private val context = application.applicationContext
@@ -240,7 +241,11 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     /** The enrolled phrase was recorded with an earlier version (legacy features); re-recording is recommended. */
     val isLegacyTemplate = _isLegacyTemplate.asStateFlow()
 
-    private val _hasKeywordTemplate = MutableStateFlow(wakePhraseStore.hasTemplate())
+    // Enrolled wake-phrase samples (1-5, optional); read synchronously so the screen starts with the stored state
+    private val _wakePhraseSamples = MutableStateFlow(wakePhraseStore.loadSamples().map { it.toSummary() })
+    val wakePhraseSamples = _wakePhraseSamples.asStateFlow()
+
+    private val _hasKeywordTemplate = MutableStateFlow(_wakePhraseSamples.value.isNotEmpty())
     val hasKeywordTemplate = _hasKeywordTemplate.asStateFlow()
 
     // Last persisted "Test Phrase" result; survives restarts and app updates
@@ -337,12 +342,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         )
         viewModelScope.launch(Dispatchers.IO) {
             // Restore the enrolled wake phrase so "Test Phrase" uses it after a restart
-            wakePhraseStore.loadTemplate()?.let { bytes ->
-                if (!keywordDetector.loadTemplate(bytes)) {
-                    Log.w(TAG, "Enrolled wake-phrase template is invalid; testing against the default wake phrase")
-                }
-                _isLegacyTemplate.value = keywordDetector.isLegacyTemplate
-            }
+            reloadWakePhraseSamples()
             _keywordTestResult.value = wakePhraseStore.loadTestResult()
             _hasSavedTestRecording.value = wakePhraseStore.loadTestRecording() != null
         }
@@ -763,22 +763,35 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     // --- KEYWORD TRAINING & TESTING ---
 
     /**
-     * Records a new wake phrase (up to 2.5 s, "Stop Recording" ends it early). Monitoring is stopped first and the
-     * recording only starts once monitoring has released the microphone; see [PhraseCaptureCoordinator].
+     * Records one sample of the wake phrase (up to 2.5 s, "Stop Recording" ends it early): a new sample, or a
+     * replacement for sample [replaceSampleId]. Monitoring is stopped first and the recording only starts once
+     * monitoring has released the microphone; see [PhraseCaptureCoordinator]. Existing samples are kept if the new
+     * recording is rejected, fails or is cancelled.
      */
-    fun startRecordingKeywordTemplate() {
+    fun startRecordingKeywordTemplate(replaceSampleId: Long? = null) {
         if (phraseCapture.isBusy) return // repeated taps
+        if (replaceSampleId == null && _wakePhraseSamples.value.size >= WakePhraseStore.MAX_SAMPLES) {
+            _phraseMessage.value = "You already have ${WakePhraseStore.MAX_SAMPLES} samples. Replace or delete one to record another."
+            return
+        }
         _phraseMessage.value = null
         stopPhraseRecordingRequested = false
         viewModelScope.launch(Dispatchers.Default) {
             val outcome = phraseCapture.runCapture(PhraseCaptureKind.WAKE_PHRASE) { session ->
                 val frames = capturePhrase(session, ENROLLMENT_DURATION_MS) { stopPhraseRecordingRequested }
-                // Enrolled and saved before monitoring is restored, so the restarted service loads the new phrase
-                enrollWakePhrase(frames)
+                // Enrolled and saved before monitoring is restored, so the restarted service loads the new sample
+                enrollWakePhraseSample(frames, replaceSampleId)
             }
-            if (outcome is CaptureOutcome.Completed && !outcome.value) {
-                _phraseMessage.value = "No clear phrase was detected. Please record again in a quiet place."
-            }
+            if (outcome is CaptureOutcome.Completed) _phraseMessage.value = outcome.value
+        }
+    }
+
+    /** Explicit user action: deletes one enrolled sample. */
+    fun deleteWakePhraseSample(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            wakePhraseStore.deleteSample(id)
+            reloadWakePhraseSamples()
+            notifyServiceTemplateChanged()
         }
     }
 
@@ -786,13 +799,20 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         stopPhraseRecordingRequested = true
     }
 
-    /** Explicit user action: deletes the enrolled wake phrase. The saved test recording and result are kept. */
+    /** Explicit user action: deletes all enrolled samples. The saved test recording and result are kept. */
     fun clearKeywordTemplate() {
-        wakePhraseStore.deleteTemplate()
-        keywordDetector.clearTemplate()
-        _hasKeywordTemplate.value = false
-        _isLegacyTemplate.value = false
+        wakePhraseStore.clearSamples()
+        reloadWakePhraseSamples()
         notifyServiceTemplateChanged()
+    }
+
+    private fun reloadWakePhraseSamples() {
+        val samples = wakePhraseStore.loadSamples()
+        val loaded = keywordDetector.loadTemplates(samples.map { it.templateBytes })
+        if (loaded < samples.size) Log.w(TAG, "${samples.size - loaded} wake-phrase sample(s) could not be read")
+        _wakePhraseSamples.value = samples.map { it.toSummary() }
+        _hasKeywordTemplate.value = samples.isNotEmpty()
+        _isLegacyTemplate.value = keywordDetector.isLegacyTemplate
     }
 
     /**
@@ -877,27 +897,35 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
             frames
         }
 
-    /** Returns true if a phrase was found and saved. */
-    private fun enrollWakePhrase(frames: List<ShortArray>): Boolean {
-        if (frames.size < MIN_ENROLLMENT_FRAMES || !keywordDetector.recordTemplate(frames)) return false
-        val bytes = keywordDetector.getTemplateData() ?: return false
-        try {
-            wakePhraseStore.saveTemplate(bytes)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to save enrolled wake phrase", e)
-            _phraseMessage.value = "The wake phrase could not be saved."
-            return true
+    /** Validates and stores a recorded sample; returns the message for the user. Existing samples stay on failure. */
+    private fun enrollWakePhraseSample(frames: List<ShortArray>, replaceSampleId: Long?): String {
+        val others = wakePhraseStore.loadSamples().filter { it.id != replaceSampleId }.map { it.templateBytes }
+        val accepted = when (val result = WakePhraseEnrollment.validate(frames, existingSamples = others)) {
+            is WakePhraseEnrollment.Result.Rejected -> return result.reason.message
+            is WakePhraseEnrollment.Result.Accepted -> result
         }
-        _hasKeywordTemplate.value = true
-        _isLegacyTemplate.value = false
+        val stored = try {
+            if (replaceSampleId != null) {
+                wakePhraseStore.replaceSample(replaceSampleId, accepted.templateBytes, accepted.info.phraseDurationMs, accepted.info.peakDbfs)
+            } else {
+                wakePhraseStore.addSample(accepted.templateBytes, accepted.info.phraseDurationMs, accepted.info.peakDbfs) != null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save wake-phrase sample", e)
+            false
+        }
+        if (!stored) return "The sample could not be saved. Your existing samples were kept."
+        reloadWakePhraseSamples()
         notifyServiceTemplateChanged()
-        return true
+        val count = _wakePhraseSamples.value.size
+        return if (replaceSampleId != null) "Sample replaced ($count of ${WakePhraseStore.MAX_SAMPLES})."
+        else "Sample saved ($count of ${WakePhraseStore.MAX_SAMPLES})."
     }
 
     private fun evaluateTestFrames(frames: List<ShortArray>): WakePhraseEvaluation {
         val evaluation = WakePhraseEvaluator.evaluate(
             frames = frames,
-            templateBytes = wakePhraseStore.loadTemplate(),
+            templates = wakePhraseStore.loadSampleTemplates(),
             matchConfidenceThreshold = MatchConfidenceThreshold.toDetectorConfidence(_matchConfidenceThresholdPercent.value),
             activationThresholdDb = _thresholdDb.value
         )
@@ -1084,3 +1112,12 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     }
 }
 
+/** What the Settings screen shows about an enrolled sample (no audio, no features). */
+data class WakePhraseSampleSummary(val id: Long, val createdAt: Long, val phraseDurationMs: Long, val legacyFeatures: Boolean)
+
+private fun WakePhraseSample.toSummary() = WakePhraseSampleSummary(
+    id = id,
+    createdAt = createdAt,
+    phraseDurationMs = phraseDurationMs,
+    legacyFeatures = TemplateKeywordDetector().apply { loadTemplate(templateBytes) }.isLegacyTemplate
+)

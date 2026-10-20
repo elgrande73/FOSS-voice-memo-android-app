@@ -115,6 +115,7 @@ import io.github.elgrande73.voicememo.ui.theme.ThemeMode
 import io.github.elgrande73.voicememo.viewmodel.VoiceMemoViewModel
 import io.github.elgrande73.voicememo.viewmodel.VoiceNoteFilter
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
+import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -1221,6 +1222,8 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
     val matchConfidenceThresholdPercent by viewModel.matchConfidenceThresholdPercent.collectAsState()
     val keywordBehavior by viewModel.keywordBehavior.collectAsState()
     val hasKeywordTemplate by viewModel.hasKeywordTemplate.collectAsState()
+    val wakePhraseSamples by viewModel.wakePhraseSamples.collectAsState()
+    var replacingSampleId by remember { mutableStateOf<Long?>(null) }
     val isRecordingKeyword by viewModel.isRecordingKeyword.collectAsState()
     val isTestingKeyword by viewModel.isTestingKeyword.collectAsState()
     val keywordTestResult by viewModel.keywordTestResult.collectAsState()
@@ -1309,18 +1312,24 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                         shape = RoundedCornerShape(8.dp)
                     ) {
                         Text(
-                            text = if (hasKeywordTemplate) "Phrase Trained" else "Not Trained",
+                            text = if (hasKeywordTemplate) "${wakePhraseSamples.size} of ${WakePhraseStore.MAX_SAMPLES} samples" else "Default phrase",
+                            modifier = Modifier
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                .testTag("wake_phrase_sample_count"),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
-                            color = if (hasKeywordTemplate) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            color = if (hasKeywordTemplate) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onErrorContainer
                         )
                     }
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = "The default wake phrase is \"Ciao Linda\". Record it in your own voice to train a personal, on-device template. Deleting your recording restores the built-in default.",
+                    text = "The default wake phrase is \"Ciao Linda\". Record it in your own voice to train a personal, on-device " +
+                        "template. One sample is enough; up to ${WakePhraseStore.MAX_SAMPLES} optional samples can make detection more reliable " +
+                        "when your pace, volume or distance varies. Speak naturally at normal volume — e.g. one sample a little faster, " +
+                        "one from arm's length — rather than exaggerating. If similar-sounding words start memos, raise the Match confidence threshold. " +
+                        "Samples stay on this device. Deleting all samples restores the built-in default.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1334,11 +1343,13 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                             if (isRecordingKeyword) {
                                 viewModel.stopRecordingKeywordTemplate()
                             } else {
+                                replacingSampleId = null
                                 viewModel.startRecordingKeywordTemplate()
                             }
                         },
-                        // Disabled while monitoring is being stopped or another recording is running
-                        enabled = isRecordingKeyword || phraseCaptureState == PhraseCaptureState.Idle,
+                        // Disabled while monitoring is being stopped, another recording is running, or 5 samples exist
+                        enabled = isRecordingKeyword || (phraseCaptureState == PhraseCaptureState.Idle &&
+                            wakePhraseSamples.size < WakePhraseStore.MAX_SAMPLES),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (isRecordingKeyword) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                         ),
@@ -1352,6 +1363,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                                 captureKind == PhraseCaptureKind.WAKE_PHRASE &&
                                     phraseCaptureState is PhraseCaptureState.StoppingMonitoring -> "Stopping monitoring…"
                                 captureKind == PhraseCaptureKind.WAKE_PHRASE -> "Starting…"
+                                hasKeywordTemplate -> "Add Sample"
                                 else -> "Record Phrase"
                             }
                         )
@@ -1385,12 +1397,20 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                (phraseCaptureError ?: phraseMessage)?.let { message ->
+                phraseCaptureError?.let { message ->
                     Text(
                         text = message,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.testTag("phrase_capture_error")
+                    )
+                }
+                if (phraseCaptureError == null) phraseMessage?.let { message ->
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.testTag("phrase_message")
                     )
                 }
                 if (isLegacyTemplate) {
@@ -1403,11 +1423,49 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
 
                 if (hasKeywordTemplate) {
                     Spacer(modifier = Modifier.height(8.dp))
+                    val dateFormat = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
+                    wakePhraseSamples.forEachIndexed { index, sample ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("wake_phrase_sample_$index")
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Sample ${index + 1}" +
+                                        if (isRecordingKeyword && replacingSampleId == sample.id) " — recording replacement…" else "",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = dateFormat.format(Date(sample.createdAt)) +
+                                        (if (sample.phraseDurationMs > 0) " · %.1f s".format(sample.phraseDurationMs / 1000f) else "") +
+                                        (if (sample.legacyFeatures) " · earlier version" else ""),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(
+                                onClick = {
+                                    replacingSampleId = sample.id
+                                    viewModel.startRecordingKeywordTemplate(replaceSampleId = sample.id)
+                                },
+                                enabled = phraseCaptureState == PhraseCaptureState.Idle
+                            ) { Text("Replace") }
+                            TextButton(
+                                onClick = { viewModel.deleteWakePhraseSample(sample.id) },
+                                enabled = phraseCaptureState == PhraseCaptureState.Idle,
+                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                            ) { Text("Delete") }
+                        }
+                    }
                     TextButton(
                         onClick = { viewModel.clearKeywordTemplate() },
+                        enabled = phraseCaptureState == PhraseCaptureState.Idle,
                         colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
                     ) {
-                        Text("Delete Phrase Template")
+                        Text("Delete All Samples")
                     }
                 }
 

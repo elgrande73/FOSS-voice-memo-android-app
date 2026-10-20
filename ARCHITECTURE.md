@@ -144,7 +144,8 @@ All user data lives in app-private storage (never the cache directory) and survi
 | Voice memo audio | `filesDir/memos/*.wav` | Referenced by absolute path from the database |
 | Settings | SharedPreferences `voice_memo_preferences` | Versioned by `settingsSchemaVersion`, migrated by `SettingsMigrator` |
 | Match confidence threshold | key `matchConfidenceThresholdPercent` (Int, 50–80) | Single authoritative value |
-| Enrolled (custom) wake phrase | `filesDir/wake_phrase/enrolled_template.bin` | Written atomically; deleting it restores the built-in "Ciao Linda" |
+| Enrolled wake-phrase samples (1–5) | `filesDir/wake_phrase/samples/sample_<id>.bin` | Versioned (`VMWS` v1), features only (no audio); deleting all restores the built-in "Ciao Linda" |
+| Single template of earlier versions | `filesDir/wake_phrase/enrolled_template.bin` | Read only for the one-time migration to sample 1; deleted after a verified copy |
 | Wake-phrase test recording | `filesDir/wake_phrase/test_recording.wav` | 16 kHz mono WAV of the last "Test Phrase" run |
 | Wake-phrase test result | `filesDir/wake_phrase/test_result.bin` | Best confidence + timestamp |
 
@@ -191,4 +192,16 @@ The former "keyword sensitivity" (0.10–0.95) required `distance ≤ 0.28 + (s 
   and do not record → record → release → restore monitoring if it ran before and the user did not start/stop it
   meanwhile (also after failures and cancellation). `AudioMonitoringService.engineState` exposes the real engine state
   to the dashboard.
+- **Multi-sample enrollment**: `WakePhraseEnrollment` validates each Settings recording; `WakePhraseStore` keeps up to
+  five samples; `TemplateKeywordDetector` matches every frame against every sample and uses the best score.
+
+---
+
+## 9. Memo Completion (Stop Reasons)
+
+`MemoTriggerDetector.finalizeRecording` is the only place a memo is finalized, once, with a `RecordingStopReason`:
+`KEYWORD` (the spoken stop phrase is removed by `StopPhraseTrimmer`), `SILENCE_TIMEOUT`, `MAX_DURATION`, `USER`,
+`SERVICE_STOPPED`, `ERROR` (all of these keep every captured frame). The service handles every completion through one
+path (`onRecordingCompleted`: state, stop chime, atomic WAV write on `Dispatchers.IO`). Details and measurements:
+[`docs/WAKE_PHRASE_DETECTION.md`](docs/WAKE_PHRASE_DETECTION.md#8-how-a-memo-ends-stop-reasons).
 

@@ -51,8 +51,10 @@ enum class RecordingStopReason(val trimsStopPhrase: Boolean) {
     MAX_DURATION(trimsStopPhrase = false),
     /** The user tapped Stop: audio up to the stop request, including frames still in the capture pipeline, is kept. */
     USER(trimsStopPhrase = false),
-    /** Monitoring stopped (service shut down) while recording: the audio captured so far is kept. */
-    SERVICE_STOPPED(trimsStopPhrase = false)
+    /** Monitoring stopped or was cancelled (service shut down) while recording: the audio captured so far is kept. */
+    SERVICE_STOPPED(trimsStopPhrase = false),
+    /** The microphone stream failed while recording: the audio captured before the failure is kept. */
+    ERROR(trimsStopPhrase = false)
 }
 
 /**
@@ -109,6 +111,16 @@ class MemoTriggerDetector(
             keywordDetector.setMatchConfidenceThreshold(value)
         }
     var keywordBehavior: KeywordBehavior = KeywordBehavior.START_AND_STOP
+
+    /**
+     * Number of consecutive frames whose match score must reach the threshold before the wake phrase counts
+     * (start and stop). 1 = decide on a single frame.
+     */
+    var consecutiveMatchFrames: Int = DEFAULT_CONSECUTIVE_MATCH_FRAMES
+        set(value) {
+            field = value.coerceAtLeast(1)
+        }
+    private var matchStreak = 0
 
     // Observable DSP States
     var isVoiceDetected: Boolean = false
@@ -170,6 +182,7 @@ class MemoTriggerDetector(
         pendingStopReason = null
         keywordConfidence = 0f
         lastKeywordResult = null
+        matchStreak = 0
         sessionMaxDb = 0f
         sessionSumDb = 0.0
         sessionDbCount = 0
@@ -255,6 +268,7 @@ class MemoTriggerDetector(
                             consecutiveSilentChunks = 0
                             consecutiveSoundChunks = 0
                             keywordDetector.resetWindow()
+                            matchStreak = 0
                             framesSinceTrigger = 0
 
                             sessionMaxDb = vadResult.db
@@ -492,6 +506,7 @@ class MemoTriggerDetector(
         currentState = RecordingLifecycleState.MONITORING
         // The window still holds the stop phrase; clear it so it cannot immediately start a new memo
         keywordDetector.resetWindow()
+        matchStreak = 0
         pendingStopReason = null
         activeRecordingChunks.clear()
         memoStartChunkIndex = 0
@@ -522,10 +537,12 @@ class MemoTriggerDetector(
     }
 
     private fun matchWakePhrase(frame: ShortArray, vadResult: VoiceFrameResult): KeywordMatchResult {
-        val result = keywordDetector.processFrame(frame, vadResult.rms, vadResult.db)
-        lastKeywordResult = result
-        keywordConfidence = maxOf(keywordConfidence, result.confidence)
-        return result
+        val raw = keywordDetector.processFrame(frame, vadResult.rms, vadResult.db)
+        lastKeywordResult = raw
+        keywordConfidence = maxOf(keywordConfidence, raw.confidence)
+        matchStreak = if (raw.matched) matchStreak + 1 else 0
+        // Temporal confirmation: report a match only once it held for consecutiveMatchFrames frames
+        return if (raw.matched && matchStreak < consecutiveMatchFrames) raw.copy(matched = false) else raw
     }
 
     /** Loudest frame (VAD dB scale) within the longest window the wake-phrase matcher evaluates. */
@@ -551,6 +568,7 @@ class MemoTriggerDetector(
         /** 2.5 s: matches the matcher's sliding window (50 frames). */
         private const val RECENT_LEVEL_FRAMES = 50
         private const val SAMPLE_RATE = 16000
+        const val DEFAULT_CONSECUTIVE_MATCH_FRAMES = 1
     }
 }
 

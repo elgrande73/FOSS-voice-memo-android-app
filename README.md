@@ -12,7 +12,7 @@ The default wake phrase is **"Ciao Linda"**.
 ## ✨ Features
 
 - **Automatic recording**: starts when speech or sound exceeds the activation threshold and stops after a configurable silence timeout.
-- **Wake phrase**: say **"Ciao Linda"** to start (and optionally stop) a memo. An offline keyword spotter (spectral filterbanks + Dynamic Time Warping) is built in; you can record the phrase in your own voice to train a personal on-device template. Monitoring and the Settings phrase test use the same detection pipeline, and monitoring pauses automatically while a phrase is recorded in Settings.
+- **Wake phrase**: say **"Ciao Linda"** to start (and optionally stop) a memo. An offline keyword spotter (spectral filterbanks + Dynamic Time Warping) is built in; you can optionally record one to five samples of the phrase in your own voice (natural variations help); they are matched on the device and never leave it. When the phrase is repeated to stop a memo, the spoken stop phrase is removed from the recording; a memo ended by the silence timeout keeps its complete ending. Monitoring and the Settings phrase test use the same detection pipeline, and monitoring pauses automatically while a phrase is recorded in Settings.
 - **Adaptive noise handling**: the background noise floor is estimated automatically and conservative spectral noise suppression keeps background sounds from being mistaken for the wake phrase (see [`docs/WAKE_PHRASE_DETECTION.md`](docs/WAKE_PHRASE_DETECTION.md)).
 - **Match confidence threshold**: one setting (50 %–80 %) controls how closely speech must match the wake phrase; the dashboard shows the same value as the *Trigger threshold* next to a live match gauge.
 - **Rolling pre-trigger buffer**: keeps the start of your sentence.
@@ -35,7 +35,7 @@ Changing the application ID is a deliberate breaking change. Android treats Voic
 | Scenario | What happens |
 |---|---|
 | **Fresh installation of Voice Memo** | Starts with no memos, the built-in "Ciao Linda" wake phrase and a 50 % match confidence threshold. |
-| **Update from one Voice Memo version to a later one** | Memos, audio files, settings, the threshold, your recorded wake phrase, the test recording and its result are kept (see [Persistent user data](ARCHITECTURE.md#5-persistent-user-data--stable-identifiers)). |
+| **Update from one Voice Memo version to a later one** | Memos, audio files, settings, the threshold, your recorded wake-phrase samples (a single phrase recorded with an earlier version becomes sample 1), the test recording and its result are kept (see [Persistent user data](ARCHITECTURE.md#5-persistent-user-data--stable-identifiers)). |
 | **Voice Memo installed alongside the old Ciao Linda app** | Both apps are installed independently. Voice Memo **cannot read** Ciao Linda's private database, settings, recordings or wake-phrase template (Android app sandbox), and does not claim to have imported them. |
 | **Moving data from Ciao Linda** | There is **no automatic import**. Recordings can be moved manually: in Ciao Linda use *History → Export All (ZIP)* and keep the archive; the WAV files remain playable with any audio player. Voice Memo has no importer, so settings and the wake-phrase template must be configured again (record the phrase once more under *Settings → Wake Phrase*). |
 

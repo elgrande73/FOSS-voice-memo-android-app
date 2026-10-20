@@ -67,8 +67,16 @@ data class FrontEndConfig(
     /** Range of band levels below the loudest band that the feature represents. */
     val dynamicRangeDb: Double = 40.0,
     /** Weight of the previous frame in causal smoothing of band powers (0 = none). */
-    val temporalSmoothing: Double = 0.3
+    val temporalSmoothing: Double = 0.3,
+    /**
+     * Weight of the speech-presence feature (frame SNR above the noise floor, 0..1, appended after the 16 shape
+     * values); 0 = not appended.
+     */
+    val speechPresenceWeight: Double = 0.0
 ) {
+    /** Number of values per feature vector. */
+    val featureSize: Int get() = WakePhraseFrontEnd.NUM_BANDS + if (speechPresenceWeight > 0.0) 1 else 0
+
     companion object {
         val DEFAULT = FrontEndConfig()
         val BYPASS = FrontEndConfig(spectralSuppression = false)
@@ -142,7 +150,7 @@ class WakePhraseFrontEnd(private val config: FrontEndConfig = FrontEndConfig.DEF
         }
 
         val snrDb = if (noiseTotal > 0.0 && inputTotal > 0.0) 10.0 * log10(inputTotal / noiseTotal) else 0.0
-        val features = shapeFeatures(cleanPower)
+        val features = shapeFeatures(cleanPower, snrDb, active)
 
         diagnostics.noiseFloorDbfs = noiseFloorDbfs ?: -120f
         diagnostics.snrDb = snrDb.toFloat()
@@ -192,8 +200,8 @@ class WakePhraseFrontEnd(private val config: FrontEndConfig = FrontEndConfig.DEF
         }
     }
 
-    private fun shapeFeatures(power: DoubleArray): FloatArray {
-        val features = FloatArray(NUM_BANDS)
+    private fun shapeFeatures(power: DoubleArray, snrDb: Double, noiseKnown: Boolean): FloatArray {
+        val features = FloatArray(config.featureSize)
         var maxDb = Double.NEGATIVE_INFINITY
         for (b in 0 until NUM_BANDS) maxDb = max(maxDb, toDb(power[b]))
         var sumSquares = 0.0
@@ -205,6 +213,11 @@ class WakePhraseFrontEnd(private val config: FrontEndConfig = FrontEndConfig.DEF
         }
         val norm = sqrt(sumSquares).toFloat()
         for (b in 0 until NUM_BANDS) features[b] /= norm
+        if (config.speechPresenceWeight > 0.0) {
+            // Not normalised with the shape: the 16 shape values stay identical to the 16-value feature version
+            val presence = if (noiseKnown) (snrDb / SPEECH_PRESENCE_FULL_SNR_DB).coerceIn(0.0, 1.0) else 1.0
+            features[NUM_BANDS] = (presence * config.speechPresenceWeight).toFloat()
+        }
         return features
     }
 
@@ -215,6 +228,8 @@ class WakePhraseFrontEnd(private val config: FrontEndConfig = FrontEndConfig.DEF
         const val FRAME_SIZE = 800
         const val FFT_SIZE = 512
         const val NUM_BANDS = 16
+        /** SNR (dB above the noise floor) at which the speech-presence feature reaches 1. */
+        const val SPEECH_PRESENCE_FULL_SNR_DB = 30.0
 
         const val FEATURE_EPSILON = 0.01
 
