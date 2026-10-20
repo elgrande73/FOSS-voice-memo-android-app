@@ -23,7 +23,9 @@ interface SpeechToTextEngine {
 }
 
 /**
- * On-device Android Speech Recognizer transcription engine with graceful fallback.
+ * Optional transcription through the device's system speech recognition service (disabled by default).
+ * The service is provided by the device, not by this app; offline recognition is requested but whether it is honored
+ * depends on that service.
  */
 class AndroidOnDeviceSpeechEngine(private val context: Context) : SpeechToTextEngine {
 
@@ -46,6 +48,8 @@ class AndroidOnDeviceSpeechEngine(private val context: Context) : SpeechToTextEn
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                    // Ask the system recognition service not to send audio over the network
+                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
                 }
 
                 recognizer.setRecognitionListener(object : RecognitionListener {

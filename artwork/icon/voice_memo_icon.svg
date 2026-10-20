@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Voice Memo launcher icon - editable source artwork.
+  Original work created for this project; licensed under the project license (Apache-2.0), see artwork/icon/README.md.
+  Canvas: 108x108 = Android adaptive icon (safe zone: circle of diameter 66 centred at 54,54).
+  Layers mirror app/src/main/res/drawable/ic_launcher_background.xml and ic_launcher_foreground.xml.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
+  <defs>
+    <linearGradient id="bg" x1="18" y1="12" x2="90" y2="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7B2FF7"/>
+      <stop offset="1" stop-color="#FF4E8B"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background layer -->
+  <g id="background">
+    <rect width="108" height="108" fill="url(#bg)"/>
+    <circle cx="30" cy="26" r="30" fill="#FFFFFF" fill-opacity="0.08"/>
+    <circle cx="92" cy="96" r="24" fill="#2B0B57" fill-opacity="0.14"/>
+  </g>
+
+  <!-- Foreground layer -->
+  <g id="foreground">
+    <!-- Voice waveform bars -->
+    <g stroke-linecap="round" stroke-width="5" fill="none">
+      <line x1="27" y1="47" x2="27" y2="57" stroke="#FFFFFF"/>
+      <line x1="34" y1="40" x2="34" y2="64" stroke="#2EE6C5"/>
+      <line x1="74" y1="40" x2="74" y2="64" stroke="#2EE6C5"/>
+      <line x1="81" y1="47" x2="81" y2="57" stroke="#FFFFFF"/>
+    </g>
+    <!-- Microphone holder and stand -->
+    <g stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" fill="none">
+      <path d="M40,48 A14,14 0 0 0 68,48"/>
+      <line x1="54" y1="62" x2="54" y2="72"/>
+      <line x1="46" y1="74" x2="62" y2="74"/>
+    </g>
+    <!-- Microphone capsule with a happy face -->
+    <rect x="43" y="25" width="22" height="33" rx="11" fill="#FFD23F"/>
+    <path d="M47.5,31 A6.5,6.5 0 0 1 54,27.5" stroke="#FFFFFF" stroke-opacity="0.75" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+    <circle cx="49.5" cy="38" r="2.3" fill="#3A1460"/>
+    <circle cx="58.5" cy="38" r="2.3" fill="#3A1460"/>
+    <circle cx="47.2" cy="44" r="1.9" fill="#FF8FB1"/>
+    <circle cx="60.8" cy="44" r="1.9" fill="#FF8FB1"/>
+    <path d="M49.5,44.5 Q54,49.5 58.5,44.5" stroke="#3A1460" stroke-width="2.3" stroke-linecap="round" fill="none"/>
+    <!-- Recording dot -->
+    <circle cx="68.5" cy="27.5" r="4.2" fill="#FF3B5C" stroke="#FFFFFF" stroke-width="1.6"/>
+  </g>
+</svg>

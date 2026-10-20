@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Ciao Linda"
+rootProject.name = "Voice Memo"
 
 include(":app")

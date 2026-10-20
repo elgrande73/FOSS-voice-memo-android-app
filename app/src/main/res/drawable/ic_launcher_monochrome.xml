@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Single-colour layer for Android 13+ themed icons (only alpha is used).
+     Face features are cut out of the capsule with the even-odd fill rule. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M27,47L27,57M34,40L34,64M74,40L74,64M81,47L81,57" android:strokeColor="#FFFFFF" android:strokeWidth="5" android:strokeLineCap="round" />
+    <path android:pathData="M40,48A14,14 0,0 0,68 48M54,62L54,72M46,74L62,74" android:strokeColor="#FFFFFF" android:strokeWidth="4" android:strokeLineCap="round" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M43,36A11,11 0,0 1,65 36L65,47A11,11 0,0 1,43 47Z M47.2,38a2.3,2.3 0,1 0,4.6 0a2.3,2.3 0,1 0,-4.6 0Z M56.2,38a2.3,2.3 0,1 0,4.6 0a2.3,2.3 0,1 0,-4.6 0Z M49,44Q54,47.2 59,44Q54,52.5 49,44Z" />
+    <path android:pathData="M64.3,27.5a4.2,4.2 0,1 0,8.4 0a4.2,4.2 0,1 0,-8.4 0" android:fillColor="#FFFFFF" />
+</vector>

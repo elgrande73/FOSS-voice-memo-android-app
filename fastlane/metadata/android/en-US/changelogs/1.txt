@@ -1,0 +1,6 @@
+First release as Voice Memo (formerly Ciao Linda, new application ID).
+- Automatic playback of the next memo in the displayed list, with beginning and ending chimes
+- Recording start/stop chimes
+- Single "Match confidence threshold" setting (50–80 %) shown on the dashboard as "Trigger threshold"
+- Recorded wake phrase, test recording and test result are kept across restarts and updates
+- New launcher icon

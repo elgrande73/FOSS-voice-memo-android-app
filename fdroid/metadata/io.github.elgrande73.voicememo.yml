@@ -1,28 +1,34 @@
+# Draft F-Droid build metadata for submission to https://gitlab.com/fdroid/fdroiddata.
+# Store texts and graphics are read from fastlane/metadata/android/ in the source repository.
+# Before submitting, the maintainer must fill in or confirm the values marked MAINTAINER (see docs/FDROID.md).
 Categories:
   - Multimedia
 License: Apache-2.0
 AuthorName: elgrande73
-SourceCode: https://github.com/elgrande73/FOSS-ciao-linda-android-app
-IssueTracker: https://github.com/elgrande73/FOSS-ciao-linda-android-app/issues
+SourceCode: https://github.com/elgrande73/FOSS-voice-memo-android-app
+IssueTracker: https://github.com/elgrande73/FOSS-voice-memo-android-app/issues
+Changelog: https://github.com/elgrande73/FOSS-voice-memo-android-app/blob/HEAD/CHANGELOG.md
 
-AutoName: Ciao Linda
+AutoName: Voice Memo
 
 RepoType: git
-Repo: https://github.com/elgrande73/FOSS-ciao-linda-android-app.git
-Binaries: 
-  https://github.com/elgrande73/FOSS-ciao-linda-android-app/releases/download/v%v/app-release.apk
+Repo: https://github.com/elgrande73/FOSS-voice-memo-android-app.git
+# MAINTAINER: only for reproducible builds; requires release APKs attached to GitHub releases under this name.
+Binaries: https://github.com/elgrande73/FOSS-voice-memo-android-app/releases/download/v%v/app-release.apk
 
 Builds:
-  - versionName: 1.0.0
+  - versionName: '1.0'
     versionCode: 1
-    commit: 
+    # MAINTAINER: set to the release tag or full commit hash once the release is tagged (none exists yet).
+    commit:
     subdir: app
     gradle:
       - yes
 
+# MAINTAINER: SHA-256 of the maintainer's release signing certificate (kept from the previous metadata; verify).
 AllowedAPKSigningKeys: 134e479ce6977d81363dd3696fb1ae4dd714c35792045154b235a3a9ebc77da7
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags
-CurrentVersion: 1.0.0
+CurrentVersion: '1.0'
 CurrentVersionCode: 1

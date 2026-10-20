@@ -1,8 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item
-        android:width="66dp"
-        android:height="66dp"
-        android:drawable="@drawable/img_app_icon"
-        android:gravity="center" />
-</layer-list>
+<!-- Voice Memo adaptive icon foreground: happy microphone with voice waveform and recording dot.
+     Source artwork: artwork/icon/voice_memo_icon.svg -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Voice waveform bars -->
+    <path android:pathData="M27,47L27,57" android:strokeColor="#FFFFFF" android:strokeWidth="5" android:strokeLineCap="round" />
+    <path android:pathData="M34,40L34,64" android:strokeColor="#2EE6C5" android:strokeWidth="5" android:strokeLineCap="round" />
+    <path android:pathData="M74,40L74,64" android:strokeColor="#2EE6C5" android:strokeWidth="5" android:strokeLineCap="round" />
+    <path android:pathData="M81,47L81,57" android:strokeColor="#FFFFFF" android:strokeWidth="5" android:strokeLineCap="round" />
+    <!-- Holder and stand -->
+    <path android:pathData="M40,48A14,14 0,0 0,68 48" android:strokeColor="#FFFFFF" android:strokeWidth="4" android:strokeLineCap="round" />
+    <path android:pathData="M54,62L54,72" android:strokeColor="#FFFFFF" android:strokeWidth="4" android:strokeLineCap="round" />
+    <path android:pathData="M46,74L62,74" android:strokeColor="#FFFFFF" android:strokeWidth="4" android:strokeLineCap="round" />
+    <!-- Microphone capsule -->
+    <path android:pathData="M43,36A11,11 0,0 1,65 36L65,47A11,11 0,0 1,43 47Z" android:fillColor="#FFD23F" />
+    <path android:pathData="M47.5,31A6.5,6.5 0,0 1,54 27.5" android:strokeColor="#FFFFFF" android:strokeAlpha="0.75" android:strokeWidth="2.2" android:strokeLineCap="round" />
+    <!-- Happy face -->
+    <path android:pathData="M47.2,38a2.3,2.3 0,1 0,4.6 0a2.3,2.3 0,1 0,-4.6 0" android:fillColor="#3A1460" />
+    <path android:pathData="M56.2,38a2.3,2.3 0,1 0,4.6 0a2.3,2.3 0,1 0,-4.6 0" android:fillColor="#3A1460" />
+    <path android:pathData="M45.3,44a1.9,1.9 0,1 0,3.8 0a1.9,1.9 0,1 0,-3.8 0" android:fillColor="#FF8FB1" />
+    <path android:pathData="M58.9,44a1.9,1.9 0,1 0,3.8 0a1.9,1.9 0,1 0,-3.8 0" android:fillColor="#FF8FB1" />
+    <path android:pathData="M49.5,44.5Q54,49.5 58.5,44.5" android:strokeColor="#3A1460" android:strokeWidth="2.3" android:strokeLineCap="round" />
+    <!-- Recording dot -->
+    <path android:pathData="M64.3,27.5a4.2,4.2 0,1 0,8.4 0a4.2,4.2 0,1 0,-8.4 0" android:fillColor="#FF3B5C" android:strokeColor="#FFFFFF" android:strokeWidth="1.6" />
+</vector>
