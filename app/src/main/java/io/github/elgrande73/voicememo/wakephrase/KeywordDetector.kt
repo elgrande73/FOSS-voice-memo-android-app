@@ -16,7 +16,9 @@ import kotlin.math.sqrt
 data class KeywordMatchResult(
     val matched: Boolean,
     val confidence: Float,
-    val distance: Float
+    val distance: Float,
+    /** Length (frames) of the audio window that produced the best match, ending at the newest frame; 0 if none. */
+    val windowFrames: Int = 0
 )
 
 /**
@@ -58,12 +60,29 @@ interface KeywordDetector {
  * versions ('CIAO') keep being matched with the legacy feature extractor they were recorded with, so existing user
  * templates continue to work (re-recording is recommended to benefit from the new front end).
  */
+/**
+ * How the scores of several enrolled references (wake-phrase samples) are combined into one match score.
+ * The choice is evaluated in WakePhraseEvaluationTest / docs/WAKE_PHRASE_DETECTION.md.
+ */
+enum class ReferenceAggregation {
+    /** Score of the best-matching reference. */
+    MAX,
+    /** Mean of the two best references (with a single reference: its score). */
+    MEAN_OF_TOP_TWO
+}
+
 class TemplateKeywordDetector(
     private val frameSize: Int = 800, // 50ms at 16kHz
     private val fftSize: Int = 512,
     private val numBands: Int = 16,
-    private val frontEndConfig: FrontEndConfig = FrontEndConfig.DEFAULT
+    private val frontEndConfig: FrontEndConfig = FrontEndConfig.DEFAULT,
+    private val aggregation: ReferenceAggregation = DEFAULT_AGGREGATION
 ) : KeywordDetector {
+
+    /** One enrolled sample: its feature sequence and the feature extractor it was recorded with. */
+    private class Reference(val features: List<FloatArray>, val legacy: Boolean)
+
+    private data class ReferenceMatch(val confidence: Float, val distance: Float, val windowFrames: Int)
 
     private val fft = FFT(fftSize)
     private val frontEnd = WakePhraseFrontEnd(frontEndConfig)
@@ -71,13 +90,13 @@ class TemplateKeywordDetector(
     private var matchConfidenceThreshold: Float =
         MatchConfidenceThreshold.toDetectorConfidence(MatchConfidenceThreshold.DEFAULT_PERCENT)
 
-    // Sliding window of feature vectors
+    // Sliding windows of feature vectors (legacy features only while a legacy reference is loaded)
     private val slidingWindow = mutableListOf<FloatArray>()
+    private val legacyWindow = mutableListOf<FloatArray>()
     private val maxWindowFrames = 50 // Up to 2.5 seconds history
 
-    // Custom user voice template (if enrolled) and the feature version it was recorded with
-    private var referenceTemplate: List<FloatArray>? = null
-    private var referenceIsLegacy = false
+    // Enrolled samples (empty: the built-in default wake phrase is used)
+    private var references: List<Reference> = emptyList()
 
     /** Measurements of the most recent frame processed by the front end (levels and statistics only). */
     val diagnostics: FrontEndDiagnostics get() = frontEnd.diagnostics
@@ -85,13 +104,17 @@ class TemplateKeywordDetector(
     /** Background level estimated by the front end, in dBFS, or null before any audio was processed. */
     val noiseFloorDbfs: Float? get() = frontEnd.noiseFloorDbfs
 
-    /** True when the enrolled template was saved by an older version and uses the legacy features. */
+    /** True when an enrolled sample was saved by an older version and uses the legacy features. */
     val isLegacyTemplate: Boolean
-        @Synchronized get() = referenceTemplate != null && referenceIsLegacy
+        @Synchronized get() = references.any { it.legacy }
 
-    /** Number of frames (50 ms each) of the active template. */
+    /** Number of enrolled samples in use (0 = built-in default wake phrase). */
+    val referenceCount: Int
+        @Synchronized get() = references.size
+
+    /** Number of frames (50 ms each) of the longest active reference. */
     val templateFrameCount: Int
-        @Synchronized get() = (referenceTemplate ?: defaultTemplate).size
+        @Synchronized get() = references.maxOfOrNull { it.features.size } ?: defaultTemplate.size
 
     // Canonical default reference template for "Ciao Linda"
     private val defaultTemplate: List<FloatArray> by lazy {
@@ -109,104 +132,89 @@ class TemplateKeywordDetector(
     }
 
     @Synchronized
-    override fun hasCustomTemplate(): Boolean {
-        return referenceTemplate != null && referenceTemplate!!.isNotEmpty()
-    }
+    override fun hasCustomTemplate(): Boolean = references.isNotEmpty()
 
     @Synchronized
-    override fun loadTemplate(templateBytes: ByteArray): Boolean {
+    override fun loadTemplate(templateBytes: ByteArray): Boolean = loadTemplates(listOf(templateBytes)) == 1
+
+    /**
+     * Replaces the enrolled references with the valid entries of [templates] (one per sample, at most
+     * [MAX_REFERENCES]). Invalid entries are skipped. Returns the number of references now in use; with 0 the
+     * built-in default wake phrase is used.
+     */
+    @Synchronized
+    fun loadTemplates(templates: List<ByteArray>): Int {
+        references = templates.mapNotNull { parseTemplate(it) }.take(MAX_REFERENCES)
+        slidingWindow.clear()
+        legacyWindow.clear()
+        return references.size
+    }
+
+    private fun parseTemplate(templateBytes: ByteArray): Reference? {
         try {
-            if (templateBytes.size < 12) return false
+            if (templateBytes.size < 12) return null
             val buffer = ByteBuffer.wrap(templateBytes).order(ByteOrder.LITTLE_ENDIAN)
-            val magic = buffer.int
-            val legacy = when (magic) {
+            val legacy = when (buffer.int) {
                 MAGIC_FRONT_END_TEMPLATE -> false
                 MAGIC_LEGACY_TEMPLATE -> true
-                else -> return false
+                else -> return null
             }
-
             val frameCount = buffer.int
             val bands = buffer.int
-            if (frameCount <= 0 || frameCount > 200 || bands != numBands) return false
-
-            val template = mutableListOf<FloatArray>()
+            if (frameCount <= 0 || frameCount > 200 || bands != numBands) return null
+            if (templateBytes.size < 12 + frameCount * numBands * 4) return null
+            val template = ArrayList<FloatArray>(frameCount)
             for (f in 0 until frameCount) {
-                val vec = FloatArray(numBands)
-                for (b in 0 until numBands) {
-                    vec[b] = buffer.float
-                }
-                if (vec.any { it.isNaN() || it.isInfinite() }) return false
+                val vec = FloatArray(numBands) { buffer.float }
+                if (vec.any { it.isNaN() || it.isInfinite() }) return null
                 template.add(vec)
             }
-            referenceTemplate = template
-            referenceIsLegacy = legacy
-            slidingWindow.clear()
-            return true
+            return Reference(template, legacy)
         } catch (_: Exception) {
-            return false
+            return null
         }
     }
 
     /**
-     * Serializes the current learned template into a portable byte array.
+     * Serializes the enrolled template (single-sample use, e.g. right after [recordTemplate]).
      */
     @Synchronized
     fun getTemplateData(): ByteArray? {
-        val template = referenceTemplate ?: return null
-        val buffer = ByteBuffer.allocate(12 + template.size * numBands * 4).order(ByteOrder.LITTLE_ENDIAN)
-        buffer.putInt(if (referenceIsLegacy) MAGIC_LEGACY_TEMPLATE else MAGIC_FRONT_END_TEMPLATE)
-        buffer.putInt(template.size)
-        buffer.putInt(numBands)
-        for (vec in template) {
-            for (valItem in vec) {
-                buffer.putFloat(valItem)
-            }
-        }
-        return buffer.array()
+        val reference = references.singleOrNull() ?: return null
+        return serialize(reference.features, reference.legacy)
     }
 
     /**
-     * Enrolls a new template from a recording (consecutive 50 ms frames, e.g. the 2.5 s Settings recording).
-     *
-     * The recording is processed by a fresh [WakePhraseFrontEnd] that is first primed with the same recording, so its
-     * noise floor is converged as it is during monitoring. Only the spoken part is kept (endpointing, see
-     * [findSpeechSpan]); leading and trailing silence would otherwise dominate the template and the matcher.
+     * Enrolls a new template from a recording (consecutive 50 ms frames, e.g. the 2.5 s Settings recording),
+     * replacing all references with this single one. See [WakePhraseEnrollment] for the validated multi-sample flow.
      *
      * @return false if no phrase of at least [MIN_TEMPLATE_FRAMES] frames was found (nothing is changed then).
      */
     @Synchronized
     fun recordTemplate(chunks: List<ShortArray>): Boolean {
-        val enrollFrontEnd = WakePhraseFrontEnd(frontEndConfig)
-        chunks.forEach { enrollFrontEnd.process(it) } // prime the noise floor
-        val features = ArrayList<FloatArray>(chunks.size)
-        val levels = FloatArray(chunks.size)
-        chunks.forEachIndexed { i, chunk ->
-            features += enrollFrontEnd.process(chunk)
-            levels[i] = enrollFrontEnd.diagnostics.inputRmsDbfs
-        }
-        val span = findSpeechSpan(levels, enrollFrontEnd.noiseFloorDbfs ?: -120f) ?: return false
-
-        referenceTemplate = features.subList(span.first, span.last + 1).toList()
-        referenceIsLegacy = false
+        val features = extractPhraseFeatures(chunks, frontEndConfig) ?: return false
+        references = listOf(Reference(features, legacy = false))
         slidingWindow.clear()
+        legacyWindow.clear()
         return true
     }
 
     @Synchronized
     override fun clearTemplate() {
-        referenceTemplate = null
-        referenceIsLegacy = false
+        references = emptyList()
         slidingWindow.clear()
+        legacyWindow.clear()
     }
 
     @Synchronized
     override fun resetWindow() {
         slidingWindow.clear()
+        legacyWindow.clear()
     }
 
     @Synchronized
     override fun resetStream() {
-        slidingWindow.clear()
+        resetWindow()
         frontEnd.reset()
     }
 
@@ -221,38 +229,45 @@ class TemplateKeywordDetector(
 
     @Synchronized
     override fun processFrame(frame: ShortArray, rms: Float, db: Float): KeywordMatchResult {
-        // The front end always runs (noise floor, diagnostics); legacy templates are matched with legacy features
-        val frontEndFeatures = frontEnd.process(frame)
-        val featureVec = if (referenceTemplate != null && referenceIsLegacy) extractFeatureVector(frame) else frontEndFeatures
-        slidingWindow.add(featureVec)
-        if (slidingWindow.size > maxWindowFrames) {
-            slidingWindow.removeAt(0)
-        }
+        // The front end always runs (noise floor, diagnostics); legacy references are matched with legacy features
+        appendBounded(slidingWindow, frontEnd.process(frame))
+        val active = references.ifEmpty { listOf(Reference(defaultTemplate, legacy = false)) }
+        if (active.any { it.legacy }) appendBounded(legacyWindow, extractFeatureVector(frame))
 
-        val template = referenceTemplate ?: defaultTemplate
-        val minLen = (template.size * 0.70).toInt().coerceAtLeast(6)
-        if (slidingWindow.size < minLen) {
-            return KeywordMatchResult(matched = false, confidence = 0f, distance = 1.0f)
+        val matches = active.mapNotNull { matchReference(it, if (it.legacy) legacyWindow else slidingWindow) }
+        if (matches.isEmpty()) return KeywordMatchResult(matched = false, confidence = 0f, distance = 1.0f)
+
+        val sorted = matches.sortedByDescending { it.confidence }
+        val confidence = when (aggregation) {
+            ReferenceAggregation.MAX -> sorted[0].confidence
+            ReferenceAggregation.MEAN_OF_TOP_TWO ->
+                if (sorted.size == 1) sorted[0].confidence else (sorted[0].confidence + sorted[1].confidence) / 2f
         }
+        return KeywordMatchResult(
+            matched = confidence > 0f && confidence >= matchConfidenceThreshold,
+            confidence = confidence,
+            distance = sorted[0].distance,
+            windowFrames = sorted[0].windowFrames
+        )
+    }
+
+    private fun appendBounded(window: MutableList<FloatArray>, features: FloatArray) {
+        window.add(features)
+        if (window.size > maxWindowFrames) window.removeAt(0)
+    }
+
+    /** Best match of [reference] against windows ending at the newest frame, or null if none qualifies. */
+    private fun matchReference(reference: Reference, window: List<FloatArray>): ReferenceMatch? {
+        val template = reference.features
+        val minLen = (template.size * 0.70).toInt().coerceAtLeast(6)
+        if (window.size < minLen) return null
 
         // Test candidate lengths in sliding window to support different speaking rates
-        val maxLen = min(slidingWindow.size, (template.size * 1.35).toInt())
-        val candidateLengths = mutableListOf<Int>()
-        var cl = minLen
-        while (cl <= maxLen) {
-            candidateLengths.add(cl)
-            cl += 2
-        }
-        if (!candidateLengths.contains(maxLen)) {
-            candidateLengths.add(maxLen)
-        }
-
-        var bestNormalizedDist = 1.0f
-        var bestConfidence = 0.0f
-        var bestMatched = false
-
-        for (candLen in candidateLengths) {
-            val testSlice = slidingWindow.takeLast(candLen)
+        val maxLen = min(window.size, (template.size * 1.35).toInt())
+        var best: ReferenceMatch? = null
+        var candLen = minLen
+        while (candLen <= maxLen) {
+            val testSlice = window.subList(window.size - candLen, window.size)
 
             // Dynamic acoustic trajectory verification:
             // "Ciao Linda" has distinctive phonemic transitions (affricate -> vowel -> nasal -> stop -> vowel).
@@ -262,34 +277,18 @@ class TemplateKeywordDetector(
                 fluxSum += euclideanDistance(testSlice[k], testSlice[k - 1])
             }
             val avgFlux = fluxSum / (testSlice.size - 1).coerceAtLeast(1)
-            if (avgFlux < 0.040f) {
-                // Reject stationary sound/noise
-                continue
+            if (avgFlux >= 0.040f) { // otherwise: reject stationary sound/noise
+                val (cost, stepCount) = computeDtwDistance(template, testSlice)
+                if (cost < Float.MAX_VALUE / 4f) {
+                    val normalizedDist = cost / stepCount
+                    // Confidence scale used by the user-facing match confidence threshold (percent / 100)
+                    val conf = (1.0f - (normalizedDist / 0.40f)).coerceIn(0.0f, 1.0f)
+                    if (best == null || conf > best.confidence) best = ReferenceMatch(conf, normalizedDist, candLen)
+                }
             }
-
-            val (cost, stepCount) = computeDtwDistance(template, testSlice)
-            if (cost >= Float.MAX_VALUE / 4f) continue
-
-            val normalizedDist = cost / stepCount
-            // Confidence scale used by the user-facing match confidence threshold (percent / 100)
-            val conf = (1.0f - (normalizedDist / 0.40f)).coerceIn(0.0f, 1.0f)
-
-            val isMatch = conf >= matchConfidenceThreshold
-
-            if (conf > bestConfidence) {
-                bestConfidence = conf
-                bestNormalizedDist = normalizedDist
-                bestMatched = isMatch
-            } else if (isMatch && !bestMatched) {
-                bestMatched = true
-            }
+            candLen = if (candLen < maxLen && candLen + 2 > maxLen) maxLen else candLen + 2
         }
-
-        return KeywordMatchResult(
-            matched = bestMatched,
-            confidence = bestConfidence,
-            distance = bestNormalizedDist
-        )
+        return best
     }
 
     /** Legacy (version 1) feature extractor, kept only for templates enrolled with earlier versions. */
@@ -393,6 +392,38 @@ class TemplateKeywordDetector(
     }
 
     companion object {
+        /** Maximum number of enrolled samples (references) of the wake phrase. */
+        const val MAX_REFERENCES = 5
+        val DEFAULT_AGGREGATION = ReferenceAggregation.MAX
+
+        fun serialize(features: List<FloatArray>, legacy: Boolean = false): ByteArray {
+            val bands = features.first().size
+            val buffer = ByteBuffer.allocate(12 + features.size * bands * 4).order(ByteOrder.LITTLE_ENDIAN)
+            buffer.putInt(if (legacy) MAGIC_LEGACY_TEMPLATE else MAGIC_FRONT_END_TEMPLATE)
+            buffer.putInt(features.size)
+            buffer.putInt(bands)
+            features.forEach { vec -> vec.forEach { buffer.putFloat(it) } }
+            return buffer.array()
+        }
+
+        /**
+         * Features of the spoken phrase in [chunks] (a Settings recording): a fresh front end primed with the same
+         * recording so its noise floor is converged as during monitoring, then endpointing ([findSpeechSpan]).
+         * Returns null if no phrase was found.
+         */
+        fun extractPhraseFeatures(chunks: List<ShortArray>, config: FrontEndConfig = FrontEndConfig.DEFAULT): List<FloatArray>? {
+            val enrollFrontEnd = WakePhraseFrontEnd(config)
+            chunks.forEach { enrollFrontEnd.process(it) } // prime the noise floor
+            val features = ArrayList<FloatArray>(chunks.size)
+            val levels = FloatArray(chunks.size)
+            chunks.forEachIndexed { i, chunk ->
+                features += enrollFrontEnd.process(chunk)
+                levels[i] = enrollFrontEnd.diagnostics.inputRmsDbfs
+            }
+            val span = findSpeechSpan(levels, enrollFrontEnd.noiseFloorDbfs ?: -120f) ?: return null
+            return features.subList(span.first, span.last + 1).toList()
+        }
+
         const val MAGIC_LEGACY_TEMPLATE = 0x4349414F // 'CIAO': legacy features
         const val MAGIC_FRONT_END_TEMPLATE = 0x32414943 // 'CIA2' (little endian): WakePhraseFrontEnd features
         const val MIN_TEMPLATE_FRAMES = 6

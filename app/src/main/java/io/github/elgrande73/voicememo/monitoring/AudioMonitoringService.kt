@@ -41,6 +41,7 @@ import io.github.elgrande73.voicememo.detection.KeywordBehavior
 import io.github.elgrande73.voicememo.detection.MemoDetectionEvent
 import io.github.elgrande73.voicememo.detection.MemoTriggerDetector
 import io.github.elgrande73.voicememo.detection.RecordingLifecycleState
+import io.github.elgrande73.voicememo.detection.RecordingStopReason
 import io.github.elgrande73.voicememo.memo.AppDatabase
 import io.github.elgrande73.voicememo.memo.ErrorLogger
 import io.github.elgrande73.voicememo.memo.VoiceNote
@@ -105,6 +106,8 @@ class AudioMonitoringService : Service() {
         const val NOTIFICATION_ID = 1001
         // Covers thread hand-off, AudioTrack output latency and room echo after the chime
         private const val FEEDBACK_MUTE_TAIL_MS = 450L
+        // Time the capture thread gets to apply a Stop request before it is finalized directly
+        private const val MANUAL_STOP_GRACE_MS = 400L
 
         const val ACTION_START_MANUAL_RECORDING = "${BuildConfig.APPLICATION_ID}.ACTION_START_MANUAL_RECORDING"
         const val ACTION_STOP_MANUAL_RECORDING = "${BuildConfig.APPLICATION_ID}.ACTION_STOP_MANUAL_RECORDING"
@@ -392,14 +395,7 @@ class AudioMonitoringService : Service() {
 
         for (event in events) {
             when (event) {
-                is MemoDetectionEvent.StateChanged -> {
-                    _currentRecordingState.value = event.newState
-                    _isCurrentlyRecording.value = (event.newState == RecordingLifecycleState.RECORDING)
-                    if (event.newState != RecordingLifecycleState.RECORDING) {
-                        _recordingDurationSeconds.value = 0
-                    }
-                    updateNotificationStatus(event.newState)
-                }
+                is MemoDetectionEvent.StateChanged -> onRecordingStateChanged(event.newState)
                 is MemoDetectionEvent.TriggerStarted -> {
                     playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STARTED)
                 }
@@ -420,12 +416,7 @@ class AudioMonitoringService : Service() {
                     }
                     _currentSessionData.value = historyPoints.toList()
                 }
-                is MemoDetectionEvent.RecordingCompleted -> {
-                    _isCurrentlyRecording.value = false
-                    _recordingDurationSeconds.value = 0
-                    playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STOPPED)
-                    saveCompletedVoiceNote(event)
-                }
+                is MemoDetectionEvent.RecordingCompleted -> onRecordingCompleted(event)
                 else -> {}
             }
         }
@@ -523,16 +514,38 @@ class AudioMonitoringService : Service() {
         updateNotificationStatus(RecordingLifecycleState.RECORDING)
     }
 
+    /**
+     * Stop button: the capture thread ends the memo after its next frame, so audio already captured but still in the
+     * AudioRecord/frame pipeline is saved too. If capture has stalled, the watchdog finalizes it after a short grace
+     * period. Either way the memo is finalized exactly once (the detector ignores duplicates).
+     */
     private fun handleStopManualRecording() {
-        val completed = memoDetector.stopManualRecording()
+        if (!memoDetector.requestStop(RecordingStopReason.USER)) return
+        serviceScope.launch {
+            delay(MANUAL_STOP_GRACE_MS)
+            memoDetector.finalizePendingStop()?.let { completed ->
+                onRecordingCompleted(completed)
+                onRecordingStateChanged(RecordingLifecycleState.MONITORING)
+            }
+        }
+    }
+
+    /** Single completion path for every stop reason: state, stop cue and saving. */
+    private fun onRecordingCompleted(event: MemoDetectionEvent.RecordingCompleted) {
         _isCurrentlyRecording.value = false
         _recordingDurationSeconds.value = 0
-        if (completed != null) {
-            playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STOPPED)
-            saveCompletedVoiceNote(completed)
+        playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STOPPED)
+        if (BuildConfig.DEBUG) {
+            Log.d("AudioService", "Memo finished: reason=${event.stopReason} removedStopPhraseFrames=${event.removedStopPhraseFrames} durationMs=${event.durationMs}")
         }
-        _currentRecordingState.value = RecordingLifecycleState.MONITORING
-        updateNotificationStatus(RecordingLifecycleState.MONITORING)
+        saveCompletedVoiceNote(event)
+    }
+
+    private fun onRecordingStateChanged(state: RecordingLifecycleState) {
+        _currentRecordingState.value = state
+        _isCurrentlyRecording.value = state == RecordingLifecycleState.RECORDING
+        if (state != RecordingLifecycleState.RECORDING) _recordingDurationSeconds.value = 0
+        updateNotificationStatus(state)
     }
 
     private fun saveCompletedVoiceNote(event: MemoDetectionEvent.RecordingCompleted) {
@@ -555,13 +568,13 @@ class AudioMonitoringService : Service() {
                 val memosDir = File(filesDir, "memos").apply { mkdirs() }
                 val wavFile = File(memosDir, "memo_${dateStr}_${timestamp}.wav")
 
-                // Write WAV file
-                WavWriter.writeWavFile(
-                    outputFile = wavFile,
-                    audioChunks = event.audioChunks,
-                    sampleRate = sampleRate,
-                    channels = 1
-                )
+                // Write the WAV file atomically (temporary file, verified, then renamed); retry once on failure
+                try {
+                    WavWriter.writeWavFileAtomic(wavFile, event.audioChunks, sampleRate, 1)
+                } catch (e: java.io.IOException) {
+                    ErrorLogger.log(this@AudioMonitoringService, "AudioService", "Writing memo failed, retrying", e)
+                    WavWriter.writeWavFileAtomic(wavFile, event.audioChunks, sampleRate, 1)
+                }
 
                 val durationSeconds = (event.durationMs / 1000.0).coerceAtLeast(0.5)
 
@@ -775,7 +788,7 @@ class AudioMonitoringService : Service() {
 
         // If recording was active, finalize and save before stopping
         try {
-            val pendingMemo = memoDetector.stopManualRecording()
+            val pendingMemo = memoDetector.stopManualRecording(RecordingStopReason.SERVICE_STOPPED)
             if (pendingMemo != null && pendingMemo.audioChunks.isNotEmpty()) {
                 saveCompletedVoiceNote(pendingMemo)
             }

@@ -40,6 +40,22 @@ enum class KeywordBehavior(val title: String) {
 }
 
 /**
+ * Why a memo recording ended; decides how its audio is finalized.
+ */
+enum class RecordingStopReason(val trimsStopPhrase: Boolean) {
+    /** The wake phrase was repeated: the spoken stop phrase is removed from the memo. */
+    KEYWORD(trimsStopPhrase = true),
+    /** The configured silence timeout elapsed: all captured audio, including the silence, is kept. */
+    SILENCE_TIMEOUT(trimsStopPhrase = false),
+    /** The maximum memo length was reached: all captured audio is kept. */
+    MAX_DURATION(trimsStopPhrase = false),
+    /** The user tapped Stop: audio up to the stop request, including frames still in the capture pipeline, is kept. */
+    USER(trimsStopPhrase = false),
+    /** Monitoring stopped (service shut down) while recording: the audio captured so far is kept. */
+    SERVICE_STOPPED(trimsStopPhrase = false)
+}
+
+/**
  * Events emitted by the MemoTriggerDetector state machine.
  */
 sealed class MemoDetectionEvent {
@@ -59,7 +75,10 @@ sealed class MemoDetectionEvent {
         val durationMs: Long,
         val peakDb: Float,
         val avgDb: Float,
-        val audioChunks: List<ShortArray>
+        val audioChunks: List<ShortArray>,
+        val stopReason: RecordingStopReason = RecordingStopReason.USER,
+        /** Frames removed from the end because they contained the spoken stop phrase. */
+        val removedStopPhraseFrames: Int = 0
     ) : MemoDetectionEvent()
 
     data class StateChanged(val newState: RecordingLifecycleState) : MemoDetectionEvent()
@@ -129,6 +148,11 @@ class MemoTriggerDetector(
 
     private val chunkDurationMs: Long = 50L // 800 samples at 16kHz = 50ms
     private var framesSinceTrigger = 0
+    // Index in activeRecordingChunks where the memo proper begins (after pre-trigger audio and the start phrase)
+    private var memoStartChunkIndex = 0
+    // Stop requested from another thread (Stop button); applied on the capture thread after the next frame
+    @Volatile
+    private var pendingStopReason: RecordingStopReason? = null
 
     @Synchronized
     fun reset(startMonitoring: Boolean = true) {
@@ -142,6 +166,8 @@ class MemoTriggerDetector(
         consecutiveSoundChunks = 0
         noiseFloorEstimator.reset()
         recentFrameCount = 0
+        memoStartChunkIndex = 0
+        pendingStopReason = null
         keywordConfidence = 0f
         lastKeywordResult = null
         sessionMaxDb = 0f
@@ -239,6 +265,8 @@ class MemoTriggerDetector(
                             activeRecordingChunks.clear()
                             val preChunks = preTriggerBuffer.toList()
                             activeRecordingChunks.addAll(preChunks)
+                            memoStartChunkIndex = activeRecordingChunks.size
+                            pendingStopReason = null
 
                             events.add(
                                 MemoDetectionEvent.TriggerStarted(
@@ -274,6 +302,9 @@ class MemoTriggerDetector(
                                 activeRecordingChunks.clear()
                                 val preChunks = preTriggerBuffer.toList()
                                 activeRecordingChunks.addAll(preChunks)
+                                memoStartChunkIndex = activeRecordingChunks.size
+                                framesSinceTrigger = 0
+                                pendingStopReason = null
 
                                 events.add(
                                     MemoDetectionEvent.TriggerStarted(
@@ -321,7 +352,7 @@ class MemoTriggerDetector(
                 // Check stop conditions:
                 // 1. Keyword stop command (if Wake Phrase mode and configured to START_AND_STOP)
                 // The matcher keeps receiving every frame while recording (contiguous context for the stop phrase)
-                var keywordStopTriggered = false
+                var keywordStop: KeywordMatchResult? = null
                 framesSinceTrigger++
                 if (detectionMode == DetectionMode.KEYWORD_ONLY) {
                     val kwStopResult = matchWakePhrase(frame, vadResult)
@@ -330,7 +361,7 @@ class MemoTriggerDetector(
                         kwStopResult.matched &&
                         recentPeakDb() >= thresholdDb
                     ) {
-                        keywordStopTriggered = true
+                        keywordStop = kwStopResult
                     }
                 }
 
@@ -339,37 +370,22 @@ class MemoTriggerDetector(
                 val silenceElapsedMs = consecutiveSilentChunks * chunkDurationMs
                 val isSilenceTimeout = consecutiveSilentChunks > 0 && silenceElapsedMs >= silenceTimeoutMs
 
-                // 3. Max memo length reached
-                val totalDuration = maxOf(now - triggerStartTime, activeRecordingChunks.size * chunkDurationMs)
-                val isMaxDuration = totalDuration >= maxMemoDurationMs
+                // 3. Max memo length reached, measured in captured audio (not wall-clock time), so frames that were
+                //    captured before the limit but are still queued for processing are never cut off
+                val isMaxDuration = activeRecordingChunks.size * chunkDurationMs >= maxMemoDurationMs
 
-                if (keywordStopTriggered || isSilenceTimeout || isMaxDuration) {
-                    val finalAvgDb = if (sessionDbCount > 0) (sessionSumDb / sessionDbCount).toFloat() else 0f
-                    val finishedEvent = MemoDetectionEvent.RecordingCompleted(
-                        triggerType = activeTriggerType,
-                        durationMs = totalDuration,
-                        peakDb = sessionMaxDb,
-                        avgDb = finalAvgDb,
-                        audioChunks = activeRecordingChunks.toList()
-                    )
-
-                    currentState = RecordingLifecycleState.MONITORING
-                    // The window still holds the stop phrase; clear it so it cannot immediately start a new memo
-                    keywordDetector.resetWindow()
-                    events.add(finishedEvent)
+                // Priority when several apply to the same frame: an explicit Stop request, then the spoken command,
+                // then the limits. Exactly one reason finalizes the memo.
+                val reason = pendingStopReason
+                    ?: when {
+                        keywordStop != null -> RecordingStopReason.KEYWORD
+                        isMaxDuration -> RecordingStopReason.MAX_DURATION
+                        isSilenceTimeout -> RecordingStopReason.SILENCE_TIMEOUT
+                        else -> null
+                    }
+                if (reason != null) {
+                    events.add(finalizeRecording(reason, keywordStop))
                     events.add(MemoDetectionEvent.StateChanged(currentState))
-
-                    // Reset tracking
-                    activeRecordingChunks.clear()
-                    activeTriggerType = ""
-                    triggerStartTime = 0L
-                    lastSpeechTime = 0L
-                    soundSustainStartTime = 0L
-                    consecutiveSilentChunks = 0
-                    consecutiveSoundChunks = 0
-                    sessionMaxDb = 0f
-                    sessionSumDb = 0.0
-                    sessionDbCount = 0
                 }
             }
 
@@ -401,6 +417,8 @@ class MemoTriggerDetector(
         activeRecordingChunks.clear()
         val preChunks = preTriggerBuffer.toList()
         activeRecordingChunks.addAll(preChunks)
+        memoStartChunkIndex = activeRecordingChunks.size
+        pendingStopReason = null
 
         return MemoDetectionEvent.TriggerStarted(
             triggerType = "MANUAL",
@@ -410,32 +428,82 @@ class MemoTriggerDetector(
     }
 
     /**
-     * Manually force finishes and finalizes the active recording.
+     * Requests the end of the current memo from another thread (e.g. the Stop button). The capture thread applies it
+     * after processing its next frame, so audio that was already captured but not yet processed is still saved.
+     * Repeated requests are ignored. If no frame arrives (capture stalled), call [finalizePendingStop].
      */
     @Synchronized
-    fun stopManualRecording(): MemoDetectionEvent.RecordingCompleted? {
+    fun requestStop(reason: RecordingStopReason = RecordingStopReason.USER): Boolean {
+        if (currentState != RecordingLifecycleState.RECORDING || pendingStopReason != null) return false
+        pendingStopReason = reason
+        return true
+    }
+
+    /** Finalizes a requested stop immediately if the capture thread has not done so; null if nothing is pending. */
+    @Synchronized
+    fun finalizePendingStop(): MemoDetectionEvent.RecordingCompleted? {
+        val reason = pendingStopReason ?: return null
         if (currentState != RecordingLifecycleState.RECORDING) return null
+        return finalizeRecording(reason, null)
+    }
 
-        val now = System.currentTimeMillis()
-        val totalDuration = if (triggerStartTime > 0L) (now - triggerStartTime) else (activeRecordingChunks.size * chunkDurationMs)
+    /**
+     * Finishes the active recording immediately (used when monitoring shuts down). Returns null if not recording,
+     * so a memo can never be finalized twice.
+     */
+    @Synchronized
+    fun stopManualRecording(reason: RecordingStopReason = RecordingStopReason.USER): MemoDetectionEvent.RecordingCompleted? {
+        if (currentState != RecordingLifecycleState.RECORDING) return null
+        return finalizeRecording(reason, null)
+    }
+
+    /**
+     * The single place where a recording is finalized (state RECORDING → MONITORING, exactly once).
+     * Keyword stops remove the spoken stop phrase ([StopPhraseTrimmer]); all other reasons keep every captured frame.
+     */
+    private fun finalizeRecording(
+        reason: RecordingStopReason,
+        keywordStop: KeywordMatchResult?
+    ): MemoDetectionEvent.RecordingCompleted {
+        var chunks: List<ShortArray> = activeRecordingChunks.toList()
+        var removed = 0
+        if (reason.trimsStopPhrase && keywordStop != null) {
+            try {
+                val trimmed = StopPhraseTrimmer.trim(chunks, keywordStop.windowFrames, memoStartChunkIndex)
+                chunks = trimmed.frames
+                removed = trimmed.removedFrames
+            } catch (e: Exception) {
+                // Never lose the memo because trimming failed: keep the untrimmed audio
+                chunks = activeRecordingChunks.toList()
+                removed = 0
+            }
+        }
         val finalAvgDb = if (sessionDbCount > 0) (sessionSumDb / sessionDbCount).toFloat() else 0f
-
         val completed = MemoDetectionEvent.RecordingCompleted(
             triggerType = activeTriggerType.ifEmpty { "MANUAL" },
-            durationMs = totalDuration,
+            durationMs = chunks.sumOf { it.size }.toLong() * 1000L / SAMPLE_RATE,
             peakDb = sessionMaxDb,
             avgDb = finalAvgDb,
-            audioChunks = activeRecordingChunks.toList()
+            audioChunks = chunks,
+            stopReason = reason,
+            removedStopPhraseFrames = removed
         )
 
         currentState = RecordingLifecycleState.MONITORING
+        // The window still holds the stop phrase; clear it so it cannot immediately start a new memo
         keywordDetector.resetWindow()
+        pendingStopReason = null
         activeRecordingChunks.clear()
+        memoStartChunkIndex = 0
         activeTriggerType = ""
         triggerStartTime = 0L
         lastSpeechTime = 0L
         soundSustainStartTime = 0L
-
+        consecutiveSilentChunks = 0
+        consecutiveSoundChunks = 0
+        sessionMaxDb = 0f
+        sessionSumDb = 0.0
+        sessionDbCount = 0
         return completed
     }
 
@@ -482,6 +550,7 @@ class MemoTriggerDetector(
         private const val STOP_PHRASE_DEBOUNCE_MS = 1500L
         /** 2.5 s: matches the matcher's sliding window (50 frames). */
         private const val RECENT_LEVEL_FRAMES = 50
+        private const val SAMPLE_RATE = 16000
     }
 }
 
