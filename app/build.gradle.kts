@@ -34,7 +34,9 @@ android {
     }
     externalNativeBuild {
       cmake {
-        arguments += listOf("-DANDROID_STL=c++_static")
+        // Several native libraries (whisper, ggml, CPU variants) share one C++ runtime; c++_static would give each
+        // its own copy, which the NDK does not support for more than one shared library
+        arguments += listOf("-DANDROID_STL=c++_shared")
       }
     }
   }

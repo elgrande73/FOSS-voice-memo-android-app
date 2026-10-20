@@ -21,15 +21,19 @@ object Transcription {
     private var engine: WhisperTranscriber? = null
 
     /**
-     * One background thread at low priority: whisper.cpp's worker threads inherit it, so audio capture and the UI
-     * keep precedence while a memo is transcribed.
+     * One worker thread, slightly below normal priority (whisper.cpp's threads inherit it), so audio capture and the
+     * UI keep precedence. Not THREAD_PRIORITY_BACKGROUND: on Android that also moves the thread into the background
+     * CPU group (typically only the slow cores, with a small CPU share), which made transcription take many minutes.
      */
     private val worker = Executors.newSingleThreadExecutor { runnable ->
         Thread({
-            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+            Process.setThreadPriority(WORKER_PRIORITY)
             runnable.run()
         }, "transcription").apply { isDaemon = true }
     }.asCoroutineDispatcher()
+
+    /** Nice value +4: below the UI and audio threads, but above Android's background group (+10). */
+    const val WORKER_PRIORITY = 4
 
     fun preferences(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PreferenceKeys.PREFS_NAME, Context.MODE_PRIVATE)
@@ -51,14 +55,19 @@ object Transcription {
                 transcriberFactory = { engine(context) },
                 settings = { settings(context) },
                 scope = CoroutineScope(SupervisorJob()),
-                worker = worker
-            ).also { manager = it }
+                worker = worker,
+                onBusyChanged = { busy -> if (busy) TranscriptionService.start(context.applicationContext) }
+            ).also {
+                manager = it
+                // Memos queued when the app was last stopped continue
+                it.resumePending()
+            }
         }
 
     fun settings(context: Context): TranscriptionSettings {
         val prefs = preferences(context)
         val quality = prefs.getString(PreferenceKeys.TRANSCRIPTION_QUALITY, null)
-            ?.let { name -> TranscriptionQuality.entries.firstOrNull { it.name == name } } ?: TranscriptionQuality.ACCURATE
+            ?.let { name -> TranscriptionQuality.entries.firstOrNull { it.name == name } } ?: TranscriptionQuality.DEFAULT
         return TranscriptionSettings(
             language = prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, null) ?: TranscriptionSettings.AUTO_LANGUAGE,
             quality = quality,

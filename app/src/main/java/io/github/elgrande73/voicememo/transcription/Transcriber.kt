@@ -13,14 +13,22 @@ object TranscriptionStatus {
 }
 
 enum class TranscriptionQuality(val title: String, val beamSize: Int) {
-    ACCURATE("Accurate (slower)", 5),
-    FAST("Fast", 1)
+    ACCURATE("Accurate (slower, about 2× the time)", 5),
+    FAST("Fast (recommended on phones)", 1);
+
+    companion object {
+        /**
+         * Greedy decoding: measured 1.3 s vs 3.1 s (beam search) for a 15.7 s memo on the build machine; phones are
+         * several times slower, so beam search is opt-in.
+         */
+        val DEFAULT = FAST
+    }
 }
 
 data class TranscriptionSettings(
     /** ISO 639-1 code, or [AUTO_LANGUAGE] for automatic detection. */
     val language: String = AUTO_LANGUAGE,
-    val quality: TranscriptionQuality = TranscriptionQuality.ACCURATE,
+    val quality: TranscriptionQuality = TranscriptionQuality.DEFAULT,
     val threads: Int = 4
 ) {
     companion object {
@@ -84,12 +92,22 @@ interface SpeechTranscriber {
     fun transcribe(samples: FloatArray, settings: TranscriptionSettings, cancel: CancelToken): TranscriptResult
     /** Frees the model memory; the next call loads it again. */
     fun release()
+    /** Progress of the running transcription in percent; may be called from another thread. */
+    fun progress(): Int = 0
 }
 
 /** whisper.cpp with the model selected in [SpeechModelStore]; the model stays loaded until [release]. */
-class WhisperTranscriber(private val context: Context, private val store: SpeechModelStore) : SpeechTranscriber {
+class WhisperTranscriber(
+    private val context: Context,
+    private val store: SpeechModelStore,
+    /** The model to use; the selected one by default (tests on the build machine pass a model file). */
+    private val modelProvider: () -> SpeechModel = { store.activeModel() }
+) : SpeechTranscriber {
+    @Volatile
     private var handle = 0L
     private var loadedModelId: String? = null
+
+    override fun progress(): Int = handle.let { if (it == 0L) 0 else WhisperNative.progress(it) }
 
     @Synchronized
     override fun transcribe(samples: FloatArray, settings: TranscriptionSettings, cancel: CancelToken): TranscriptResult {
@@ -97,7 +115,7 @@ class WhisperTranscriber(private val context: Context, private val store: Speech
             throw TranscriptionException(TranscriptionException.Kind.NOT_AVAILABLE, "Speech-to-text is not available on this device.")
         }
         val model = try {
-            store.activeModel()
+            modelProvider()
         } catch (e: Exception) {
             throw TranscriptionException(TranscriptionException.Kind.MODEL, e.message ?: "The speech model could not be prepared.")
         }

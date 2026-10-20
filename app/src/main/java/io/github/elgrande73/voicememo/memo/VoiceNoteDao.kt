@@ -38,6 +38,9 @@ interface VoiceNoteDao {
     @Query("UPDATE voice_notes SET is_favorite = :isFavorite WHERE id = :id")
     suspend fun setFavorite(id: Int, isFavorite: Boolean)
 
+    @Query("SELECT id FROM voice_notes WHERE transcription_status = :status ORDER BY timestamp ASC")
+    suspend fun getNoteIdsWithTranscriptionStatus(status: String): List<Int>
+
     @Query("UPDATE voice_notes SET transcription_text = :text, transcription_status = :status WHERE id = :id")
     suspend fun updateTranscription(id: Int, text: String?, status: String)
 

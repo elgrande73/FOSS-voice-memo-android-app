@@ -332,6 +332,8 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         voiceNoteRepository = VoiceNoteRepository(database.voiceNoteDao())
+        // Creating the manager resumes memos that were still queued when the app was last stopped
+        Transcription.manager(context)
 
         allVoiceNotes = voiceNoteRepository.allNotes.stateIn(
             scope = viewModelScope,

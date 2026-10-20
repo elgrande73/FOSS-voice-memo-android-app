@@ -38,8 +38,10 @@ class TranscriptSectionTest {
             }
         }
         composeTestRule.onNodeWithTag("transcript_start_7").assertTextEquals("Transcribe").performClick()
-        composeTestRule.runOnIdle { job = TranscriptionJobState.Running }
+        composeTestRule.runOnIdle { job = TranscriptionJobState.Running() }
         composeTestRule.onNodeWithTag("transcript_status_7").assertTextEquals("Transcribing on this device…")
+        composeTestRule.runOnIdle { job = TranscriptionJobState.Running(35) }
+        composeTestRule.onNodeWithTag("transcript_status_7").assertTextEquals("Transcribing on this device… 35%")
         composeTestRule.onNodeWithTag("transcript_cancel_7").performClick()
         composeTestRule.runOnIdle { job = TranscriptionJobState.Failed("Not enough memory to transcribe this memo.") }
         composeTestRule.onNodeWithTag("transcript_status_7").assertTextEquals("Transcription failed: Not enough memory to transcribe this memo.")
@@ -53,5 +55,9 @@ class TranscriptSectionTest {
         composeTestRule.onNodeWithTag("transcript_delete_7").performClick()
         composeTestRule.onNodeWithTag("transcript_start_7").assertTextEquals("Transcribe Again")
         composeTestRule.runOnIdle { assertEquals(listOf("transcribe", "cancel", "edit", "delete"), clicks) }
+        // After a restart a queued memo shows as waiting (from the stored status) and can be cancelled
+        composeTestRule.runOnIdle { noteState = note.copy(transcriptionStatus = TranscriptionStatus.PENDING) }
+        composeTestRule.onNodeWithTag("transcript_status_7").assertTextEquals("Waiting to be transcribed…")
+        composeTestRule.onNodeWithTag("transcript_cancel_7").assertIsDisplayed()
     }
 }

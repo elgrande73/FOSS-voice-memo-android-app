@@ -16,6 +16,10 @@ import kotlin.concurrent.thread
  * phone). Skipped unless the host library was built: scripts/host-whisper-jni/build.sh. Measurements are printed with
  * "MEASURE" and are host numbers only.
  */
+// Robolectric only so that it shares the sandbox class loader (and the loaded native library) with
+// TranscriptionEndToEndHostTest: a JVM cannot load one native library in two class loaders
+@org.junit.runner.RunWith(org.robolectric.RobolectricTestRunner::class)
+@org.robolectric.annotation.Config(sdk = [35])
 class WhisperNativeHostTest {
 
     companion object {

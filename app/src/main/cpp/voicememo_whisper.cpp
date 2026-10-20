@@ -22,7 +22,12 @@ namespace {
 struct Session {
     whisper_context *ctx = nullptr;
     std::atomic<bool> abort{false};
+    std::atomic<int> progress{0};
 };
+
+void progress_callback(whisper_context *, whisper_state *, int progress, void *user_data) {
+    static_cast<Session *>(user_data)->progress.store(progress);
+}
 
 bool abort_callback(void *user_data) {
     return static_cast<Session *>(user_data)->abort.load();
@@ -120,6 +125,12 @@ Java_io_github_elgrande73_voicememo_transcription_WhisperNative_free(JNIEnv *, j
     delete session;
 }
 
+JNIEXPORT jint JNICALL
+Java_io_github_elgrande73_voicememo_transcription_WhisperNative_progress(JNIEnv *, jobject, jlong handle) {
+    auto *session = reinterpret_cast<Session *>(handle);
+    return session != nullptr ? session->progress.load() : 0;
+}
+
 JNIEXPORT void JNICALL
 Java_io_github_elgrande73_voicememo_transcription_WhisperNative_requestAbort(JNIEnv *, jobject, jlong handle) {
     auto *session = reinterpret_cast<Session *>(handle);
@@ -136,6 +147,7 @@ Java_io_github_elgrande73_voicememo_transcription_WhisperNative_transcribe(
     auto *session = reinterpret_cast<Session *>(handle);
     if (session == nullptr || session->ctx == nullptr) return nullptr;
     session->abort.store(false);
+    session->progress.store(0);
 
     const jsize count = env->GetArrayLength(samples);
     std::vector<float> pcm(count);
@@ -157,6 +169,8 @@ Java_io_github_elgrande73_voicememo_transcription_WhisperNative_transcribe(
     params.suppress_blank = true;
     // Avoid invented annotations ("[Music]") for silence or noise
     params.suppress_nst = true;
+    params.progress_callback = progress_callback;
+    params.progress_callback_user_data = session;
     params.abort_callback = abort_callback;
     params.abort_callback_user_data = session;
 

@@ -85,6 +85,8 @@ class TranscriptionTest {
     private open class FakeEngine(private val behaviour: (FloatArray, CancelToken) -> TranscriptResult) : SpeechTranscriber {
         val calls = AtomicInteger()
         val releases = AtomicInteger()
+        @Volatile var reportedProgress = 0
+        override fun progress() = reportedProgress
         override fun transcribe(samples: FloatArray, settings: TranscriptionSettings, cancel: CancelToken): TranscriptResult {
             calls.incrementAndGet()
             return behaviour(samples, cancel)
@@ -92,10 +94,19 @@ class TranscriptionTest {
         override fun release() { releases.incrementAndGet() }
     }
 
-    private fun manager(engine: SpeechTranscriber, idleUnloadMs: Long = 60_000) = TranscriptionManager(
+    private fun manager(engine: SpeechTranscriber, idleUnloadMs: Long = 60_000, timeoutMs: Long? = null) = TranscriptionManager(
         dao = db.voiceNoteDao(), transcriberFactory = { engine }, settings = { TranscriptionSettings() },
-        scope = CoroutineScope(SupervisorJob()), worker = worker, idleUnloadMs = idleUnloadMs
+        scope = CoroutineScope(SupervisorJob()), worker = worker, idleUnloadMs = idleUnloadMs,
+        timeoutMs = { s -> timeoutMs ?: TranscriptionManager.MIN_TIMEOUT_MS }
     )
+
+    /** Engine that runs until it is cancelled (or [maxMs] passes), like a hung or very slow native call. */
+    private fun blockingEngine(maxMs: Long = 10_000) = FakeEngine { _, cancel ->
+        val aborted = CountDownLatch(1)
+        cancel.setOnCancel { aborted.countDown() }
+        aborted.await(maxMs, TimeUnit.MILLISECONDS)
+        throw TranscriptionException(TranscriptionException.Kind.CANCELLED, "Cancelled.")
+    }
 
     private fun waitFor(timeoutMs: Long = 5000, condition: () -> Boolean) {
         val end = System.currentTimeMillis() + timeoutMs
@@ -167,7 +178,7 @@ class TranscriptionTest {
         val m = manager(engine)
         m.enqueue(id)
         assertTrue(started.await(5, TimeUnit.SECONDS))
-        assertEquals(TranscriptionJobState.Running, m.jobs.value[id])
+        assertTrue(m.jobs.value[id] is TranscriptionJobState.Running)
         m.cancel(id)
         waitFor { m.jobs.value.isEmpty() }
         Thread.sleep(100)
@@ -202,7 +213,7 @@ class TranscriptionTest {
         val m = manager(FakeEngine { _, _ -> TranscriptResult("x", "it", "m", 1) })
         m.enqueue(id)
         waitFor { m.jobs.value[id] is TranscriptionJobState.Failed }
-        assertEquals("The recording could not be read.", (m.jobs.value[id] as TranscriptionJobState.Failed).message)
+        assertTrue((m.jobs.value[id] as TranscriptionJobState.Failed).message.startsWith("The recording could not be read"))
         assertEquals(file.absolutePath, note(id)!!.audioFilePath)
     }
 
@@ -213,7 +224,7 @@ class TranscriptionTest {
         val m = manager(engine)
         m.enqueue(id)
         waitFor { m.jobs.value[id] is TranscriptionJobState.Failed }
-        assertEquals("Not enough memory to transcribe this memo.", (m.jobs.value[id] as TranscriptionJobState.Failed).message)
+        assertTrue((m.jobs.value[id] as TranscriptionJobState.Failed).message.startsWith("Not enough memory to transcribe this memo."))
         assertTrue(engine.releases.get() >= 1)
     }
 
@@ -223,6 +234,90 @@ class TranscriptionTest {
         val engine = FakeEngine { _, _ -> TranscriptResult("x", "it", "m", 1) }
         manager(engine, idleUnloadMs = 100).enqueue(id)
         waitFor { engine.releases.get() == 1 }
+    }
+
+    @Test
+    fun nativeErrorsFailTheMemoAndTheQueueKeepsWorking() {
+        // Root cause of "Transcribing…/Waiting…" forever: Errors (not Exceptions) escaped and stopped the queue
+        val first = insert(speechWav("a.wav"))
+        val second = insert(speechWav("b.wav"))
+        var calls = 0
+        val engine = FakeEngine { _, _ ->
+            calls++
+            if (calls == 1) throw UnsatisfiedLinkError("No implementation found for initFromAsset")
+            TranscriptResult("second ok", "en", "m", 1)
+        }
+        val m = manager(engine)
+        m.enqueue(first)
+        m.enqueue(second)
+        try {
+            waitFor { note(second)?.transcriptionStatus == TranscriptionStatus.COMPLETED }
+        } catch (e: AssertionError) {
+            throw AssertionError("jobs=${m.jobs.value} first=${note(first)} second=${note(second)} calls=$calls", e)
+        }
+        assertEquals(TranscriptionStatus.FAILED, note(first)!!.transcriptionStatus)
+        assertTrue((m.jobs.value[first] as TranscriptionJobState.Failed).message.contains("UnsatisfiedLinkError"))
+        assertEquals("second ok", note(second)!!.transcriptionText)
+    }
+
+    @Test
+    fun aRunThatNeverEndsIsStoppedByTheWatchdogWithAnExplanation() {
+        val id = insert(speechWav())
+        val m = manager(blockingEngine(), timeoutMs = 300)
+        m.enqueue(id)
+        waitFor { m.jobs.value[id] is TranscriptionJobState.Failed }
+        assertTrue((m.jobs.value[id] as TranscriptionJobState.Failed).message.contains("took too long"))
+        assertEquals(TranscriptionStatus.FAILED, note(id)!!.transcriptionStatus)
+    }
+
+    @Test
+    fun queuedStateIsStoredAndResumedAfterRestart() {
+        val id = insert(speechWav())
+        val first = manager(blockingEngine(maxMs = 300))
+        first.enqueue(id)
+        waitFor { note(id)?.transcriptionStatus == TranscriptionStatus.PENDING }
+        // "Process death": a new manager finds the memo still queued and finishes it
+        val restarted = manager(FakeEngine { _, _ -> TranscriptResult("after restart", "en", "m", 1) })
+        restarted.resumePending()
+        waitFor { note(id)?.transcriptionStatus == TranscriptionStatus.COMPLETED }
+        assertEquals("after restart", note(id)!!.transcriptionText)
+    }
+
+    @Test
+    fun retryRightAfterCancelIsNotLost() {
+        val id = insert(speechWav())
+        val started = CountDownLatch(1)
+        var calls = 0
+        val engine = FakeEngine { _, cancel ->
+            calls++
+            if (calls == 1) {
+                started.countDown()
+                val aborted = CountDownLatch(1)
+                cancel.setOnCancel { aborted.countDown() }
+                aborted.await(5, TimeUnit.SECONDS)
+                Thread.sleep(100) // the old run is still finishing while the new request arrives
+                throw TranscriptionException(TranscriptionException.Kind.CANCELLED, "Cancelled.")
+            }
+            TranscriptResult("second attempt", "en", "m", 1)
+        }
+        val m = manager(engine)
+        m.enqueue(id)
+        assertTrue(started.await(5, TimeUnit.SECONDS))
+        m.cancel(id)
+        m.enqueue(id)
+        waitFor { note(id)?.transcriptionText == "second attempt" }
+        assertEquals(TranscriptionStatus.COMPLETED, note(id)!!.transcriptionStatus)
+    }
+
+    @Test
+    fun progressIsReportedWhileRunning() {
+        val id = insert(speechWav())
+        val engine = blockingEngine(maxMs = 3000).apply { reportedProgress = 42 }
+        val m = manager(engine)
+        m.enqueue(id)
+        waitFor { (m.jobs.value[id] as? TranscriptionJobState.Running)?.progress == 42 }
+        m.cancel(id)
+        waitFor { m.jobs.value.isEmpty() }
     }
 
     @Test

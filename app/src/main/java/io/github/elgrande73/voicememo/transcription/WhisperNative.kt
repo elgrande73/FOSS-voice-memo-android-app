@@ -33,6 +33,7 @@ object WhisperNative {
     @android.annotation.SuppressLint("UnsafeDynamicallyLoadedCode")
     @Synchronized
     fun loadFrom(libraryPath: String, backendDirectory: String): Boolean {
+        if (state == true) return true
         System.load(libraryPath)
         loadBackends(backendDirectory)
         state = true
@@ -47,6 +48,8 @@ object WhisperNative {
     external fun initFromAsset(assetManager: android.content.res.AssetManager, assetPath: String): Long
     external fun free(handle: Long)
     external fun requestAbort(handle: Long)
+    /** Progress of the running transcription in percent (whisper.cpp's progress callback). */
+    external fun progress(handle: Long): Int
     /** Returns [languageCode, text], or null on failure or abort. */
     external fun transcribe(handle: Long, samples: FloatArray, language: String, threads: Int, beamSize: Int): Array<String>?
 }

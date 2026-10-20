@@ -972,11 +972,15 @@ fun TranscriptSection(
                 )
             }
         }
+        // In-memory job state first; after a restart the stored status tells whether the memo is still queued
+        val queued = job == TranscriptionJobState.Queued || (job == null && note.transcriptionStatus == TranscriptionStatus.PENDING)
+        val running = job is TranscriptionJobState.Running
         val status = when {
-            job == TranscriptionJobState.Running -> "Transcribing on this device…"
-            job == TranscriptionJobState.Queued -> "Waiting to be transcribed…"
+            job is TranscriptionJobState.Running ->
+                if (job.progress > 0) "Transcribing on this device… ${job.progress}%" else "Transcribing on this device…"
+            queued -> "Waiting to be transcribed…"
             job is TranscriptionJobState.Failed -> "Transcription failed: ${job.message}"
-            note.transcriptionStatus == TranscriptionStatus.FAILED -> "The last transcription failed."
+            note.transcriptionStatus == TranscriptionStatus.FAILED -> "The last transcription failed. Tap Retry."
             else -> null
         }
         status?.let {
@@ -992,7 +996,7 @@ fun TranscriptSection(
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            if (job == TranscriptionJobState.Running || job == TranscriptionJobState.Queued) {
+            if (running || queued) {
                 TextButton(onClick = onCancel, modifier = Modifier.testTag("transcript_cancel_${note.id}")) { Text("Cancel") }
             } else {
                 val failed = job is TranscriptionJobState.Failed || note.transcriptionStatus == TranscriptionStatus.FAILED
