@@ -1,0 +1,1097 @@
+package io.github.elgrande73.voicememo.viewmodel
+
+import android.Manifest
+import android.app.Application
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioFocusRequest
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioRecord
+import android.media.MediaPlayer
+import android.media.MediaRecorder
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import io.github.elgrande73.voicememo.audio.AmplitudePoint
+import io.github.elgrande73.voicememo.audio.AudioInputDevice
+import io.github.elgrande73.voicememo.audio.AudioInputManager
+import io.github.elgrande73.voicememo.audio.FeedbackSoundPlayer
+import io.github.elgrande73.voicememo.detection.DetectionMode
+import io.github.elgrande73.voicememo.detection.KeywordBehavior
+import io.github.elgrande73.voicememo.memo.AppDatabase
+import io.github.elgrande73.voicememo.memo.ErrorLog
+import io.github.elgrande73.voicememo.memo.VoiceNote
+import io.github.elgrande73.voicememo.memo.VoiceNoteExportManager
+import io.github.elgrande73.voicememo.memo.VoiceNoteRepository
+import io.github.elgrande73.voicememo.monitoring.AudioMonitoringService
+import io.github.elgrande73.voicememo.playback.ChimePlayer
+import io.github.elgrande73.voicememo.playback.MemoAudioOutput
+import io.github.elgrande73.voicememo.playback.MemoPlaybackSequencer
+import io.github.elgrande73.voicememo.playback.PlaybackCue
+import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
+import io.github.elgrande73.voicememo.settings.PreferenceKeys
+import io.github.elgrande73.voicememo.settings.SettingsMigrator
+import io.github.elgrande73.voicememo.ui.theme.ThemeMode
+import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
+import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
+import io.github.elgrande73.voicememo.wakephrase.WakePhraseTestResult
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.Calendar
+
+/**
+ * Filter categories for voice note listings.
+ */
+enum class VoiceNoteFilter(val label: String) {
+    ALL("All Memos"),
+    TODAY("Today"),
+    FAVORITES("Favorites"),
+    KEYWORD("Wake Phrase")
+}
+
+/**
+ * ViewModel for Voice Memo - Automatic Voice-Note App.
+ * Manages voice memo persistence, live audio monitoring status, keyword template training,
+ * playback lifecycle, and export operations.
+ */
+class VoiceMemoViewModel(application: Application) : AndroidViewModel(application) {
+
+    private companion object {
+        const val TAG = "VoiceMemoVM"
+    }
+
+    private val context = application.applicationContext
+    // Migrations run before any setting is read, so legacy or corrupt values never reach the UI or detector
+    private val prefs = SettingsMigrator.preferences(context)
+    private val wakePhraseStore = WakePhraseStore(context.filesDir)
+    private val voiceNoteRepository: VoiceNoteRepository
+    private val database = AppDatabase.getDatabase(context)
+    private val exportManager = VoiceNoteExportManager(context)
+    private val keywordDetector = TemplateKeywordDetector()
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+
+    // Voice Notes stream
+    val allVoiceNotes: StateFlow<List<VoiceNote>>
+    val errorLogs: StateFlow<List<ErrorLog>>
+
+    // Search and Filter State
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery = _searchQuery.asStateFlow()
+
+    private val _activeFilter = MutableStateFlow(VoiceNoteFilter.ALL)
+    val activeFilter = _activeFilter.asStateFlow()
+
+    // Filtered Voice Notes
+    val filteredVoiceNotes: StateFlow<List<VoiceNote>>
+
+    // Media Player state
+    private var mediaPlayer: MediaPlayer? = null
+    private var playbackProgressJob: Job? = null
+
+    private val _playingNoteId = MutableStateFlow<Int?>(null)
+    val playingNoteId = _playingNoteId.asStateFlow()
+
+    private val _isPlaying = MutableStateFlow(false)
+    val isPlaying = _isPlaying.asStateFlow()
+
+    private val _playbackPositionMs = MutableStateFlow(0)
+    val playbackPositionMs = _playbackPositionMs.asStateFlow()
+
+    private val _playbackDurationMs = MutableStateFlow(0)
+    val playbackDurationMs = _playbackDurationMs.asStateFlow()
+
+    private val _playbackSpeed = MutableStateFlow(1.0f)
+    val playbackSpeed = _playbackSpeed.asStateFlow()
+
+    // Audio Input Device selection state
+    private val _availableInputDevices = MutableStateFlow<List<AudioInputDevice>>(listOf(AudioInputDevice.PHONE_MIC))
+    val availableInputDevices = _availableInputDevices.asStateFlow()
+
+    private val _selectedAudioInputId = MutableStateFlow(prefs.getInt("selectedAudioInputId", -1))
+    val selectedAudioInputId = _selectedAudioInputId.asStateFlow()
+
+    private val _selectedAudioInputName = MutableStateFlow(
+        prefs.getString("selectedAudioInputName", AudioInputDevice.PHONE_MIC.name) ?: AudioInputDevice.PHONE_MIC.name
+    )
+    val selectedAudioInputName = _selectedAudioInputName.asStateFlow()
+
+    // Export progress & status state
+    private val _exportInProgress = MutableStateFlow(false)
+    val exportInProgress = _exportInProgress.asStateFlow()
+
+    // Detection & Threshold Configurations
+    private val _detectionMode = MutableStateFlow(
+        try {
+            DetectionMode.valueOf(prefs.getString("detectionMode", DetectionMode.KEYWORD_ONLY.name) ?: DetectionMode.KEYWORD_ONLY.name)
+        } catch (_: Exception) {
+            DetectionMode.KEYWORD_ONLY
+        }
+    )
+    val detectionMode = _detectionMode.asStateFlow()
+
+    private val _thresholdDb = MutableStateFlow(prefs.getFloat("thresholdDb", 48.0f))
+    val thresholdDb = _thresholdDb.asStateFlow()
+
+    private val _minTriggerDurationMs = MutableStateFlow(prefs.getLong("minTriggerDurationMs", 250L))
+    val minTriggerDurationMs = _minTriggerDurationMs.asStateFlow()
+
+    private val _silenceTimeoutMs = MutableStateFlow(prefs.getLong("silenceTimeoutMs", 2000L))
+    val silenceTimeoutMs = _silenceTimeoutMs.asStateFlow()
+
+    private val _preTriggerDurationMs = MutableStateFlow(prefs.getLong("preTriggerDurationMs", 800L))
+    val preTriggerDurationMs = _preTriggerDurationMs.asStateFlow()
+
+    private val _maxMemoDurationMs = MutableStateFlow(prefs.getLong("maxMemoDurationMs", 300_000L))
+    val maxMemoDurationMs = _maxMemoDurationMs.asStateFlow()
+
+    private val _noiseFilterEnabled = MutableStateFlow(prefs.getBoolean("noiseFilterEnabled", true))
+    val noiseFilterEnabled = _noiseFilterEnabled.asStateFlow()
+
+    private val _feedbackSoundsEnabled = MutableStateFlow(prefs.getBoolean("feedbackSoundsEnabled", true))
+    val feedbackSoundsEnabled = _feedbackSoundsEnabled.asStateFlow()
+
+    // Single authoritative wake-phrase threshold (percent); also sent to the detector in AudioMonitoringService
+    private val _matchConfidenceThresholdPercent = MutableStateFlow(
+        MatchConfidenceThreshold.clampPercent(
+            prefs.getInt(PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT, MatchConfidenceThreshold.DEFAULT_PERCENT)
+        )
+    )
+    val matchConfidenceThresholdPercent = _matchConfidenceThresholdPercent.asStateFlow()
+
+    private val _keywordBehavior = MutableStateFlow(
+        try {
+            KeywordBehavior.valueOf(prefs.getString("keywordBehavior", KeywordBehavior.START_AND_STOP.name) ?: KeywordBehavior.START_AND_STOP.name)
+        } catch (_: Exception) {
+            KeywordBehavior.START_AND_STOP
+        }
+    )
+    val keywordBehavior = _keywordBehavior.asStateFlow()
+
+    private val _speechToTextEnabled = MutableStateFlow(prefs.getBoolean("speechToTextEnabled", false))
+    val speechToTextEnabled = _speechToTextEnabled.asStateFlow()
+
+    // Keyword Training state
+    private val _isRecordingKeyword = MutableStateFlow(false)
+    val isRecordingKeyword = _isRecordingKeyword.asStateFlow()
+
+    private val _hasKeywordTemplate = MutableStateFlow(wakePhraseStore.hasTemplate())
+    val hasKeywordTemplate = _hasKeywordTemplate.asStateFlow()
+
+    // Last persisted "Test Phrase" result; survives restarts and app updates
+    private val _keywordTestResult = MutableStateFlow<WakePhraseTestResult?>(null)
+    val keywordTestResult = _keywordTestResult.asStateFlow()
+
+    private val _hasSavedTestRecording = MutableStateFlow(false)
+    val hasSavedTestRecording = _hasSavedTestRecording.asStateFlow()
+
+    private val _isTestingKeyword = MutableStateFlow(false)
+    val isTestingKeyword = _isTestingKeyword.asStateFlow()
+
+    private var keywordAudioRecord: AudioRecord? = null
+    private val keywordTrainingChunks = mutableListOf<ShortArray>()
+    private var keywordTrainingJob: Job? = null
+
+    // Theming preferences
+    private val savedThemeModeStr = prefs.getString("themeMode", "SYSTEM") ?: "SYSTEM"
+    private val _themeMode = MutableStateFlow(
+        try {
+            ThemeMode.valueOf(savedThemeModeStr)
+        } catch (_: Exception) {
+            ThemeMode.SYSTEM
+        }
+    )
+    val themeMode = _themeMode.asStateFlow()
+
+    private val _dynamicColor = MutableStateFlow(prefs.getBoolean("dynamicColor", true))
+    val dynamicColor = _dynamicColor.asStateFlow()
+
+    // Hardware Audio Device Callbacks
+    private val audioDeviceCallback = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+                refreshAvailableInputDevices()
+            }
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+                refreshAvailableInputDevices()
+            }
+        }
+    } else null
+
+    val timelineDisplayState: StateFlow<List<AmplitudePoint>>
+
+    init {
+        voiceNoteRepository = VoiceNoteRepository(database.voiceNoteDao())
+
+        allVoiceNotes = voiceNoteRepository.allNotes.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+        errorLogs = database.errorLogDao().getAllLogs().stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+        // Filtered notes stream
+        filteredVoiceNotes = combine(allVoiceNotes, _searchQuery, _activeFilter) { notes, query, filter ->
+            val calendar = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            val startOfToday = calendar.timeInMillis
+
+            notes.filter { note ->
+                val matchesQuery = if (query.isBlank()) true else {
+                    note.title.contains(query, ignoreCase = true) ||
+                            (note.transcriptionText?.contains(query, ignoreCase = true) == true)
+                }
+
+                val matchesFilter = when (filter) {
+                    VoiceNoteFilter.ALL -> true
+                    VoiceNoteFilter.TODAY -> note.timestamp >= startOfToday
+                    VoiceNoteFilter.FAVORITES -> note.isFavorite
+                    VoiceNoteFilter.KEYWORD -> note.triggerType.contains("KEYWORD", ignoreCase = true)
+                }
+
+                matchesQuery && matchesFilter
+            }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+        timelineDisplayState = AudioMonitoringService.currentSessionData.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+        keywordDetector.setMatchConfidenceThreshold(
+            MatchConfidenceThreshold.toDetectorConfidence(_matchConfidenceThresholdPercent.value)
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            // Restore the enrolled wake phrase so "Test Phrase" uses it after a restart
+            wakePhraseStore.loadTemplate()?.let { bytes ->
+                if (!keywordDetector.loadTemplate(bytes)) {
+                    Log.w(TAG, "Enrolled wake-phrase template is invalid; testing against the default wake phrase")
+                }
+            }
+            _keywordTestResult.value = wakePhraseStore.loadTestResult()
+            _hasSavedTestRecording.value = wakePhraseStore.loadTestRecording() != null
+        }
+
+        refreshAvailableInputDevices()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && audioDeviceCallback != null) {
+            try {
+                audioManager?.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to register audio device callback: ${e.message}")
+            }
+        }
+    }
+
+    // --- SERVICE MONITORING & RECORDING CONTROLS ---
+
+    fun startServiceDetection() {
+        val intent = Intent(context, AudioMonitoringService::class.java).apply {
+            putExtra("audioInputId", _selectedAudioInputId.value)
+            putExtra("audioInputName", _selectedAudioInputName.value)
+            putExtra("detectionMode", _detectionMode.value.name)
+            putExtra("thresholdDb", _thresholdDb.value)
+            putExtra("minTriggerDurationMs", _minTriggerDurationMs.value)
+            putExtra("silenceTimeoutMs", _silenceTimeoutMs.value)
+            putExtra("preTriggerDurationMs", _preTriggerDurationMs.value)
+            putExtra("maxMemoDurationMs", _maxMemoDurationMs.value)
+            putExtra("noiseFilterEnabled", _noiseFilterEnabled.value)
+            putExtra(AudioMonitoringService.EXTRA_MATCH_CONFIDENCE_THRESHOLD_PERCENT, _matchConfidenceThresholdPercent.value)
+            putExtra("keywordBehavior", _keywordBehavior.value.name)
+            putExtra("speechToTextEnabled", _speechToTextEnabled.value)
+            putExtra("feedbackSoundsEnabled", _feedbackSoundsEnabled.value)
+        }
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start AudioMonitoringService", e)
+        }
+    }
+
+    fun stopServiceDetection() {
+        try {
+            val intent = Intent(context, AudioMonitoringService::class.java)
+            context.stopService(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to stop AudioMonitoringService", e)
+        }
+    }
+
+    fun startManualRecording() {
+        if (!AudioMonitoringService.isServiceRunning.value) {
+            startServiceDetection()
+        }
+        try {
+            val intent = Intent(context, AudioMonitoringService::class.java).apply {
+                action = AudioMonitoringService.ACTION_START_MANUAL_RECORDING
+            }
+            context.startService(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "startManualRecording failed", e)
+        }
+    }
+
+    fun stopManualRecording() {
+        try {
+            val intent = Intent(context, AudioMonitoringService::class.java).apply {
+                action = AudioMonitoringService.ACTION_STOP_MANUAL_RECORDING
+            }
+            context.startService(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "stopManualRecording failed", e)
+        }
+    }
+
+    // --- VOICE NOTE CRUD & PLAYBACK ---
+
+    fun setSearchQuery(query: String) {
+        _searchQuery.value = query
+    }
+
+    fun setFilter(filter: VoiceNoteFilter) {
+        _activeFilter.value = filter
+    }
+
+    fun renameVoiceNote(id: Int, newTitle: String) {
+        if (newTitle.isBlank()) return
+        viewModelScope.launch {
+            voiceNoteRepository.updateTitle(id, newTitle.trim())
+        }
+    }
+
+    fun toggleFavorite(note: VoiceNote) {
+        viewModelScope.launch {
+            voiceNoteRepository.toggleFavorite(note.id, note.isFavorite)
+        }
+    }
+
+    fun deleteVoiceNote(note: VoiceNote) {
+        if (playbackSequencer.currentNoteId == note.id) {
+            stopPlayback()
+        }
+        viewModelScope.launch {
+            voiceNoteRepository.deleteVoiceNote(note)
+        }
+    }
+
+    fun deleteAllVoiceNotes() {
+        stopPlayback()
+        viewModelScope.launch {
+            val all = allVoiceNotes.value
+            for (note in all) {
+                try {
+                    File(note.audioFilePath).delete()
+                } catch (_: Exception) {}
+            }
+            voiceNoteRepository.deleteAll()
+        }
+    }
+
+    // --- PLAYBACK: displayed-list queue framed by beginning/ending chimes ---
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val playbackChimePlayer = FeedbackSoundPlayer(context)
+    private var mediaPlayerPrepared = false
+    // False when the user paused (or focus was lost) before the player finished preparing
+    private var startWhenPrepared = true
+    // Last note explicitly requested, so a memo shown outside the history list (dashboard) can be resolved
+    private var requestedNote: VoiceNote? = null
+
+    private val playbackSequencer = MemoPlaybackSequencer(
+        chimes = object : ChimePlayer {
+            override fun play(cue: PlaybackCue, onFinished: () -> Unit) {
+                val soundCue = when (cue) {
+                    PlaybackCue.MEMO_BEGIN -> FeedbackSoundPlayer.Cue.MEMO_BEGIN
+                    PlaybackCue.MEMO_END -> FeedbackSoundPlayer.Cue.MEMO_END
+                }
+                playbackChimePlayer.play(soundCue) { mainHandler.post(onFinished) }
+            }
+        },
+        output = object : MemoAudioOutput {
+            override fun start(noteId: Int, token: Long) = startMemoAudio(noteId, token)
+            override fun stop() = releaseMediaPlayer()
+        },
+        isPlayable = { noteId -> findNote(noteId)?.let { File(it.audioFilePath).isFile } == true }
+    ).apply {
+        onStateChanged = { state -> onPlaybackStateChanged(state) }
+        onUnplayable = { noteId -> Log.w(TAG, "Voice memo $noteId is not playable") }
+    }
+
+    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                // Interruption (call, other app): pause the memo; a chime in progress cancels the sequence
+                if (playbackSequencer.state is MemoPlaybackSequencer.State.PlayingMemo) pausePlayback() else stopPlayback()
+            }
+        }
+    }
+    private var audioFocusRequest: AudioFocusRequest? = null
+
+    /**
+     * Plays [note], or toggles pause/resume if it is the memo currently playing.
+     *
+     * @param fromDisplayedList true when started from the history list: after natural completion the next memo of
+     *   that list (current filter, search and order) plays automatically. False plays only this memo.
+     */
+    fun playVoiceNote(note: VoiceNote, fromDisplayedList: Boolean = false) {
+        if (playbackSequencer.currentNoteId == note.id) {
+            when (playbackSequencer.state) {
+                is MemoPlaybackSequencer.State.PlayingMemo -> {
+                    if (_isPlaying.value) pausePlayback() else resumePlayback()
+                    return
+                }
+                is MemoPlaybackSequencer.State.BeginChime, is MemoPlaybackSequencer.State.EndChime -> {
+                    stopPlayback()
+                    return
+                }
+                MemoPlaybackSequencer.State.Idle -> {}
+            }
+        }
+
+        if (playbackSequencer.state == MemoPlaybackSequencer.State.Idle && !requestAudioFocus()) {
+            Log.w(TAG, "Audio focus denied; not starting playback")
+            return
+        }
+        requestedNote = note
+        val queueProvider: (() -> List<Int>)? = if (fromDisplayedList) {
+            { filteredVoiceNotes.value.map { it.id } }
+        } else null
+        playbackSequencer.play(note.id, queueProvider)
+    }
+
+    fun pausePlayback() {
+        if (playbackSequencer.state !is MemoPlaybackSequencer.State.PlayingMemo) {
+            stopPlayback()
+            return
+        }
+        if (mediaPlayerPrepared) {
+            try {
+                mediaPlayer?.pause()
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "Pause failed", e)
+            }
+        } else {
+            startWhenPrepared = false
+        }
+        _isPlaying.value = false
+    }
+
+    private fun resumePlayback() {
+        if (!requestAudioFocus()) return
+        if (!mediaPlayerPrepared) {
+            startWhenPrepared = true
+            _isPlaying.value = true
+            return
+        }
+        try {
+            mediaPlayer?.start()
+            _isPlaying.value = true
+            startPlaybackProgressTracker()
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "Resume failed", e)
+        }
+    }
+
+    fun seekTo(positionMs: Int) {
+        if (!mediaPlayerPrepared) return
+        mediaPlayer?.seekTo(positionMs)
+        _playbackPositionMs.value = positionMs
+    }
+
+    fun setPlaybackSpeed(speed: Float) {
+        _playbackSpeed.value = speed
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && mediaPlayer != null && _isPlaying.value) {
+            try {
+                mediaPlayer?.playbackParams = mediaPlayer!!.playbackParams.setSpeed(speed)
+            } catch (_: Exception) {}
+        }
+    }
+
+    /** Manual stop: no ending chime and no automatic advance. */
+    fun stopPlayback() {
+        playbackSequencer.stop()
+        releaseMediaPlayer()
+    }
+
+    private fun findNote(noteId: Int): VoiceNote? =
+        allVoiceNotes.value.firstOrNull { it.id == noteId }
+            ?: filteredVoiceNotes.value.firstOrNull { it.id == noteId }
+            ?: requestedNote?.takeIf { it.id == noteId }
+
+    private fun startMemoAudio(noteId: Int, token: Long) {
+        releaseMediaPlayer()
+        val note = findNote(noteId)
+        if (note == null) {
+            mainHandler.post { playbackSequencer.onMemoFailed(token) }
+            return
+        }
+        try {
+            mediaPlayer = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                setDataSource(note.audioFilePath)
+                setOnPreparedListener { mp ->
+                    if (mp !== mediaPlayer) return@setOnPreparedListener
+                    mediaPlayerPrepared = true
+                    _playbackDurationMs.value = mp.duration
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        try {
+                            mp.playbackParams = mp.playbackParams.setSpeed(_playbackSpeed.value)
+                        } catch (_: Exception) {}
+                    }
+                    if (startWhenPrepared) {
+                        mp.start()
+                        _isPlaying.value = true
+                        startPlaybackProgressTracker()
+                    }
+                }
+                setOnCompletionListener { mp ->
+                    if (mp === mediaPlayer) playbackSequencer.onMemoCompleted(token)
+                }
+                setOnErrorListener { mp, what, extra ->
+                    Log.e(TAG, "Playback error for memo $noteId (what=$what, extra=$extra)")
+                    if (mp === mediaPlayer) mainHandler.post { playbackSequencer.onMemoFailed(token) }
+                    true // handled: suppresses the completion callback
+                }
+                prepareAsync()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start audio playback", e)
+            mainHandler.post { playbackSequencer.onMemoFailed(token) }
+        }
+    }
+
+    private fun releaseMediaPlayer() {
+        playbackProgressJob?.cancel()
+        playbackProgressJob = null
+        val player = mediaPlayer
+        mediaPlayer = null
+        mediaPlayerPrepared = false
+        startWhenPrepared = true
+        try {
+            player?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "MediaPlayer release failed", e)
+        }
+    }
+
+    private fun onPlaybackStateChanged(state: MemoPlaybackSequencer.State) {
+        when (state) {
+            MemoPlaybackSequencer.State.Idle -> {
+                _playingNoteId.value = null
+                _isPlaying.value = false
+                _playbackPositionMs.value = 0
+                _playbackDurationMs.value = 0
+                abandonAudioFocus()
+            }
+            is MemoPlaybackSequencer.State.BeginChime -> {
+                _playingNoteId.value = state.noteId
+                _isPlaying.value = true
+                _playbackPositionMs.value = 0
+                _playbackDurationMs.value = 0
+            }
+            is MemoPlaybackSequencer.State.PlayingMemo -> _playingNoteId.value = state.noteId
+            is MemoPlaybackSequencer.State.EndChime -> {
+                _isPlaying.value = false
+                _playbackPositionMs.value = _playbackDurationMs.value
+            }
+        }
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        val manager = audioManager ?: return true
+        val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val request = audioFocusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setOnAudioFocusChangeListener(audioFocusListener, mainHandler)
+                .build()
+                .also { audioFocusRequest = it }
+            manager.requestAudioFocus(request)
+        } else {
+            @Suppress("DEPRECATION")
+            manager.requestAudioFocus(audioFocusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+        }
+        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    }
+
+    private fun abandonAudioFocus() {
+        val manager = audioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { manager.abandonAudioFocusRequest(it) }
+        } else {
+            @Suppress("DEPRECATION")
+            manager.abandonAudioFocus(audioFocusListener)
+        }
+    }
+
+    private fun startPlaybackProgressTracker() {
+        playbackProgressJob?.cancel()
+        playbackProgressJob = viewModelScope.launch {
+            while (isActive && _isPlaying.value && mediaPlayer != null) {
+                try {
+                    _playbackPositionMs.value = mediaPlayer?.currentPosition ?: 0
+                } catch (_: Exception) {}
+                delay(100)
+            }
+        }
+    }
+
+    // --- EXPORT & SHARE ---
+
+    suspend fun prepareSingleNoteShare(note: VoiceNote): Intent? = withContext(Dispatchers.IO) {
+        val exportResult = exportManager.prepareSingleNoteForSharing(note) ?: return@withContext null
+        exportManager.createShareIntent(exportResult, "Share Memo: ${note.title}")
+    }
+
+    fun exportAllNotesAsZip(onResult: (Intent?) -> Unit) {
+        viewModelScope.launch {
+            _exportInProgress.value = true
+            try {
+                val notes = allVoiceNotes.value
+                val result = exportManager.exportNotesAsZip(notes)
+                if (result != null) {
+                    val shareIntent = exportManager.createShareIntent(result, "Share Voice Memo Archive")
+                    onResult(shareIntent)
+                } else {
+                    onResult(null)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "ZIP export failed", e)
+                onResult(null)
+            } finally {
+                _exportInProgress.value = false
+            }
+        }
+    }
+
+    // --- KEYWORD TRAINING & TESTING ---
+
+    fun startRecordingKeywordTemplate() {
+        if (_isRecordingKeyword.value) return
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            Log.e(TAG, "RECORD_AUDIO permission not granted for keyword recording")
+            _isRecordingKeyword.value = false
+            return
+        }
+        _isRecordingKeyword.value = true
+        keywordTrainingChunks.clear()
+
+        keywordTrainingJob = viewModelScope.launch(Dispatchers.Default) {
+            val sampleRate = 16000
+            val channelConfig = AudioFormat.CHANNEL_IN_MONO
+            val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+            val minBuf = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat).coerceAtLeast(4096)
+
+            try {
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    Log.e(TAG, "RECORD_AUDIO permission not granted")
+                    return@launch
+                }
+                val record = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    sampleRate,
+                    channelConfig,
+                    audioFormat,
+                    minBuf
+                )
+                if (record.state != AudioRecord.STATE_INITIALIZED) {
+                    Log.e(TAG, "AudioRecord failed to initialize for keyword training")
+                    record.release()
+                    return@launch
+                }
+                keywordAudioRecord = record
+                record.startRecording()
+
+                val buffer = ShortArray(800) // 50ms chunks
+                val startTime = System.currentTimeMillis()
+
+                // Record up to 2.5 seconds for the wake phrase (default: "Ciao Linda")
+                while (isActive && _isRecordingKeyword.value && (System.currentTimeMillis() - startTime < 2500L)) {
+                    val read = record.read(buffer, 0, buffer.size)
+                    if (read > 0) {
+                        keywordTrainingChunks.add(buffer.copyOf(read))
+                    }
+                }
+            } catch (e: SecurityException) {
+                Log.e(TAG, "SecurityException during keyword recording", e)
+            } catch (e: Exception) {
+                Log.e(TAG, "Keyword recording failed", e)
+            } finally {
+                stopRecordingKeywordTemplateInternal()
+            }
+        }
+    }
+
+    fun stopRecordingKeywordTemplate() {
+        stopRecordingKeywordTemplateInternal()
+    }
+
+    private fun stopRecordingKeywordTemplateInternal() {
+        _isRecordingKeyword.value = false
+        keywordTrainingJob?.cancel()
+        keywordTrainingJob = null
+
+        try {
+            keywordAudioRecord?.stop()
+            keywordAudioRecord?.release()
+        } catch (_: Exception) {}
+        keywordAudioRecord = null
+
+        if (keywordTrainingChunks.size >= 8) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val success = keywordDetector.recordTemplate(keywordTrainingChunks)
+                if (success) {
+                    val bytes = keywordDetector.getTemplateData()
+                    if (bytes != null) {
+                        try {
+                            wakePhraseStore.saveTemplate(bytes)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to save enrolled wake phrase", e)
+                            return@launch
+                        }
+                        _hasKeywordTemplate.value = true
+
+                        // Notify service to reload template if running
+                        try {
+                            if (AudioMonitoringService.isServiceRunning.value) {
+                                val intent = Intent(context, AudioMonitoringService::class.java).apply {
+                                    action = AudioMonitoringService.ACTION_RELOAD_TEMPLATE
+                                }
+                                context.startService(intent)
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to send ACTION_RELOAD_TEMPLATE", e)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Explicit user action: deletes the enrolled wake phrase. The saved test recording and result are kept. */
+    fun clearKeywordTemplate() {
+        wakePhraseStore.deleteTemplate()
+        keywordDetector.clearTemplate()
+        _hasKeywordTemplate.value = false
+
+        try {
+            if (AudioMonitoringService.isServiceRunning.value) {
+                val intent = Intent(context, AudioMonitoringService::class.java).apply {
+                    action = AudioMonitoringService.ACTION_RELOAD_TEMPLATE
+                }
+                context.startService(intent)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send ACTION_RELOAD_TEMPLATE on clear", e)
+        }
+    }
+
+    fun testKeywordAudio() {
+        if (_isTestingKeyword.value) return
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            // The previously saved test result is left untouched
+            Log.e(TAG, "RECORD_AUDIO permission not granted for keyword test")
+            return
+        }
+        _isTestingKeyword.value = true
+
+        viewModelScope.launch(Dispatchers.Default) {
+            val sampleRate = 16000
+            val channelConfig = AudioFormat.CHANNEL_IN_MONO
+            val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+            val minBuf = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat).coerceAtLeast(4096)
+
+            var testRecord: AudioRecord? = null
+            val testChunks = mutableListOf<ShortArray>()
+
+            try {
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    Log.e(TAG, "RECORD_AUDIO permission not granted")
+                    return@launch
+                }
+                val record = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    sampleRate,
+                    channelConfig,
+                    audioFormat,
+                    minBuf
+                )
+                if (record.state != AudioRecord.STATE_INITIALIZED) {
+                    Log.e(TAG, "AudioRecord failed to initialize for keyword testing")
+                    record.release()
+                    return@launch
+                }
+                testRecord = record
+                record.startRecording()
+
+                val buffer = ShortArray(800)
+                val startTime = System.currentTimeMillis()
+
+                // Test for 3.0 seconds
+                while (isActive && System.currentTimeMillis() - startTime < 3000L) {
+                    val read = record.read(buffer, 0, buffer.size)
+                    if (read > 0) {
+                        testChunks.add(buffer.copyOf(read))
+                    }
+                }
+            } catch (e: SecurityException) {
+                Log.e(TAG, "SecurityException during keyword test", e)
+            } catch (e: Exception) {
+                Log.e(TAG, "Keyword test error", e)
+            } finally {
+                try {
+                    testRecord?.stop()
+                    testRecord?.release()
+                } catch (_: Exception) {}
+                if (testChunks.isNotEmpty()) {
+                    val result = WakePhraseTestResult(scoreTestRecording(testChunks), System.currentTimeMillis())
+                    _keywordTestResult.value = result
+                    persistTestRecording(testChunks, result)
+                }
+                _isTestingKeyword.value = false
+            }
+        }
+    }
+
+    /** Re-scores the saved test recording against the current wake phrase (e.g. after re-enrolling). */
+    fun retestSavedRecording() {
+        if (_isTestingKeyword.value) return
+        _isTestingKeyword.value = true
+        viewModelScope.launch(Dispatchers.Default) {
+            try {
+                val chunks = wakePhraseStore.loadTestRecording()
+                if (chunks == null) {
+                    Log.w(TAG, "No readable saved test recording")
+                    return@launch
+                }
+                val result = WakePhraseTestResult(scoreTestRecording(chunks), System.currentTimeMillis())
+                _keywordTestResult.value = result
+                wakePhraseStore.saveTestResult(result)
+            } catch (e: Exception) {
+                Log.e(TAG, "Re-testing saved recording failed", e)
+            } finally {
+                _isTestingKeyword.value = false
+            }
+        }
+    }
+
+    private fun scoreTestRecording(chunks: List<ShortArray>): Float {
+        keywordDetector.resetWindow()
+        var maxConfidence = 0f
+        for (chunk in chunks) {
+            val result = keywordDetector.processFrame(chunk, 0.5f, 50f)
+            if (result.confidence > maxConfidence) maxConfidence = result.confidence
+        }
+        keywordDetector.resetWindow()
+        return maxConfidence
+    }
+
+    private fun persistTestRecording(chunks: List<ShortArray>, result: WakePhraseTestResult) {
+        try {
+            wakePhraseStore.saveTestRecording(chunks)
+            wakePhraseStore.saveTestResult(result)
+            _hasSavedTestRecording.value = true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save wake-phrase test recording", e)
+        }
+    }
+
+    // --- SETTINGS PERSISTENCE ---
+
+    fun setDetectionMode(mode: DetectionMode) {
+        _detectionMode.value = mode
+        prefs.edit().putString("detectionMode", mode.name).apply()
+        restartServiceIfRunning()
+    }
+
+    fun setThresholdDb(db: Float) {
+        _thresholdDb.value = db
+        prefs.edit().putFloat("thresholdDb", db).apply()
+        restartServiceIfRunning()
+    }
+
+    fun setMinTriggerDurationMs(ms: Long) {
+        _minTriggerDurationMs.value = ms
+        prefs.edit().putLong("minTriggerDurationMs", ms).apply()
+        restartServiceIfRunning()
+    }
+
+    fun setSilenceTimeoutMs(ms: Long) {
+        _silenceTimeoutMs.value = ms
+        prefs.edit().putLong("silenceTimeoutMs", ms).apply()
+        restartServiceIfRunning()
+    }
+
+    fun setPreTriggerDurationMs(ms: Long) {
+        _preTriggerDurationMs.value = ms
+        prefs.edit().putLong("preTriggerDurationMs", ms).apply()
+        restartServiceIfRunning()
+    }
+
+    fun setMaxMemoDurationMs(ms: Long) {
+        _maxMemoDurationMs.value = ms
+        prefs.edit().putLong("maxMemoDurationMs", ms).apply()
+        restartServiceIfRunning()
+    }
+
+    fun setNoiseFilterEnabled(enabled: Boolean) {
+        _noiseFilterEnabled.value = enabled
+        prefs.edit().putBoolean("noiseFilterEnabled", enabled).apply()
+        restartServiceIfRunning()
+    }
+
+    fun setFeedbackSoundsEnabled(enabled: Boolean) {
+        _feedbackSoundsEnabled.value = enabled
+        prefs.edit().putBoolean("feedbackSoundsEnabled", enabled).apply()
+        restartServiceIfRunning()
+    }
+
+    private val previewSoundPlayer = FeedbackSoundPlayer(context)
+
+    /** Plays the start chime followed by the stop chime so the user can check the volume. */
+    fun previewFeedbackSounds() {
+        previewSoundPlayer.play(FeedbackSoundPlayer.Cue.RECORDING_STARTED)
+        previewSoundPlayer.play(FeedbackSoundPlayer.Cue.RECORDING_STOPPED)
+    }
+
+    /**
+     * Sets the Match confidence threshold (percent, clamped to 50–80). Persisted as the single authoritative value and
+     * applied live to the running detector without restarting monitoring.
+     */
+    fun setMatchConfidenceThresholdPercent(percent: Int) {
+        val clamped = MatchConfidenceThreshold.clampPercent(percent)
+        if (clamped == _matchConfidenceThresholdPercent.value) return
+        _matchConfidenceThresholdPercent.value = clamped
+        keywordDetector.setMatchConfidenceThreshold(MatchConfidenceThreshold.toDetectorConfidence(clamped))
+        prefs.edit().putInt(PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT, clamped).apply()
+        if (AudioMonitoringService.isServiceRunning.value) {
+            try {
+                context.startService(Intent(context, AudioMonitoringService::class.java).apply {
+                    action = AudioMonitoringService.ACTION_UPDATE_MATCH_CONFIDENCE_THRESHOLD
+                    putExtra(AudioMonitoringService.EXTRA_MATCH_CONFIDENCE_THRESHOLD_PERCENT, clamped)
+                })
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to update match confidence threshold in service", e)
+            }
+        }
+    }
+
+    fun setKeywordBehavior(behavior: KeywordBehavior) {
+        _keywordBehavior.value = behavior
+        prefs.edit().putString("keywordBehavior", behavior.name).apply()
+        restartServiceIfRunning()
+    }
+
+    fun setSpeechToTextEnabled(enabled: Boolean) {
+        _speechToTextEnabled.value = enabled
+        prefs.edit().putBoolean("speechToTextEnabled", enabled).apply()
+        restartServiceIfRunning()
+    }
+
+    fun setSelectedAudioInput(device: AudioInputDevice) {
+        _selectedAudioInputId.value = device.id
+        _selectedAudioInputName.value = device.name
+        prefs.edit()
+            .putInt("selectedAudioInputId", device.id)
+            .putString("selectedAudioInputName", device.name)
+            .apply()
+        restartServiceIfRunning()
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        _themeMode.value = mode
+        prefs.edit().putString("themeMode", mode.name).apply()
+    }
+
+    fun setDynamicColor(enabled: Boolean) {
+        _dynamicColor.value = enabled
+        prefs.edit().putBoolean("dynamicColor", enabled).apply()
+    }
+
+    fun resetAllSettingsToDefaults() {
+        setThresholdDb(48.0f)
+        setMinTriggerDurationMs(250L)
+        setSilenceTimeoutMs(2000L)
+        setPreTriggerDurationMs(800L)
+        setMaxMemoDurationMs(300_000L)
+        setNoiseFilterEnabled(true)
+        setFeedbackSoundsEnabled(true)
+        setMatchConfidenceThresholdPercent(MatchConfidenceThreshold.DEFAULT_PERCENT)
+        setKeywordBehavior(KeywordBehavior.START_AND_STOP)
+        setSpeechToTextEnabled(false)
+        setDetectionMode(DetectionMode.AUTO_SOUND)
+    }
+
+    private fun restartServiceIfRunning() {
+        if (AudioMonitoringService.isServiceRunning.value) {
+            startServiceDetection()
+        }
+    }
+
+    fun refreshAvailableInputDevices() {
+        val devices = AudioInputManager.getAvailableInputDevices(context)
+        _availableInputDevices.value = devices
+    }
+
+    fun clearErrorLogs() {
+        viewModelScope.launch {
+            database.errorLogDao().deleteAllLogs()
+        }
+    }
+
+    override fun onCleared() {
+        stopPlayback()
+        playbackChimePlayer.release()
+        previewSoundPlayer.release()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && audioDeviceCallback != null) {
+            try {
+                audioManager?.unregisterAudioDeviceCallback(audioDeviceCallback)
+            } catch (_: Exception) {}
+        }
+        super.onCleared()
+    }
+}
+

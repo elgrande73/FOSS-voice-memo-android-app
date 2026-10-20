@@ -1,8 +1,0 @@
-{
-  "name": "Ciao Linda",
-  "description": "Privacy-First, 100% Offline Automatic Voice-Note App with background audio monitoring, hands-free keyword spotter ('Ciao Linda'), pre-trigger audio buffering, local speech-to-text transcription, and export capabilities.",
-  "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
-}
