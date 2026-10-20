@@ -22,6 +22,7 @@ import androidx.lifecycle.viewModelScope
 import com.aistudio.ciaolinda.audio.AmplitudePoint
 import com.aistudio.ciaolinda.audio.AudioInputDevice
 import com.aistudio.ciaolinda.audio.AudioInputManager
+import com.aistudio.ciaolinda.audio.FeedbackSoundPlayer
 import com.aistudio.ciaolinda.detection.DetectionMode
 import com.aistudio.ciaolinda.detection.KeywordBehavior
 import com.aistudio.ciaolinda.memo.AppDatabase
@@ -744,6 +745,14 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         restartServiceIfRunning()
     }
 
+    private val previewSoundPlayer = FeedbackSoundPlayer(context)
+
+    /** Plays the start chime followed by the stop chime so the user can check the volume. */
+    fun previewFeedbackSounds() {
+        previewSoundPlayer.play(FeedbackSoundPlayer.Cue.RECORDING_STARTED)
+        previewSoundPlayer.play(FeedbackSoundPlayer.Cue.RECORDING_STOPPED)
+    }
+
     fun setKeywordSensitivity(sensitivity: Float) {
         _keywordSensitivity.value = sensitivity
         keywordDetector.setSensitivity(sensitivity)
@@ -816,6 +825,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
 
     override fun onCleared() {
         stopPlayback()
+        previewSoundPlayer.release()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && audioDeviceCallback != null) {
             try {
                 audioManager?.unregisterAudioDeviceCallback(audioDeviceCallback)

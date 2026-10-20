@@ -199,11 +199,8 @@ class TemplateKeywordDetector(
             val normalizedDist = cost / stepCount
             val conf = (1.0f - (normalizedDist / 0.40f)).coerceIn(0.0f, 1.0f)
 
-            // Sensitivity tuning:
-            // sensitivity ranges from 0.10 to 0.95 (default 0.60).
-            // Modulates the maximum allowable DTW distance and minimum confidence threshold.
-            val maxAcceptableDistance = 0.28f + (sensitivity - 0.50f) * 0.12f
-            val minAcceptableConfidence = (0.42f - (sensitivity - 0.50f) * 0.20f).coerceIn(0.25f, 0.75f)
+            val maxAcceptableDistance = maxAcceptableDistance(sensitivity)
+            val minAcceptableConfidence = minAcceptableConfidence(sensitivity)
 
             val isMatch = normalizedDist <= maxAcceptableDistance && conf >= minAcceptableConfidence
 
@@ -326,6 +323,22 @@ class TemplateKeywordDetector(
     }
 
     companion object {
+        // Sensitivity tuning:
+        // sensitivity ranges from 0.10 to 0.95 (default 0.60).
+        // Modulates the maximum allowable DTW distance and minimum confidence threshold.
+        private fun maxAcceptableDistance(sensitivity: Float): Float = 0.28f + (sensitivity - 0.50f) * 0.12f
+
+        private fun minAcceptableConfidence(sensitivity: Float): Float =
+            (0.42f - (sensitivity - 0.50f) * 0.20f).coerceIn(0.25f, 0.75f)
+
+        /** Minimum match confidence (0..1) required to trigger at the given sensitivity. */
+        fun confidenceThreshold(sensitivity: Float): Float {
+            val s = sensitivity.coerceIn(0.1f, 0.95f)
+            // A match needs both conditions; the distance limit maps onto confidence via conf = 1 - dist / 0.40
+            val distanceAsConfidence = 1.0f - maxAcceptableDistance(s) / 0.40f
+            return maxOf(minAcceptableConfidence(s), distanceAsConfidence).coerceIn(0f, 1f)
+        }
+
         /**
          * Synthesizes canonical acoustic PCM sequence representing the phrase "Ciao Linda".
          * 16kHz, 50ms (800 samples) per frame.

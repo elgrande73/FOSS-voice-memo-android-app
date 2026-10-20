@@ -90,6 +90,9 @@ class MemoTriggerDetector(
         private set
     var noiseFloorDb: Float = 30.0f
         private set
+    // Live wake-phrase match confidence (0..1) with peak-hold decay so short matches stay visible
+    var keywordConfidence: Float = 0f
+        private set
 
     // State
     var currentState: RecordingLifecycleState = RecordingLifecycleState.IDLE
@@ -125,6 +128,7 @@ class MemoTriggerDetector(
         consecutiveSoundChunks = 0
         peakUtteranceDb = 0f
         consecutiveQuietFrames = 10
+        keywordConfidence = 0f
         sessionMaxDb = 0f
         sessionSumDb = 0.0
         sessionDbCount = 0
@@ -152,6 +156,7 @@ class MemoTriggerDetector(
         if (currentState == RecordingLifecycleState.IDLE) return events
 
         val now = System.currentTimeMillis()
+        keywordConfidence *= KEYWORD_CONFIDENCE_DECAY
 
         // --- STAGE 1: Low-CPU Volume & RMS / dB Analysis ---
         val vadResult = vad.processFrame(frame, thresholdDb)
@@ -202,6 +207,7 @@ class MemoTriggerDetector(
 
                         // Rule 2: Run Stage 2: Wake-phrase spotter
                         val kwResult = keywordDetector.processFrame(frame, vadResult.rms, vadResult.db)
+                        keywordConfidence = maxOf(keywordConfidence, kwResult.confidence)
 
                         // Rule 3: Trigger ONLY if the phrase "Ciao Linda" was matched AND the loudness criterion is met
                         if (kwResult.matched && (peakUtteranceDb >= thresholdDb || vadResult.isAboveThreshold)) {
@@ -312,6 +318,7 @@ class MemoTriggerDetector(
                     (now - triggerStartTime > 1500L) // Debounce from start phrase
                 ) {
                     val kwStopResult = keywordDetector.processFrame(frame, vadResult.rms, vadResult.db)
+                    keywordConfidence = maxOf(keywordConfidence, kwStopResult.confidence)
                     if (kwStopResult.matched) {
                         keywordStopTriggered = true
                     }
@@ -430,6 +437,10 @@ class MemoTriggerDetector(
     @Synchronized
     fun loadKeywordTemplate(templateBytes: ByteArray): Boolean {
         return keywordDetector.loadTemplate(templateBytes)
+    }
+
+    companion object {
+        private const val KEYWORD_CONFIDENCE_DECAY = 0.92f // per 50ms frame
     }
 }
 

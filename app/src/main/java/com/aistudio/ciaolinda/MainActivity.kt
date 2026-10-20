@@ -14,6 +14,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -85,7 +88,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -102,6 +109,7 @@ import com.aistudio.ciaolinda.ui.theme.MyApplicationTheme
 import com.aistudio.ciaolinda.ui.theme.ThemeMode
 import com.aistudio.ciaolinda.viewmodel.VoiceMemoViewModel
 import com.aistudio.ciaolinda.viewmodel.VoiceNoteFilter
+import com.aistudio.ciaolinda.wakephrase.TemplateKeywordDetector
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -288,6 +296,9 @@ fun DashboardScreen(
     val lastRecordedNote by AudioMonitoringService.lastRecordedNote.collectAsState()
     val detectionMode by viewModel.detectionMode.collectAsState()
     val thresholdDb by viewModel.thresholdDb.collectAsState()
+    val keywordConfidence by AudioMonitoringService.liveKeywordConfidence.collectAsState()
+    val keywordSensitivity by viewModel.keywordSensitivity.collectAsState()
+    val keywordThreshold = TemplateKeywordDetector.confidenceThreshold(keywordSensitivity)
 
     val context = LocalContext.current
 
@@ -503,6 +514,54 @@ fun DashboardScreen(
             }
         }
 
+        // Live Wake-Phrase Match Confidence Gauge
+        if (detectionMode == DetectionMode.KEYWORD_ONLY) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(20.dp),
+                    modifier = Modifier.padding(20.dp)
+                ) {
+                    WakePhraseConfidenceGauge(
+                        confidence = keywordConfidence,
+                        threshold = keywordThreshold,
+                        modifier = Modifier
+                            .size(120.dp)
+                            .testTag("keyword_confidence_gauge")
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Wake Phrase Match",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Live similarity to \"Ciao Linda\"",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Trigger Threshold: ${(keywordThreshold * 100).toInt()}%",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.Red
+                        )
+                        if (!isServiceRunning) {
+                            Text(
+                                text = "Start monitoring to see live values",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // Primary Hero Action Controls
         Row(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -635,6 +694,87 @@ fun DashboardScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Circular gauge showing the live wake-phrase match confidence (0..1) with a tick at the trigger threshold.
+ * The arc spans 270 degrees, opening at the bottom.
+ */
+@Composable
+fun WakePhraseConfidenceGauge(
+    confidence: Float,
+    threshold: Float,
+    modifier: Modifier = Modifier
+) {
+    val animatedConfidence by animateFloatAsState(
+        targetValue = confidence.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 120),
+        label = "keywordConfidence"
+    )
+    val isAboveThreshold = confidence >= threshold
+    val trackColor = MaterialTheme.colorScheme.surfaceVariant
+    val progressColor = if (isAboveThreshold) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary
+    val thresholdColor = Color.Red
+
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val strokeWidth = 12.dp.toPx()
+            val inset = strokeWidth / 2f + 4.dp.toPx()
+            val arcSize = Size(size.width - inset * 2f, size.height - inset * 2f)
+            val topLeft = Offset(inset, inset)
+            val startAngle = 135f
+            val totalSweep = 270f
+
+            drawArc(
+                color = trackColor,
+                startAngle = startAngle,
+                sweepAngle = totalSweep,
+                useCenter = false,
+                topLeft = topLeft,
+                size = arcSize,
+                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+            )
+            if (animatedConfidence > 0.005f) {
+                drawArc(
+                    color = progressColor,
+                    startAngle = startAngle,
+                    sweepAngle = totalSweep * animatedConfidence,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = arcSize,
+                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                )
+            }
+
+            // Threshold tick crossing the arc
+            val thresholdAngle = Math.toRadians((startAngle + totalSweep * threshold.coerceIn(0f, 1f)).toDouble())
+            val radius = arcSize.width / 2f
+            val center = Offset(size.width / 2f, size.height / 2f)
+            val tickHalf = strokeWidth / 2f + 4.dp.toPx()
+            val dirX = kotlin.math.cos(thresholdAngle).toFloat()
+            val dirY = kotlin.math.sin(thresholdAngle).toFloat()
+            drawLine(
+                color = thresholdColor,
+                start = Offset(center.x + dirX * (radius - tickHalf), center.y + dirY * (radius - tickHalf)),
+                end = Offset(center.x + dirX * (radius + tickHalf), center.y + dirY * (radius + tickHalf)),
+                strokeWidth = 3.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = "${(animatedConfidence * 100).toInt()}%",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = if (isAboveThreshold) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "match",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -1328,10 +1468,13 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(text = "Recording Sounds", fontWeight = FontWeight.SemiBold)
                         Text(
-                            text = "Plays a rising chime when a memo starts and a falling chime when it stops",
+                            text = "Plays a rising chime when a memo starts and a falling chime when it stops (uses media volume)",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                    TextButton(onClick = { viewModel.previewFeedbackSounds() }) {
+                        Text("Test")
                     }
                     Switch(
                         checked = feedbackSoundsEnabled,

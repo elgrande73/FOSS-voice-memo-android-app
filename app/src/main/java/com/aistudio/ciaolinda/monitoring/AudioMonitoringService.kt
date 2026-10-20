@@ -97,7 +97,8 @@ class AudioMonitoringService : Service() {
         const val CHANNEL_ID = "ciao_linda_monitoring_channel"
         const val CHANNEL_NOTE_ID = "ciao_linda_note_channel"
         const val NOTIFICATION_ID = 1001
-        private const val FEEDBACK_MUTE_TAIL_MS = 300L
+        // Covers thread hand-off, AudioTrack output latency and room echo after the chime
+        private const val FEEDBACK_MUTE_TAIL_MS = 450L
 
         const val ACTION_START_MANUAL_RECORDING = "com.aistudio.ciaolinda.ACTION_START_MANUAL_RECORDING"
         const val ACTION_STOP_MANUAL_RECORDING = "com.aistudio.ciaolinda.ACTION_STOP_MANUAL_RECORDING"
@@ -125,6 +126,9 @@ class AudioMonitoringService : Service() {
         private val _isVoiceDetected = MutableStateFlow(false)
         val isVoiceDetected = _isVoiceDetected.asStateFlow()
 
+        private val _liveKeywordConfidence = MutableStateFlow(0f)
+        val liveKeywordConfidence = _liveKeywordConfidence.asStateFlow()
+
         private val _lastCapturedNoteTitle = MutableStateFlow<String?>(null)
         val lastCapturedNoteTitle = _lastCapturedNoteTitle.asStateFlow()
 
@@ -151,7 +155,7 @@ class AudioMonitoringService : Service() {
         mediaPlaybackDetector = MediaPlaybackDetector(this)
         database = AppDatabase.getDatabase(this)
         speechEngine = AndroidOnDeviceSpeechEngine(this)
-        feedbackSoundPlayer = FeedbackSoundPlayer()
+        feedbackSoundPlayer = FeedbackSoundPlayer(this)
 
         createNotificationChannels()
         loadSavedKeywordTemplate()
@@ -325,6 +329,7 @@ class AudioMonitoringService : Service() {
                         )
                         _isVoiceDetected.value = memoDetector.isVoiceDetected
                         _liveNoiseFloorDb.value = memoDetector.noiseFloorDb
+                        _liveKeywordConfidence.value = memoDetector.keywordConfidence
 
                         for (event in events) {
                             when (event) {
@@ -456,6 +461,7 @@ class AudioMonitoringService : Service() {
 
     private fun handleStartManualRecording() {
         memoDetector.startManualRecording()
+        playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STARTED)
         _currentRecordingState.value = RecordingLifecycleState.RECORDING
         _isCurrentlyRecording.value = true
         updateNotificationStatus(RecordingLifecycleState.RECORDING)
@@ -466,6 +472,7 @@ class AudioMonitoringService : Service() {
         _isCurrentlyRecording.value = false
         _recordingDurationSeconds.value = 0
         if (completed != null) {
+            playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STOPPED)
             saveCompletedVoiceNote(completed)
         }
         _currentRecordingState.value = RecordingLifecycleState.MONITORING
@@ -696,6 +703,7 @@ class AudioMonitoringService : Service() {
 
     override fun onDestroy() {
         _isServiceRunning.value = false
+        _liveKeywordConfidence.value = 0f
         _currentRecordingState.value = RecordingLifecycleState.IDLE
         _isCurrentlyRecording.value = false
 
