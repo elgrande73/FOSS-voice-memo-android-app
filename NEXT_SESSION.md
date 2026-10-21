@@ -9,7 +9,8 @@
 - The wake phrase has a speaker-split corpus, and mean-normalised matching is adopted (see `IMPROVEMENT_LOG.md`).
 - Transcription now reports real stages and per-stage timings, and uses more threads while monitoring.
 - A shorter encoder context (`audio_ctx`) was measured and rejected: WER went from 0.32 to 0.79–1.0.
-- Next: backlog item 1, wake-phrase recall at 50 %.
+- Window length and flux gate were measured: no effect (see log).
+- Next: backlog item 1, near-miss anti-references.
 
 ## Environment notes
 

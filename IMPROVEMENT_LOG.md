@@ -2,6 +2,26 @@
 
 Newest first. Numbers come from synthetic fixtures unless stated otherwise.
 
+## 2026-10-21 — Wake phrase: window length and flux gate (not adopted)
+
+- **Hypothesis:** different candidate window lengths, or a different stationary-sound (spectral-flux) gate, recover
+  recall at 50 % after mean normalisation.
+- **Measured on dev only** (built-in reference, 300 utterances):
+
+  | Variant | TP | FP | AUC |
+  |---|---|---|---|
+  | Base | 23 | 0 | 0.900 |
+  | Minimum length 0.6× | 22 | 0 | 0.894 |
+  | Minimum length 0.8× | 24 | 0 | 0.904 |
+  | Maximum length 1.2× | 23 | 0 | 0.897 |
+  | Maximum length 1.5× | 23 | 0 | 0.893 |
+  | Flux gate 0.03 | 23 | 0 | 0.858 |
+  | Flux gate 0.05 | 23 | 0 | 0.901 |
+
+- Every difference is within one utterance, so nothing is worth a change and none was tested on the test split.
+- **Conclusion:** recall for unseen voices at 50 % is limited by how far apart voices are, not by these parameters.
+  Recording one's own samples remains the recommended setup.
+
 ## 2026-10-21 — Transcription: shorter encoder context for short memos (not adopted)
 
 - **Hypothesis:** whisper.cpp `audio_ctx`, sized to the memo length plus a margin, makes short memos faster without
