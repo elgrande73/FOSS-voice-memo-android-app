@@ -2,7 +2,7 @@
 <p><b>Features</b></p>
 <ul>
 <li>Automatic recording when speech or sound exceeds a configurable activation threshold; stops after a configurable silence timeout</li>
-<li>Wake phrase "Ciao Linda" to start (and optionally stop) a memo, with an offline keyword spotter; record the phrase in your own voice for a personal template</li>
+<li>Wake phrase "Mango Tango" to start (and optionally stop) a memo, with an offline keyword spotter; record it, or your own phrase, in your own voice for a personal template</li>
 <li>One <i>Match confidence threshold</i> (20–80 %) with a live match gauge on the dashboard</li>
 <li>Start and stop memos from the lock screen (notification button and Quick Settings tile), with a large record button on the dashboard</li>
 <li>Optional shortcuts: hold the volume buttons, or a key combination on a Bluetooth/USB keyboard (an optional accessibility service, which only checks key presses, extends them to other apps)</li>

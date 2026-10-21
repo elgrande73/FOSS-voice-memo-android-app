@@ -50,6 +50,9 @@ interface KeywordDetector {
 
     /** Starts a new audio stream: clears the matching window and the front end's adaptive state. */
     fun resetStream() = resetWindow()
+
+    /** How long after the end of the phrase a match can still be reported (0 = on the phrase's last frame). */
+    val decisionLatencyMs: Long get() = 0L
 }
 
 /**

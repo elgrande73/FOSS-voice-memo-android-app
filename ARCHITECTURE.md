@@ -2,14 +2,14 @@
 
 **Application:** Voice Memo (Automatic Voice-Note Assistant for Android — FOSS / F-Droid Distribution)  
 **Application ID / package:** `io.github.elgrande73.voicememo` (formerly `com.aistudio.ciaolinda`, see [README](README.md#new-application-identity))  
-**Default wake phrase:** "Ciao Linda"  
+**Default wake phrase:** "Mango Tango" (new installations; earlier installations keep "Ciao Linda")  
 **Target Platform:** Android 7.0 (API Level 24) through Android 15 / 16 (API Level 36)
 
 ---
 
 ## 1. System Context
 
-The application runs entirely on-device in a sandboxed, zero-telemetry environment. It interfaces directly with Android HAL audio endpoints (Internal Microphones, USB Audio interfaces, Bluetooth SCO/BLE peripherals) to passively monitor acoustic activity, recognize a wake phrase (default "Ciao Linda"), and record automatic voice notes without cloud dependencies.
+The application runs entirely on-device in a sandboxed, zero-telemetry environment. It interfaces directly with Android HAL audio endpoints (Internal Microphones, USB Audio interfaces, Bluetooth SCO/BLE peripherals) to passively monitor acoustic activity, recognize a wake phrase (default "Mango Tango"), and record automatic voice notes without cloud dependencies.
 
 ### System Context Diagram
 
@@ -146,7 +146,7 @@ All user data lives in app-private storage (never the cache directory) and survi
 | Match confidence threshold | key `matchConfidenceThresholdPercent` (Int, 20–80) | Single authoritative value |
 | Transcripts | `voice_notes.transcription_text`, `transcription_status` | Never rewritten except by the user or a successful transcription |
 | Imported speech models | `noBackupFilesDir/speech_models/imported/*.bin` + `.json` | Not backed up; the bundled model stays in the APK |
-| Enrolled wake-phrase samples (1–5) | `filesDir/wake_phrase/samples/sample_<id>.bin` | Versioned (`VMWS` v1), features only (no audio); deleting all restores the built-in "Ciao Linda" |
+| Enrolled wake-phrase samples (1–5) | `filesDir/wake_phrase/samples/sample_<id>.bin` | Versioned (`VMWS` v1), features only (no audio); deleting all restores the built-in phrase |
 | Single template of earlier versions | `filesDir/wake_phrase/enrolled_template.bin` | Read only for the one-time migration to sample 1; deleted after a verified copy |
 | Wake-phrase test recording | `filesDir/wake_phrase/test_recording.wav` | 16 kHz mono WAV of the last "Test Phrase" run |
 | Wake-phrase test result | `filesDir/wake_phrase/test_result.bin` | Best confidence + timestamp |

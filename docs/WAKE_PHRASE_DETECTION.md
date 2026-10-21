@@ -1,6 +1,7 @@
 # Wake-phrase detection: pipeline, noise suppression and validation
 
-This document describes how Voice Memo recognises its wake phrase (default **"Ciao Linda"**), why automatic
+This document describes how Voice Memo recognises its wake phrase (default **"Mango Tango"** for new installations,
+see section 15; earlier versions used **"Ciao Linda"**, which existing installations keep), why automatic
 monitoring used to report much lower match confidence than the Settings phrase test, what was changed, and how the
 changes were measured.
 
@@ -362,3 +363,107 @@ from reaching the matcher. Sweep (1 sample, 50 %, 3 backgrounds; quiet phrase �
 −50 dBFS loses no quiet phrases here and removes some distant speech; stricter values reject distant speech completely but
 also quiet or distant users. Existing installations keep their previous level (the old activation threshold, default
 −42 dBFS); new installations start at −50 dBFS. The right value depends on the phone; compare with the live level.
+
+## 15. Default wake phrase: "Mango Tango"
+
+New installations use **"Mango Tango"**; installations set up before settings v3 keep **"Ciao Linda"**
+(`SettingsMigrator` v3, key `builtInWakePhrase`), because their users learned that phrase. Both are offered in
+Settings → Wake Phrase → *Built-in phrase*. Recorded samples always take precedence over the built-in phrase and are
+never changed by this setting; start and stop always use the same phrase (a change made while a memo is being recorded
+is applied when it ends).
+
+**Why the change.** The previous built-in reference was a synthesized formant sequence, not speech. Measured on the
+synthetic-speech fixtures it never matched a spoken "Ciao Linda": score 0.00 on all 9 renditions (6 target-speaker, 3
+other voices), so without recorded samples the wake phrase effectively did not work. "Mango Tango" has two clear,
+stressed syllable pairs with nasal and stop consonants and is rare in conversation.
+
+**Built-in reference.** `app/src/main/resources/wakephrase/mango_tango.bin` holds the front-end features (no audio)
+of five eSpeak NG renditions (`mango_ref_1..5`: US and British English, a female and a male variant, German), extracted
+like a Settings enrollment; it is matched with `ReferenceAggregation.MAX`. `BuiltInWakePhraseTest` rebuilds it from the
+fixtures and fails if it differs (provenance: `app/src/test/resources/audio/README.md`). "Ciao Linda" keeps its old
+reference unchanged (`KEYWORD_CIAO_LINDA` and the `'CIAO'` template magic are untouched).
+
+**Measured** (`MangoTangoWakePhraseTest`, synthetic speech only; 3 backgrounds × 2 levels; minimum level −50 dBFS):
+
+| Setup @ 50 % | Wake phrase detected | Near misses ("Mango", "Tango", "Tango Mango", "Manga Tanga", "Bingo Tango", "Mango tea", 2 sentences) | Conversation |
+|---|---|---|---|
+| Built-in reference, 10 held-out voices/accents | 16/60 | 0/48 | 0/42 |
+| Built-in reference @ 40 % | 30/60 | 15/48 | 0/42 |
+| Built-in reference @ 60 % | 5/60 | 0/48 | 0/42 |
+| 1 recorded sample (own voice) | 17/24 | 0/48 | 0/42 |
+| 3 recorded samples (own voice) | 18/24 | 0/48 | 0/42 |
+| Custom phrase (3 "Ciao Linda" samples) | 25/36 Ciao Linda; 0/84 Mango Tango | — | — |
+
+Start and stop with the same recorded phrase (memo speech in between, 1 s pause): 9/12 memos started and were ended by
+the phrase; the 3 misses never started (white noise at −45 dBFS); every stop kept the whole memo speech and removed
+only the stop phrase and the pause after it.
+
+**Interpretation.** Without samples the built-in phrase recognises some voices but far from all (16/60 on voices it was
+not built from); recording one sample in one's own voice is still the recommended setup, and the UI says so. Real
+voices differ from eSpeak NG; these numbers show relative behaviour, not real-world accuracy, and device tests with
+real speakers are still required.
+
+## 16. Detection models (Settings → Wake-Word Detection Model)
+
+Two backends implement `KeywordDetector`; the selected one is persisted (`wakeWordModel`, absent = Standard, so every
+existing installation keeps its behaviour) and used identically by monitoring and the Settings phrase test
+(`WakeWordEngines.create`, `WakePhraseEvaluator.matcherFactory`).
+
+| | **Standard (template matching)** — default | **Speech-checked (on-device speech model)** |
+|---|---|---|
+| How | DTW template matching (sections 2–14) | Utterances of phrase length are checked by Whisper base for the phrase's words |
+| Needs | Built-in phrase or recorded samples | The phrase's words: built-in name, or typed words of the recorded phrase |
+| Extra size | none | none: reuses the bundled `ggml-base-q5_0.bin` (55 MB, MIT) |
+| Memory | negligible | +55 MB resident on the host after load and checks; whisper reserves up to ~230 MB of buffers (log) |
+| Time per decision | ~0.3 ms per 50 ms frame | 274 ms wall / 524 ms CPU per check of 1.5 s audio (host x86-64, 2 threads); phones are slower (not measured) |
+| Decision | on the phrase's last frame | after the utterance + 250 ms pause + check time |
+| License | own code | whisper.cpp (MIT), model (MIT) — already in the app |
+
+**How the speech check works** (`SpeechCheckedKeywordDetector`, `WhisperPhraseVerifier`, JNI `phraseLogProb`). Every
+frame still goes through the template matcher (front end, noise floor, diagnostics unchanged). A speech segment of
+0.35–2.5 s (≥ 10 dB above the noise floor, ended by ≥ 250 ms below it) is cut out with 150 ms padding and scored on a
+worker thread, so the audio thread never waits; at most two checks are queued, further utterances are skipped while the
+model is busy. Whisper encodes the snippet with an encoder context reduced to its length (about 10× faster than the full
+30 s window) and the decoder is forced through the phrase's words (a few spellings: "Mango Tango", "Mango tango",
+"mango tango", "Mango, Tango"); the mean token log-probability `lp` of the best spelling gives
+`score = clamp(1 + lp / 8, 0, 1)` — a similarity score, not a probability, compared with the same *Match confidence
+threshold*. The mapping puts the default 50 % at `lp = −4`, the value that separated phrase and ordinary speech on the
+fixtures. Free transcription was tried first and rejected: Whisper wrote eSpeak NG's "Mango Tango" as "Mendoza",
+"Manjo Tanjo", etc. A likelihood ratio against the free transcription did not separate better and was not adopted.
+A match is reported on the first frame after the check finished, with a window covering the utterance and the check
+time, so a stop phrase is removed together with the time the check took (the pre-trigger buffer grows by 3 s in this
+mode so a start never loses audio).
+
+**Measured** (`SpeechCheckHostTest`, real model via the host JNI build, same fixtures and conditions as section 15):
+
+| Setup @ 50 % | Detected | Near misses | Conversation |
+|---|---|---|---|
+| "Mango Tango", no samples, 10 held-out voices | **27/60** (Standard: 16/60) | **9/48** (Standard: 0/48) | 0/42 |
+| "Mango Tango", no samples, the voice of section 15's user | 15/24 | — | — |
+| Custom phrase "Ciao Linda" (3 samples + words) | 14/54 (6 target + 3 other voices) | 0/42 | 0/42; Mango Tango 0/24 |
+
+So the speech check recognises more voices without recorded samples, but also accepts more near misses ("Manga Tanga",
+"Bingo Tango") and is weaker than Standard with the user's own samples. It is therefore **not the default**, and no
+accuracy improvement is claimed beyond these synthetic measurements.
+
+**Fallback and switching.** If the speech check cannot be used — no words entered for recorded samples, a phrase
+shorter than 4 letters or longer than 4 words, the speech engine missing for the device's ABI, the model failing to load
+(e.g. memory) — Standard is used and Settings shows why (`AudioMonitoringService.wakeWordStatus`). A check that fails at
+run time counts as "no match" and never stops monitoring. Switching never interrupts a memo: the new backend is loaded in
+the background and installed when no memo is being recorded (`MemoTriggerDetector.replaceKeywordDetector` refuses
+during a memo); the previous backend is then closed, which frees the speech model (shared by monitoring and the Settings
+test with a reference count, `SpeechCheckModel`). Recorded samples are never converted or deleted by switching.
+
+**Limitations.** Phrases said inside continuous speech without a pause are not checked (the utterance is longer than
+2.5 s); during long conversation the model runs repeatedly (battery); phone latency, CPU and memory were not measured
+(no device available); the multilingual model is asked in the transcription language (English if "auto").
+
+**Alternatives considered and not adopted**
+
+| Engine | License | Why not |
+|---|---|---|
+| sherpa-onnx keyword spotting (open vocabulary) | Apache-2.0 (models Apache-2.0) | Needs ONNX Runtime native libraries for every ABI; F-Droid would have to build ONNX Runtime from source, a large addition. In an earlier evaluation with the English model it detected 0 of 72 "Ciao Linda" clips |
+| Vosk / Kaldi grammar recognition | Apache-2.0 | Second large native engine and model (≥ 40 MB) next to whisper.cpp for a similar result |
+| openWakeWord | code Apache-2.0, pre-trained models CC BY-NC-SA 4.0 | Non-commercial model license is not FOSS-compatible; custom phrases need training |
+| Porcupine (Picovoice) | proprietary, needs an access key | Not FOSS |
+| microWakeWord / Mycroft Precise | Apache-2.0 | Need a model trained per phrase (TensorFlow); no way to support typed custom phrases on the device |

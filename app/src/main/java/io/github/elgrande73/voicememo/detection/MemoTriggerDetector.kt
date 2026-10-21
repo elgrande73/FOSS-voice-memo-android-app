@@ -93,8 +93,29 @@ sealed class MemoDetectionEvent {
  */
 class MemoTriggerDetector(
     private val vad: VoiceActivityDetector = VoiceActivityDetector(),
-    val keywordDetector: KeywordDetector = TemplateKeywordDetector()
+    keywordDetector: KeywordDetector = TemplateKeywordDetector()
 ) {
+    /** The wake-phrase backend; replaced only through [replaceKeywordDetector]. */
+    var keywordDetector: KeywordDetector = keywordDetector
+        private set
+
+    /**
+     * Switches the wake-phrase backend (Settings → detection model). Refused (returns null) while a memo is being
+     * recorded, so a memo is always stopped by the backend that started it; the caller retries when it has ended.
+     * Returns the previous backend, which the caller releases.
+     */
+    @Synchronized
+    fun replaceKeywordDetector(detector: KeywordDetector): KeywordDetector? {
+        if (currentState == RecordingLifecycleState.RECORDING) return null
+        val previous = keywordDetector
+        detector.setMatchConfidenceThreshold(matchConfidenceThreshold)
+        detector.resetStream()
+        keywordDetector = detector
+        matchStreak = 0
+        lastKeywordResult = null
+        return previous
+    }
+
     // Configuration Parameters
     var detectionMode: DetectionMode = DetectionMode.KEYWORD_ONLY
     var thresholdDb: Float = 48.0f
@@ -243,7 +264,8 @@ class MemoTriggerDetector(
         // Rolling pre-trigger ring buffer maintenance
         // In KEYWORD_ONLY mode, buffer is large enough to retain the full wake phrase plus pre-phrase padding
         val targetPreTriggerMs = if (detectionMode == DetectionMode.KEYWORD_ONLY) {
-            maxOf(preTriggerDurationMs + 1500L, 2500L)
+            // Plus the time a backend may need to decide after the phrase ended (speech check)
+            maxOf(preTriggerDurationMs + 1500L, 2500L) + keywordDetector.decisionLatencyMs
         } else {
             preTriggerDurationMs.coerceAtLeast(400L)
         }

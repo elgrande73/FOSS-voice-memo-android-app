@@ -72,6 +72,12 @@ import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.settings.SettingsMigrator
 import io.github.elgrande73.voicememo.ui.theme.ThemeMode
 import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
+import io.github.elgrande73.voicememo.wakephrase.WakePhraseText
+import io.github.elgrande73.voicememo.wakephrase.WakeWordEngines
+import io.github.elgrande73.voicememo.wakephrase.WakeWordModel
+import io.github.elgrande73.voicememo.wakephrase.WakeWordStatus
+import io.github.elgrande73.voicememo.transcription.SpeechCheckModel
+import io.github.elgrande73.voicememo.transcription.WhisperPhraseVerifier
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseEnrollment
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseEvaluation
@@ -222,6 +228,40 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         )
     )
     val matchConfidenceThresholdPercent = _matchConfidenceThresholdPercent.asStateFlow()
+
+    // Wake-word detection model (Standard or speech check) and the words of a recorded phrase (needed by the check)
+    private val _wakeWordModel = MutableStateFlow<WakeWordModel>(
+        WakeWordModel.fromId(try { prefs.getString(PreferenceKeys.WAKE_WORD_MODEL, null) } catch (_: ClassCastException) { null })
+    )
+    val wakeWordModel: StateFlow<WakeWordModel> = _wakeWordModel.asStateFlow()
+
+    private val _recordedPhraseText = MutableStateFlow<String>(
+        try { prefs.getString(PreferenceKeys.RECORDED_WAKE_PHRASE_TEXT, null) } catch (_: ClassCastException) { null } ?: ""
+    )
+    val recordedPhraseText: StateFlow<String> = _recordedPhraseText.asStateFlow()
+
+    /** The model monitoring actually uses (null while monitoring is off). */
+    val wakeWordStatus: StateFlow<WakeWordStatus?> = AudioMonitoringService.wakeWordStatus
+
+    /** Selects the detection model; a running monitor switches when no memo is being recorded. Samples are kept. */
+    fun setWakeWordModel(model: WakeWordModel) {
+        if (model == _wakeWordModel.value) return
+        _wakeWordModel.value = model
+        prefs.edit().putString(PreferenceKeys.WAKE_WORD_MODEL, model.id).apply()
+        notifyServiceTemplateChanged()
+    }
+
+    fun setRecordedPhraseText(text: String) {
+        val trimmed = text.trim().take(WakePhraseText.MAX_LETTERS + 20)
+        if (trimmed == _recordedPhraseText.value) return
+        _recordedPhraseText.value = trimmed
+        prefs.edit().apply { if (trimmed.isEmpty()) remove(PreferenceKeys.RECORDED_WAKE_PHRASE_TEXT) else putString(PreferenceKeys.RECORDED_WAKE_PHRASE_TEXT, trimmed) }.apply()
+        notifyServiceTemplateChanged()
+    }
+
+    /** Why the speech check cannot be used with the current phrase, or null. */
+    fun speechCheckProblem(): String? =
+        WakePhraseText.problem(if (_hasKeywordTemplate.value) _recordedPhraseText.value else _builtInWakePhrase.value.displayName)
 
     // Built-in wake phrase, used while no sample is enrolled (new installations: Mango Tango, see SettingsMigrator v3)
     private val _builtInWakePhrase = MutableStateFlow<BuiltInWakePhrase>(SettingsMigrator.builtInWakePhrase(prefs))
@@ -1204,12 +1244,27 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun evaluateTestFrames(frames: List<ShortArray>): WakePhraseEvaluation {
+        val templates = wakePhraseStore.loadSampleTemplates()
+        // The same backend as monitoring: with the speech check selected (and usable) the test runs it too
+        val speechCheck = _wakeWordModel.value == WakeWordModel.SPEECH_CHECK && speechCheckProblem() == null
+        val language = (prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, null) ?: TranscriptionSettings.AUTO_LANGUAGE)
+            .takeUnless { it == TranscriptionSettings.AUTO_LANGUAGE } ?: "en"
         val evaluation = WakePhraseEvaluator.evaluate(
             frames = frames,
-            templates = wakePhraseStore.loadSampleTemplates(),
+            templates = templates,
             matchConfidenceThreshold = MatchConfidenceThreshold.toDetectorConfidence(_matchConfidenceThresholdPercent.value),
             minLevelDb = wakePhraseMinLevelDb(),
-            builtInPhrase = _builtInWakePhrase.value
+            builtInPhrase = _builtInWakePhrase.value,
+            matcherFactory = if (!speechCheck) null else {
+                {
+                    val engine = WakeWordEngines.create(
+                        WakeWordModel.SPEECH_CHECK, _builtInWakePhrase.value, templates, _recordedPhraseText.value,
+                        { text -> WhisperPhraseVerifier(SpeechCheckModel.acquire(context), text, language) }, synchronous = true
+                    )
+                    engine.status.message?.let { _phraseMessage.value = it }
+                    engine.detector
+                }
+            }
         )
         _lastTestEvaluation.value = evaluation
         return evaluation

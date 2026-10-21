@@ -6,13 +6,14 @@ Architecture, persistence rules and pipelines: `ARCHITECTURE.md`, `docs/WAKE_PHR
 ## Identity & branding (mandatory)
 - App name / launcher label: **Voice Memo** (`R.string.app_name`). Dashboard title: **Voice memo** (`R.string.dashboard_title`). These are separate strings; change neither as a side effect.
 - Application ID / namespace / package: `io.github.elgrande73.voicememo` (provisional until the maintainer confirms; never change it after a release). The old `com.aistudio.ciaolinda` identity must not return.
-- **"Ciao Linda" is the default wake phrase, not branding.** Keep it in recognition logic, defaults, tests and docs; remove it elsewhere. Persisted values `KEYWORD_CIAO_LINDA` (trigger type) and the `'CIAO'` template magic must never be renamed.
+- **Wake phrases are not branding.** "Mango Tango" is the default for new installations (`BuiltInWakePhrase`, reference rebuilt from fixtures by `BuiltInWakePhraseTest`); "Ciao Linda" is the earlier default that existing installations keep (`SettingsMigrator` v3). Never switch an existing user's phrase silently. Persisted values `KEYWORD_CIAO_LINDA` (trigger type of every wake-phrase memo) and the `'CIAO'` template magic must never be renamed.
 - Never claim Voice Memo inherits Ciao Linda's private data; there is no importer.
 
 ## Settings & detection (mandatory)
 - Exactly one wake-phrase setting: **Match confidence threshold**, percent, **20–80 % inclusive**, default 50 % (below 50 % conversation starts triggering; measured, see docs), stored as `matchConfidenceThresholdPercent`. Dashboard label: **Trigger threshold**, showing the exact configured value. No competing "sensitivity" settings or terms.
 - Detector semantics: `score = clamp(1 − DTW distance / 0.40, 0, 1)` (similarity score, not a probability); match when `score ≥ percent / 100`. Do not rescale scores to make numbers look better.
 - Monitoring and the Settings phrase test must share one pipeline: `WakePhraseFrontEnd` → `TemplateKeywordDetector` → `MemoTriggerDetector` (test via `WakePhraseEvaluator`). Feed every 50 ms frame in order (`PcmFrameAssembler`); never gate frames before the matcher.
+- Detection models (`WakeWordModel`, default Standard = the pipeline above): the optional speech check (`SpeechCheckedKeywordDetector` + `WhisperPhraseVerifier`, bundled model only) wraps that pipeline, is built by `WakeWordEngines` for monitoring and the Settings test alike, falls back to Standard with a visible reason, and is switched only between memos. Its score is `clamp(1 + meanLogProb / 8, 0, 1)`; do not rescale it. Never claim it is more accurate beyond the measurements in docs section 16.
 - Noise handling stays conservative and validated by fixture tests (`WakePhraseNoiseRobustnessTest`); justify parameter changes with measurements on held-out conditions.
 - Wake-phrase samples are optional, max 5, matched with `ReferenceAggregation.MAX`; store features only, never raw enrollment audio, and keep them on the device.
 - Memo endings: only a `KEYWORD` stop removes audio (the stop phrase); timeouts, user/service stops and errors keep every captured frame. Finalize exactly once in `MemoTriggerDetector.finalizeRecording`.
@@ -23,11 +24,11 @@ Architecture, persistence rules and pipelines: `ARCHITECTURE.md`, `docs/WAKE_PHR
 - Microphone: only one owner at a time via `MicrophoneArbiter`. Settings phrase recordings go through `PhraseCaptureCoordinator` (stop monitoring → confirm release → record → restore unless the user changed monitoring). Dashboard status must reflect `AudioMonitoringService.engineState`, not just whether the service exists.
 
 ## Playback (mandatory)
-- After natural completion, play the next memo of the currently displayed (filtered/searched) list: END chime → next BEGIN chime → memo. Stop at the end of the list (no wrap). Manual stop/pause/cancel/focus loss: no END chime, no advance. Logic lives in the unit-tested `MemoPlaybackSequencer`.
+- Playback mode Autoplay (default) / Single (`historyPlaybackMode`). Autoplay: after natural completion, play the next memo of the currently displayed (filtered/searched) list: END chime → next BEGIN chime → memo. Stop at the end of the list (no wrap). Single: END chime, then stop. Changing the mode never interrupts the playing memo. Manual stop/pause/cancel/focus loss: no END chime, no advance. Logic lives in the unit-tested `MemoPlaybackSequencer`.
 - Chimes are synthesized at runtime (`FeedbackSoundPlayer`); no bundled or downloaded audio.
 
 ## Data integrity (mandatory)
-- Never delete or overwrite user data: memos, WAV files, settings, enrolled wake phrase, test recording/result.
+- Never delete or overwrite user data: memos, WAV files, settings, enrolled wake phrase, test recording/result. User-requested deletion goes through `MemoDeleter` only (exactly the confirmed ids; files moved aside, one DB transaction, rollback; never files outside `filesDir/memos`). Exports only read sources (`MemoArchive`).
 - Persisted identifiers are frozen: `voice_memo_preferences`, `voice_memo_database`, `filesDir/memos`, `filesDir/wake_phrase/*` (samples: `wake_phrase/samples/sample_<id>.bin`, magic `VMWS`; legacy `enrolled_template.bin` migrated once).
 - Room: schema exported to `app/schemas`; no destructive migration fallback. Every schema change needs a version bump, an explicit migration in `AppDatabase.MIGRATIONS` and a test.
 - Settings changes go through `SettingsMigrator` (versioned, idempotent, never replace values the user saved).

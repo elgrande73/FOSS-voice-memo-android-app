@@ -52,4 +52,10 @@ object WhisperNative {
     external fun progress(handle: Long): Int
     /** Returns [languageCode, text], or null on failure or abort. */
     external fun transcribe(handle: Long, samples: FloatArray, language: String, threads: Int, beamSize: Int): Array<String>?
+
+    /** Short-snippet recognition for wake-phrase verification; [audioCtx] in 20 ms encoder frames (0 = 30 s). */
+    /** Mean token log-probability of each of [phrases] for the snippet (forced decoding); null on failure. */
+    external fun phraseLogProb(handle: Long, samples: FloatArray, language: String, threads: Int, audioCtx: Int, phrases: Array<String>): FloatArray?
+
+    external fun recognizeSnippet(handle: Long, samples: FloatArray, language: String, threads: Int, audioCtx: Int): String?
 }

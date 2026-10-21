@@ -36,8 +36,28 @@ TranscriptionManager (queue, one background thread at THREAD_PRIORITY_BACKGROUND
 ### Data handling
 - Transcripts are stored in the memo's existing database row (`transcription_text`, `transcription_status`); no schema
   change. Status values: `SKIPPED` (not transcribed), `PENDING` (automatic transcription was on when saved),
-  `COMPLETED`, `FAILED`. Queue and running state are kept in memory only, so a memo can never be stuck as
-  "transcribing" after the app is closed.
+  `COMPLETED`, `FAILED`. A queued memo is stored as `PENDING` and re-queued when the app starts again
+  (`TranscriptionManager.resumePending`); "running" is kept in memory only, so a memo can never stay "transcribing"
+  after the app was closed.
+- Explicit states in History: *Waiting to be transcribed…*, *Transcribing on this device… n %* (whisper.cpp progress),
+  *Transcription failed: reason* with Retry, transcript, or nothing (not transcribed). Cancel is available while
+  waiting or running; a retry right after a cancel is not lost, and a memo is never queued twice.
+
+### Reliability (fix for memos stuck at "Transcribing…" / "Waiting…")
+Traced causes, all fixed (no device was available to reproduce; fixes verified with unit tests and real inference on
+the host, `TranscriptionEndToEndHostTest`):
+1. Errors that are not exceptions (e.g. `OutOfMemoryError`, `UnsatisfiedLinkError`) escaped the queue loop, which then
+   stopped for good, leaving every later memo "waiting". Every job now ends in a state; the loop survives any error.
+2. The worker thread used `THREAD_PRIORITY_BACKGROUND`, which on Android also moves it into the background CPU group
+   (a small share of a little core): minutes per memo. It now uses a normal-low priority.
+3. With the app in the background the process could be frozen or killed mid-run. Transcription now runs in a foreground
+   service (`TranscriptionService`, type mediaProcessing on Android 15+, dataSync before) with progress and Cancel in
+   its notification; it stops itself when the queue is empty.
+4. A watchdog stops a run that exceeds max(5 min, 40 × audio length) with an explanation (try "Fast" or a smaller model).
+5. Several copies of the static C++ runtime in the native libraries (`libc++_static`) → `c++_shared`.
+6. Ordering of status writes (queued/cancelled/restored) is serialized, so a late write can no longer overwrite a newer
+   state. Deleting or exporting a memo during a job is safe: deletion cancels the job, and a job whose memo or file
+   disappeared ends without writing anything (export only reads the file).
 - A failed run sets `FAILED` and keeps any previous text; a cancelled run changes nothing. The WAV file is only read.
 - Users can transcribe, retry, cancel, edit and delete transcripts (deleting the text keeps the recording).
 - Silent memos (no 50 ms frame ≥ −55 dBFS) are not sent to the model, because Whisper invents text for silence

@@ -50,6 +50,7 @@ the app has been accepted by F-Droid. Inclusion is decided by the F-Droid review
 - **Bundled model file**: a 55 MB binary data file in the repository (see the table). Its licence (MIT) and provenance
   are documented in `THIRD_PARTY_NOTICES.md` and `docs/TRANSCRIPTION.md`.
 - **APK size**: about 68 MB (release, all three ABIs). Per-ABI splits would reduce downloads; not configured yet.
-- **Default wake phrase quality**: the built-in "Ciao Linda" template is synthesized from tones and is not a recording
-  of real speech; recording the phrase in one's own voice (Settings → Wake Phrase) is recommended. Detection accuracy
+- **Default wake phrase quality**: the built-in "Mango Tango" reference is made from synthetic speech (eSpeak NG
+  features, no audio) and recognises only some voices; the older "Ciao Linda" one (kept for existing installations) is
+  synthesized from tones. Recording the phrase in one's own voice (Settings → Wake Phrase) is recommended. Detection accuracy
   and its limitations are documented in `docs/WAKE_PHRASE_DETECTION.md`.

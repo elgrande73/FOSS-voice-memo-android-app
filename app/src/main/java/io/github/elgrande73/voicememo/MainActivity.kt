@@ -49,6 +49,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.selectable
+import io.github.elgrande73.voicememo.wakephrase.WakePhraseText
+import io.github.elgrande73.voicememo.wakephrase.WakeWordModel
+import io.github.elgrande73.voicememo.wakephrase.WakeWordStatus
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -1961,6 +1965,93 @@ private fun HistorySelectionBar(
     }
 }
 
+@Composable
+private fun WakeWordModelCard(
+    selected: WakeWordModel,
+    status: WakeWordStatus?,
+    monitoring: Boolean,
+    usesRecordedPhrase: Boolean,
+    builtInPhrase: BuiltInWakePhrase,
+    recordedPhraseText: String,
+    onSelect: (WakeWordModel) -> Unit,
+    onPhraseTextChange: (String) -> Unit
+) {
+    var draft by remember(recordedPhraseText) { mutableStateOf(recordedPhraseText) }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("wake_word_model_card")
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Wake-Word Detection Model", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Column(modifier = Modifier.selectableGroup()) {
+                WakeWordModel.entries.forEach { model ->
+                    Row(
+                        verticalAlignment = Alignment.Top,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(selected = model == selected, onClick = { onSelect(model) }, role = Role.RadioButton)
+                            .padding(vertical = 4.dp)
+                            .testTag("wake_word_model_${model.id}")
+                    ) {
+                        RadioButton(selected = model == selected, onClick = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(model.label, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                            Text(model.summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+            if (selected == WakeWordModel.SPEECH_CHECK) {
+                Text(
+                    "Uses the speech model already included in the app (Whisper base, about 55 MB, MIT license); nothing is " +
+                        "downloaded and audio never leaves the device. Your recorded samples are kept and used again with Standard.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (usesRecordedPhrase) {
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        label = { Text("Words of your recorded phrase") },
+                        placeholder = { Text(builtInPhrase.displayName) },
+                        singleLine = true,
+                        supportingText = { WakePhraseText.problem(draft)?.let { Text(it) } },
+                        isError = WakePhraseText.problem(draft) != null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged {
+                                ShortcutRuntime.textInputFocused = it.isFocused
+                                if (!it.isFocused && draft != recordedPhraseText) onPhraseTextChange(draft)
+                            }
+                            .testTag("recorded_phrase_text")
+                    )
+                    TextButton(onClick = { onPhraseTextChange(draft) }, enabled = draft.trim() != recordedPhraseText) { Text("Save phrase words") }
+                } else {
+                    Text("Checks for the words \"${builtInPhrase.displayName}\".", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            val statusText = when {
+                status == null || !monitoring -> "Takes effect when monitoring runs."
+                status.message != null -> status.message
+                else -> "Active: ${status.active.label}"
+            }
+            Text(
+                statusText,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold,
+                color = if (status?.isFallback == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .semantics { liveRegion = LiveRegionMode.Polite }
+                    .testTag("wake_word_model_status")
+            )
+        }
+    }
+}
+
 private fun LaunchedEffectScopeCoroutine(viewModel: VoiceMemoViewModel, note: VoiceNote, context: Context) {
     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
         val shareIntent = viewModel.prepareSingleNoteShare(note)
@@ -1989,6 +2080,10 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
     val feedbackSoundsEnabled by viewModel.feedbackSoundsEnabled.collectAsState()
 
     val matchConfidenceThresholdPercent by viewModel.matchConfidenceThresholdPercent.collectAsState()
+    val wakeWordModel by viewModel.wakeWordModel.collectAsState()
+    val wakeWordStatus by viewModel.wakeWordStatus.collectAsState()
+    val recordedPhraseText by viewModel.recordedPhraseText.collectAsState()
+    val isMonitoringServiceRunning by AudioMonitoringService.isServiceRunning.collectAsState()
     val builtInWakePhrase by viewModel.builtInWakePhrase.collectAsState()
     val keywordBehavior by viewModel.keywordBehavior.collectAsState()
     val hasKeywordTemplate by viewModel.hasKeywordTemplate.collectAsState()
@@ -2381,6 +2476,18 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                 }
             }
         }
+
+        // Section: Wake-word detection model
+        WakeWordModelCard(
+            selected = wakeWordModel,
+            status = wakeWordStatus,
+            monitoring = isMonitoringServiceRunning,
+            usesRecordedPhrase = hasKeywordTemplate,
+            builtInPhrase = builtInWakePhrase,
+            recordedPhraseText = recordedPhraseText,
+            onSelect = { viewModel.setWakeWordModel(it) },
+            onPhraseTextChange = { viewModel.setRecordedPhraseText(it) }
+        )
 
         // Section: Thresholds & Durations
         Card(
