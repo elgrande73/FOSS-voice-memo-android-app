@@ -1,5 +1,20 @@
 package io.github.elgrande73.voicememo.playback
 
+/** What happens after a memo played to its end. [id] is persisted: never change it. */
+enum class PlaybackMode(val id: String, val label: String, val description: String) {
+    /** Continue with the next memo of the displayed list (filters, search and order applied). */
+    AUTOPLAY("autoplay", "Autoplay", "Plays the next memo of the list as shown"),
+    /** Stop after the memo. */
+    SINGLE("single", "Single", "Stops after each memo");
+
+    companion object {
+        /** Matches the behaviour of earlier versions, which always continued with the next memo. */
+        val DEFAULT = AUTOPLAY
+
+        fun fromId(id: String?): PlaybackMode = entries.firstOrNull { it.id == id } ?: DEFAULT
+    }
+}
+
 /** Short audio cues framing the playback of each individual memo. */
 enum class PlaybackCue { MEMO_BEGIN, MEMO_END }
 
@@ -22,6 +37,8 @@ interface MemoAudioOutput {
  * viewing. All methods must be called from a single thread (the main thread in the app).
  *
  * Sequence for an automatic transition: memo A completes naturally -> END chime -> BEGIN chime -> memo B starts.
+ * With [autoAdvance] off (playback mode "Single") playback ends after the END chime. The flag is read when a memo
+ * ends, so changing it never interrupts or restarts the memo that is playing.
  * Manual stop, pause or cancellation never plays the END chime and never advances. Every asynchronous callback
  * carries a token; callbacks from a superseded or stopped sequence are ignored, which also suppresses duplicate
  * completion events.
@@ -41,6 +58,9 @@ class MemoPlaybackSequencer(
 
     var state: State = State.Idle
         private set
+
+    /** Whether a memo that ends naturally is followed by the next one of the list (playback mode "Autoplay"). */
+    var autoAdvance: Boolean = true
 
     /** Notified after every state change. */
     var onStateChanged: ((State) -> Unit)? = null
@@ -117,7 +137,7 @@ class MemoPlaybackSequencer(
     }
 
     private fun advanceAfter(noteId: Int, token: Long) {
-        val next = findNextPlayable(noteId)
+        val next = if (autoAdvance) findNextPlayable(noteId) else null
         if (next != null) {
             advancedAutomatically = true
             begin(next, token)

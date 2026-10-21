@@ -2,14 +2,14 @@
 
 **Application:** Voice Memo (Automatic Voice-Note Assistant for Android — FOSS / F-Droid Distribution)  
 **Application ID / package:** `io.github.elgrande73.voicememo` (formerly `com.aistudio.ciaolinda`, see [README](README.md#new-application-identity))  
-**Default wake phrase:** "Ciao Linda"  
+**Default wake phrase:** "Mango Tango" (new installations; earlier installations keep "Ciao Linda")  
 **Target Platform:** Android 7.0 (API Level 24) through Android 15 / 16 (API Level 36)
 
 ---
 
 ## 1. System Context
 
-The application runs entirely on-device in a sandboxed, zero-telemetry environment. It interfaces directly with Android HAL audio endpoints (Internal Microphones, USB Audio interfaces, Bluetooth SCO/BLE peripherals) to passively monitor acoustic activity, recognize a wake phrase (default "Ciao Linda"), and record automatic voice notes without cloud dependencies.
+The application runs entirely on-device in a sandboxed, zero-telemetry environment. It interfaces directly with Android HAL audio endpoints (Internal Microphones, USB Audio interfaces, Bluetooth SCO/BLE peripherals) to passively monitor acoustic activity, recognize a wake phrase (default "Mango Tango"), and record automatic voice notes without cloud dependencies.
 
 ### System Context Diagram
 
@@ -144,7 +144,9 @@ All user data lives in app-private storage (never the cache directory) and survi
 | Voice memo audio | `filesDir/memos/*.wav` | Referenced by absolute path from the database |
 | Settings | SharedPreferences `voice_memo_preferences` | Versioned by `settingsSchemaVersion`, migrated by `SettingsMigrator` |
 | Match confidence threshold | key `matchConfidenceThresholdPercent` (Int, 20–80) | Single authoritative value |
-| Enrolled wake-phrase samples (1–5) | `filesDir/wake_phrase/samples/sample_<id>.bin` | Versioned (`VMWS` v1), features only (no audio); deleting all restores the built-in "Ciao Linda" |
+| Transcripts | `voice_notes.transcription_text`, `transcription_status` | Never rewritten except by the user or a successful transcription |
+| Imported speech models | `noBackupFilesDir/speech_models/imported/*.bin` + `.json` | Not backed up; the bundled model stays in the APK |
+| Enrolled wake-phrase samples (1–5) | `filesDir/wake_phrase/samples/sample_<id>.bin` | Versioned (`VMWS` v1), features only (no audio); deleting all restores the built-in phrase |
 | Single template of earlier versions | `filesDir/wake_phrase/enrolled_template.bin` | Read only for the one-time migration to sample 1; deleted after a verified copy |
 | Wake-phrase test recording | `filesDir/wake_phrase/test_recording.wav` | 16 kHz mono WAV of the last "Test Phrase" run |
 | Wake-phrase test result | `filesDir/wake_phrase/test_result.bin` | Best confidence + timestamp |
@@ -213,7 +215,26 @@ while-in-use microphone rule). Platform limits and the device test plan: [`docs/
 
 ---
 
-## 10. Memo Completion (Stop Reasons)
+## 10. On-Device Transcription
+
+`TranscriptionManager` queues memos and transcribes them one at a time on a low-priority background thread with
+`WhisperTranscriber` (JNI → whisper.cpp, `app/src/main/cpp`, submodule `third_party/whisper.cpp`). The bundled model
+is read from the APK (`assets/models/ggml-base-q5_0.bin`); imported models live in `noBackupFilesDir/speech_models`
+(`SpeechModelStore`). Results go into the memo's existing `transcription_text` / `transcription_status` columns
+(`SKIPPED`, `PENDING`, `COMPLETED`, `FAILED`; queue state is in memory only). See
+[`docs/TRANSCRIPTION.md`](docs/TRANSCRIPTION.md).
+
+| Setting | Key | Default |
+|---|---|---|
+| Automatic transcription of new memos | `speechToTextEnabled` | off |
+| Language | `transcriptionLanguage` (ISO code or `auto`) | `auto` |
+| Quality | `transcriptionQuality` (`ACCURATE`, `FAST`) | `ACCURATE` |
+| Speech model | `transcriptionModelId` | bundled |
+| Minimum audio level for the wake phrase | `wakePhraseMinLevelEnabled`, `wakePhraseMinLevelDbfs` | on, −50 dBFS (new installs; settings v2 keeps the previous level for existing installs) |
+
+---
+
+## 11. Memo Completion (Stop Reasons)
 
 `MemoTriggerDetector.finalizeRecording` is the only place a memo is finalized, once, with a `RecordingStopReason`:
 `KEYWORD` (the spoken stop phrase is removed by `StopPhraseTrimmer`), `SILENCE_TIMEOUT`, `MAX_DURATION`, `USER`,

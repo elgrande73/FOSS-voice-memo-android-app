@@ -2,6 +2,7 @@ package io.github.elgrande73.voicememo.monitoring
 
 import android.util.Log
 import io.github.elgrande73.voicememo.detection.MemoTriggerDetector
+import io.github.elgrande73.voicememo.wakephrase.SpeechCheckedKeywordDetector
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
 import kotlin.math.max
 
@@ -29,7 +30,11 @@ class WakePhraseDiagnosticsLog(private val framesPerSummary: Int = 20) {
     private var processingMaxNanos = 0L
 
     fun record(frame: ShortArray, detector: MemoTriggerDetector, processingNanos: Long) {
-        val keyword = detector.keywordDetector as? TemplateKeywordDetector
+        val keyword = when (val k = detector.keywordDetector) {
+            is TemplateKeywordDetector -> k
+            is SpeechCheckedKeywordDetector -> k.template
+            else -> null
+        }
         val d = keyword?.diagnostics
         frames++
         if (d != null) {

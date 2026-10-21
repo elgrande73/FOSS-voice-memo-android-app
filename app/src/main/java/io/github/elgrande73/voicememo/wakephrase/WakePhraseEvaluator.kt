@@ -11,14 +11,14 @@ import io.github.elgrande73.voicememo.detection.MemoTriggerDetector
  *   reaches. It does not depend on the threshold: monitoring stops scoring at the moment it triggers, so the score is
  *   taken from a scoring pass that never triggers.
  * @param wouldTrigger Whether monitoring with the same settings would have started a recording.
- * @param peakLevelDb Loudest frame on the VAD dB scale (dBFS + 90), comparable with the activation threshold.
+ * @param peakLevelDb Loudest frame on the VAD dB scale (dBFS + 90), comparable with the minimum phrase level.
  */
 data class WakePhraseEvaluation(val bestConfidence: Float, val wouldTrigger: Boolean, val peakLevelDb: Float)
 
 /**
  * Evaluates recorded audio exactly as live monitoring would: the frames are streamed, in order, through the same
  * front end and matcher, and the trigger decision comes from a [MemoTriggerDetector] in Wake Phrase mode with the same
- * template, match confidence threshold and activation (loudness) threshold. The Settings phrase test uses this, so its
+ * template, match confidence threshold and optional minimum phrase level. The Settings phrase test uses this, so its
  * result comes from the same preprocessing, matcher and confidence interpretation as monitoring.
  *
  * Difference from monitoring by design: before scoring, the noise floor is primed with the same recording, because a
@@ -31,52 +31,75 @@ object WakePhraseEvaluator {
         frames: List<ShortArray>,
         templateBytes: ByteArray?,
         matchConfidenceThreshold: Float,
-        activationThresholdDb: Float,
+        minLevelDb: Float?,
         frontEndConfig: FrontEndConfig = FrontEndConfig.DEFAULT
-    ): WakePhraseEvaluation = evaluate(frames, listOfNotNull(templateBytes), matchConfidenceThreshold, activationThresholdDb, frontEndConfig)
+    ): WakePhraseEvaluation = evaluate(frames, listOfNotNull(templateBytes), matchConfidenceThreshold, minLevelDb, frontEndConfig)
 
     /** Evaluates against all enrolled samples ([templates]; empty = built-in default wake phrase). */
     fun evaluate(
         frames: List<ShortArray>,
         templates: List<ByteArray>,
         matchConfidenceThreshold: Float,
-        activationThresholdDb: Float,
+        /** Optional minimum phrase level (VAD dB scale, dBFS + 90), as in monitoring; null = no level condition. */
+        minLevelDb: Float?,
         frontEndConfig: FrontEndConfig = FrontEndConfig.DEFAULT,
         aggregation: ReferenceAggregation = TemplateKeywordDetector.DEFAULT_AGGREGATION,
         consecutiveMatchFrames: Int = MemoTriggerDetector.DEFAULT_CONSECUTIVE_MATCH_FRAMES,
         localMismatchWeight: Float = TemplateKeywordDetector.DEFAULT_LOCAL_MISMATCH_WEIGHT,
-        distanceScale: Float = TemplateKeywordDetector.DEFAULT_DISTANCE_SCALE
+        distanceScale: Float = TemplateKeywordDetector.DEFAULT_DISTANCE_SCALE,
+        /** Phrase matched when [templates] is empty. */
+        builtInPhrase: BuiltInWakePhrase = BuiltInWakePhrase.DEFAULT,
+        /**
+         * Creates the backend to evaluate when it is not the Standard matcher (e.g. a synchronous
+         * [SpeechCheckedKeywordDetector] built like monitoring builds it); closed after use.
+         */
+        matcherFactory: (() -> KeywordDetector)? = null
     ): WakePhraseEvaluation {
-        fun newMatcher() = TemplateKeywordDetector(
+        fun newMatcher(): KeywordDetector = matcherFactory?.invoke() ?: TemplateKeywordDetector(
             frontEndConfig = frontEndConfig, aggregation = aggregation, localMismatchWeight = localMismatchWeight,
-            distanceScale = distanceScale
+            distanceScale = distanceScale, builtInPhrase = builtInPhrase
         ).apply {
             loadTemplates(templates)
         }
+        fun prime(matcher: KeywordDetector) = when (matcher) {
+            is TemplateKeywordDetector -> matcher.primeNoiseFloor(frames)
+            is SpeechCheckedKeywordDetector -> matcher.template.primeNoiseFloor(frames)
+            else -> Unit
+        }
+        // A speech check decides once the utterance has ended: let the recording end with a short pause
+        val stream = if (matcherFactory == null) frames else frames + List(TRAILING_PAUSE_FRAMES) { ShortArray(frames.firstOrNull()?.size ?: 800) }
 
-        // Scoring pass: the matcher alone, every frame in order, never reset by a trigger
-        val scorer = newMatcher().apply { primeNoiseFloor(frames) }
-        var best = 0f
-        for (frame in frames) best = maxOf(best, scorer.processFrame(frame, 0f, 0f).confidence)
-
-        // Decision pass: the monitoring state machine, including the loudness criterion
+        val scorer = newMatcher()
         val matcher = newMatcher()
-        val detector = MemoTriggerDetector(keywordDetector = matcher).apply {
-            detectionMode = DetectionMode.KEYWORD_ONLY
-            thresholdDb = activationThresholdDb
-            this.matchConfidenceThreshold = matchConfidenceThreshold
-            this.consecutiveMatchFrames = consecutiveMatchFrames
-            reset(startMonitoring = true)
+        try {
+            // Scoring pass: the matcher alone, every frame in order, never reset by a trigger
+            prime(scorer)
+            var best = 0f
+            for (frame in stream) best = maxOf(best, scorer.processFrame(frame, 0f, 0f).confidence)
+
+            // Decision pass: the monitoring state machine, including the loudness criterion
+            val detector = MemoTriggerDetector(keywordDetector = matcher).apply {
+                detectionMode = DetectionMode.KEYWORD_ONLY
+                wakePhraseMinLevelDb = minLevelDb
+                this.matchConfidenceThreshold = matchConfidenceThreshold
+                this.consecutiveMatchFrames = consecutiveMatchFrames
+                reset(startMonitoring = true)
+            }
+            prime(matcher)
+            var triggered = false
+            var peakDb = 0f
+            for (frame in stream) {
+                if (detector.processFrame(frame).any { it is MemoDetectionEvent.TriggerStarted }) triggered = true
+                peakDb = maxOf(peakDb, levelDb(frame))
+            }
+            return WakePhraseEvaluation(best, triggered, peakDb)
+        } finally {
+            (scorer as? java.io.Closeable)?.close()
+            (matcher as? java.io.Closeable)?.close()
         }
-        matcher.primeNoiseFloor(frames)
-        var triggered = false
-        var peakDb = 0f
-        for (frame in frames) {
-            if (detector.processFrame(frame).any { it is MemoDetectionEvent.TriggerStarted }) triggered = true
-            peakDb = maxOf(peakDb, levelDb(frame))
-        }
-        return WakePhraseEvaluation(best, triggered, peakDb)
     }
+
+    private const val TRAILING_PAUSE_FRAMES = 8
 
     private fun levelDb(frame: ShortArray): Float {
         if (frame.isEmpty()) return 0f

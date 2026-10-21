@@ -71,6 +71,10 @@ class StopBehaviorTest {
         MemoTriggerDetector(keywordDetector = TemplateKeywordDetector().apply { loadTemplate(template) }).apply {
             detectionMode = DetectionMode.KEYWORD_ONLY
             thresholdDb = 45f
+            // This test measures where the stop phrase is cut, not detection rates (WakePhraseStartStopTest does).
+            // "ciao_linda_b" after a 150 ms pause scores 0.48 (0.50 before the gain-release change), so the
+            // threshold sits just below the weakest of these stop phrases.
+            matchConfidenceThreshold = 0.45f
             silenceTimeoutMs = 3000L
             keywordBehavior = behavior
             reset(startMonitoring = true)

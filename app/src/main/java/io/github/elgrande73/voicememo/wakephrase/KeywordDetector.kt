@@ -22,7 +22,7 @@ data class KeywordMatchResult(
 )
 
 /**
- * Interface for Wake-Phrase / Keyword Spotting (default wake phrase: "Ciao Linda").
+ * Interface for Wake-Phrase / Keyword Spotting (built-in wake phrases: [BuiltInWakePhrase]).
  */
 interface KeywordDetector {
     fun processFrame(frame: ShortArray, rms: Float, db: Float): KeywordMatchResult
@@ -50,12 +50,15 @@ interface KeywordDetector {
 
     /** Starts a new audio stream: clears the matching window and the front end's adaptive state. */
     fun resetStream() = resetWindow()
+
+    /** How long after the end of the phrase a match can still be reported (0 = on the phrase's last frame). */
+    val decisionLatencyMs: Long get() = 0L
 }
 
 /**
  * Offline Dynamic Time Warping (DTW) keyword spotter over 16-band spectral features.
- * Supports the built-in "Ciao Linda" reference, enrolled (custom) templates, persistence and continuous
- * sliding-window matching.
+ * Supports the built-in wake phrases ([BuiltInWakePhrase], default "Mango Tango"), enrolled (custom) templates,
+ * persistence and continuous sliding-window matching.
  *
  * Score semantics: for each candidate window the DTW path cost between the template and the most recent frames is
  * divided by the path length (mean Euclidean distance between L2-normalised feature vectors, range 0..√2) and mapped to
@@ -92,7 +95,8 @@ class TemplateKeywordDetector(
      */
     private val localMismatchWeight: Float = DEFAULT_LOCAL_MISMATCH_WEIGHT,
     /** Distance that maps to a score of 0 (score = 1 − distance / distanceScale). */
-    private val distanceScale: Float = DEFAULT_DISTANCE_SCALE
+    private val distanceScale: Float = DEFAULT_DISTANCE_SCALE,
+    builtInPhrase: BuiltInWakePhrase = BuiltInWakePhrase.DEFAULT
 ) : KeywordDetector {
 
     /** One enrolled sample: its feature sequence and the feature extractor it was recorded with. */
@@ -124,17 +128,30 @@ class TemplateKeywordDetector(
     val isLegacyTemplate: Boolean
         @Synchronized get() = references.any { it.legacy }
 
+    /** Phrase matched while no sample is enrolled. Changing it clears the matching window. */
+    @get:Synchronized
+    var builtInPhrase: BuiltInWakePhrase = builtInPhrase
+        @Synchronized set(value) {
+            if (field != value) {
+                field = value
+                builtInReferences = null
+                resetWindow()
+            }
+        }
+
+    private var builtInReferences: List<Reference>? = null
+
     /** Number of enrolled samples in use (0 = built-in default wake phrase). */
     val referenceCount: Int
         @Synchronized get() = references.size
 
     /** Number of frames (50 ms each) of the longest active reference. */
     val templateFrameCount: Int
-        @Synchronized get() = references.maxOfOrNull { it.features.size } ?: defaultTemplate.size
+        @Synchronized get() = activeReferences().maxOf { it.features.size }
 
-    // Canonical default reference template for "Ciao Linda"
-    private val defaultTemplate: List<FloatArray> by lazy {
-        buildDefaultCiaoLindaTemplate()
+    /** Enrolled samples, or the references of the built-in phrase if none are enrolled. */
+    private fun activeReferences(): List<Reference> = references.ifEmpty {
+        builtInReferences ?: builtInPhrase.referenceFeatures().map { Reference(it, legacy = false) }.also { builtInReferences = it }
     }
 
     @Synchronized
@@ -144,7 +161,7 @@ class TemplateKeywordDetector(
 
     @Synchronized
     override fun hasTemplate(): Boolean {
-        return true // Default built-in "Ciao Linda" template is always available
+        return true // A built-in wake phrase is always available
     }
 
     @Synchronized
@@ -248,7 +265,7 @@ class TemplateKeywordDetector(
     override fun processFrame(frame: ShortArray, rms: Float, db: Float): KeywordMatchResult {
         // The front end always runs (noise floor, diagnostics); legacy references are matched with legacy features
         appendBounded(slidingWindow, frontEnd.process(frame))
-        val active = references.ifEmpty { listOf(Reference(defaultTemplate, legacy = false)) }
+        val active = activeReferences()
         if (active.any { it.legacy }) appendBounded(legacyWindow, extractFeatureVector(frame))
 
         val matches = active.mapNotNull { matchReference(it, if (it.legacy) legacyWindow else slidingWindow) }
@@ -287,7 +304,7 @@ class TemplateKeywordDetector(
             val testSlice = window.subList(window.size - candLen, window.size)
 
             // Dynamic acoustic trajectory verification:
-            // "Ciao Linda" has distinctive phonemic transitions (affricate -> vowel -> nasal -> stop -> vowel).
+            // Wake phrases have distinctive phonemic transitions (e.g. nasal -> vowel -> stop -> vowel).
             // Monotone/stationary sounds ("hah", breath, constant noise, single vowel) have near-zero spectral flux.
             var fluxSum = 0f
             for (k in 1 until testSlice.size) {
@@ -368,12 +385,6 @@ class TemplateKeywordDetector(
         dtwDistance(template, input)
 
     private fun euclideanDistance(a: FloatArray, b: FloatArray): Float = featureDistance(a, b)
-
-    private fun buildDefaultCiaoLindaTemplate(): List<FloatArray> {
-        val audioChunks = generateCanonicalCiaoLindaAudio(sampleRate = 16000, amplitude = 12000.0)
-        val builtInFrontEnd = WakePhraseFrontEnd(frontEndConfig)
-        return audioChunks.map { builtInFrontEnd.process(it) }
-    }
 
     companion object {
         /** DTW path cost and path length between two feature sequences (Sakoe-Chiba corridor). */
@@ -569,7 +580,8 @@ class TemplateKeywordDetector(
         }
 
         /**
-         * Synthesizes canonical acoustic PCM sequence representing the phrase "Ciao Linda".
+         * Synthesizes canonical acoustic PCM sequence representing the phrase "Ciao Linda" (built-in reference of
+         * [BuiltInWakePhrase.CIAO_LINDA], the default of earlier versions; also used by tests).
          * 16kHz, 50ms (800 samples) per frame.
          * Segment breakdown:
          * - Frames 0..2 (150ms): "Ch" (/tʃ/) affricate burst with high-frequency energy.

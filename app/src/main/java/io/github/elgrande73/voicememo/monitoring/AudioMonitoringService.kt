@@ -32,6 +32,7 @@ import io.github.elgrande73.voicememo.audio.AmplitudePoint
 import io.github.elgrande73.voicememo.audio.AudioInputDevice
 import io.github.elgrande73.voicememo.audio.AudioInputManager
 import io.github.elgrande73.voicememo.audio.FeedbackSoundPlayer
+import io.github.elgrande73.voicememo.audio.LevelMeter
 import io.github.elgrande73.voicememo.audio.MediaPlaybackDetector
 import io.github.elgrande73.voicememo.audio.MicrophoneArbiter
 import io.github.elgrande73.voicememo.audio.MicrophoneOwner
@@ -48,12 +49,22 @@ import io.github.elgrande73.voicememo.memo.ErrorLogger
 import io.github.elgrande73.voicememo.memo.VoiceNote
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
+import io.github.elgrande73.voicememo.settings.SettingsMigrator
 import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutHandler
 import io.github.elgrande73.voicememo.shortcuts.RecordingTileService
 import io.github.elgrande73.voicememo.shortcuts.ShortcutSettings
 import io.github.elgrande73.voicememo.shortcuts.ToggleDebouncer
-import io.github.elgrande73.voicememo.transcription.AndroidOnDeviceSpeechEngine
-import io.github.elgrande73.voicememo.transcription.SpeechToTextEngine
+import io.github.elgrande73.voicememo.transcription.Transcription
+import io.github.elgrande73.voicememo.transcription.TranscriptionStatus
+import io.github.elgrande73.voicememo.wakephrase.KeywordDetector
+import io.github.elgrande73.voicememo.wakephrase.SpeechCheckedKeywordDetector
+import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
+import io.github.elgrande73.voicememo.wakephrase.WakeWordEngines
+import io.github.elgrande73.voicememo.wakephrase.WakeWordModel
+import io.github.elgrande73.voicememo.wakephrase.WakeWordStatus
+import io.github.elgrande73.voicememo.transcription.SpeechCheckModel
+import io.github.elgrande73.voicememo.transcription.TranscriptionSettings
+import io.github.elgrande73.voicememo.transcription.WhisperPhraseVerifier
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -85,7 +96,6 @@ class AudioMonitoringService : Service() {
     private lateinit var memoDetector: MemoTriggerDetector
     private lateinit var mediaPlaybackDetector: MediaPlaybackDetector
     private lateinit var database: AppDatabase
-    private lateinit var speechEngine: SpeechToTextEngine
     private lateinit var feedbackSoundPlayer: FeedbackSoundPlayer
 
     private var configuredInputId: Int = -1
@@ -106,6 +116,7 @@ class AudioMonitoringService : Service() {
     private var headsetReceiver: BroadcastReceiver? = null
     private val noteNotificationCounter = AtomicInteger(2000)
     private val toggleDebouncer = ToggleDebouncer(RecordingShortcutHandler.MIN_TOGGLE_INTERVAL_MS)
+    private val levelMeter = LevelMeter()
 
     companion object {
         /** Channel of earlier versions (silent, so hidden on most lock screens); deleted on start. */
@@ -129,6 +140,8 @@ class AudioMonitoringService : Service() {
         const val ACTION_RELOAD_TEMPLATE = "${BuildConfig.APPLICATION_ID}.ACTION_RELOAD_TEMPLATE"
         const val ACTION_UPDATE_MATCH_CONFIDENCE_THRESHOLD = "${BuildConfig.APPLICATION_ID}.ACTION_UPDATE_MATCH_CONFIDENCE_THRESHOLD"
         const val EXTRA_MATCH_CONFIDENCE_THRESHOLD_PERCENT = "matchConfidenceThresholdPercent"
+        /** Minimum wake-phrase level on the detector's scale (dBFS + 90); NaN = condition off. */
+        const val EXTRA_WAKE_PHRASE_MIN_LEVEL_DB = "wakePhraseMinLevelDb"
 
         // Public Observable States for UI
         private val _isServiceRunning = MutableStateFlow(false)
@@ -143,8 +156,16 @@ class AudioMonitoringService : Service() {
         private val _recordingDurationSeconds = MutableStateFlow(0)
         val recordingDurationSeconds = _recordingDurationSeconds.asStateFlow()
 
-        private val _liveDbLevel = MutableStateFlow(0f)
-        val liveDbLevel = _liveDbLevel.asStateFlow()
+        private val _liveLevelDbfs = MutableStateFlow<Float?>(null)
+        /**
+         * Live microphone level in dBFS, about 10 updates per second from the monitoring capture stream (before any
+         * chime muting); null while there is no live input (monitoring off, microphone unavailable or released).
+         */
+        val liveLevelDbfs = _liveLevelDbfs.asStateFlow()
+
+        private val _wakeWordStatus = MutableStateFlow<WakeWordStatus?>(null)
+        /** Wake-word model in use while monitoring runs (with the fallback reason, if any); null when not running. */
+        val wakeWordStatus = _wakeWordStatus.asStateFlow()
 
         private val _liveNoiseFloorDb = MutableStateFlow(25f)
         val liveNoiseFloorDb = _liveNoiseFloorDb.asStateFlow()
@@ -202,7 +223,6 @@ class AudioMonitoringService : Service() {
         memoDetector = MemoTriggerDetector()
         mediaPlaybackDetector = MediaPlaybackDetector(this)
         database = AppDatabase.getDatabase(this)
-        speechEngine = AndroidOnDeviceSpeechEngine(this)
         feedbackSoundPlayer = FeedbackSoundPlayer(this)
 
         createNotificationChannels()
@@ -244,7 +264,9 @@ class AudioMonitoringService : Service() {
                 return START_STICKY
             }
             ACTION_RELOAD_TEMPLATE -> {
-                loadSavedKeywordTemplate()
+                // Never change the phrase during a memo: its stop phrase must be the phrase that started it
+                if (memoDetector.currentState == RecordingLifecycleState.RECORDING) wakePhraseReloadPending = true
+                else loadSavedKeywordTemplate()
                 return START_STICKY
             }
             ACTION_UPDATE_MATCH_CONFIDENCE_THRESHOLD -> {
@@ -268,6 +290,7 @@ class AudioMonitoringService : Service() {
         }
 
         memoDetector.thresholdDb = intent.getFloatExtra("thresholdDb", 48.0f)
+        memoDetector.wakePhraseMinLevelDb = intent.getFloatExtra(EXTRA_WAKE_PHRASE_MIN_LEVEL_DB, Float.NaN).takeUnless { it.isNaN() }
         memoDetector.minTriggerDurationMs = intent.getLongExtra("minTriggerDurationMs", 250L)
         memoDetector.silenceTimeoutMs = intent.getLongExtra("silenceTimeoutMs", 2000L)
         memoDetector.preTriggerDurationMs = intent.getLongExtra("preTriggerDurationMs", 800L)
@@ -375,6 +398,7 @@ class AudioMonitoringService : Service() {
                     // A new capture stream: re-learn the background (the input device may have changed)
                     memoDetector.restartStream()
                     frameAssembler.reset()
+                    levelMeter.reset()
                     val buffer = ShortArray(chunkSize)
 
                     while (isActive && record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
@@ -406,6 +430,8 @@ class AudioMonitoringService : Service() {
                         delay(1500)
                     }
                 } finally {
+                    // No stale level while the stream is down (restart, microphone handed to Settings, shutdown)
+                    _liveLevelDbfs.value = null
                     releaseAudioRecord(activeRecord)
                     microphoneArbiter.release(MicrophoneOwner.MONITORING)
                 }
@@ -422,6 +448,9 @@ class AudioMonitoringService : Service() {
     ) {
         // Check system media playback status
         val mediaStatus = mediaPlaybackDetector.checkPlaybackStatus()
+
+        // Live level from the real microphone input (also while only monitoring), before chime muting
+        levelMeter.update(frame)?.let { _liveLevelDbfs.value = it }
 
         // Suppress our own feedback chime (plus output latency tail) from the mic stream
         val isFeedbackMuted = System.currentTimeMillis() < feedbackMuteUntilMs
@@ -448,7 +477,6 @@ class AudioMonitoringService : Service() {
                     playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STARTED)
                 }
                 is MemoDetectionEvent.ChunkRecorded -> {
-                    _liveDbLevel.value = event.peakDb
                     if (_isCurrentlyRecording.value) {
                         _recordingDurationSeconds.value = (memoDetector.currentRecordingDurationMs() / 1000L).toInt()
                     }
@@ -599,6 +627,13 @@ class AudioMonitoringService : Service() {
     }
 
     private fun onRecordingStateChanged(state: RecordingLifecycleState) {
+        if (state != RecordingLifecycleState.RECORDING) {
+            installPendingEngine()
+            if (wakePhraseReloadPending) {
+                wakePhraseReloadPending = false
+                loadSavedKeywordTemplate()
+            }
+        }
         _currentRecordingState.value = state
         _isCurrentlyRecording.value = state == RecordingLifecycleState.RECORDING
         if (state != RecordingLifecycleState.RECORDING) _recordingDurationSeconds.value = 0
@@ -642,7 +677,7 @@ class AudioMonitoringService : Service() {
                     audioFilePath = wavFile.absolutePath,
                     triggerType = event.triggerType,
                     transcriptionText = null,
-                    transcriptionStatus = if (speechToTextEnabled) "PENDING" else "SKIPPED",
+                    transcriptionStatus = if (speechToTextEnabled) TranscriptionStatus.PENDING else TranscriptionStatus.SKIPPED,
                     peakDb = event.peakDb,
                     avgDb = event.avgDb
                 )
@@ -656,23 +691,8 @@ class AudioMonitoringService : Service() {
                 // Notify user safely
                 showNoteSavedNotification(title, durationSeconds)
 
-                // Trigger offline Speech-to-Text transcription if enabled
-                if (speechToTextEnabled) {
-                    launch(Dispatchers.Main) {
-                        try {
-                            val text = speechEngine.transcribeAudioFile(wavFile)
-                            withContext(Dispatchers.IO) {
-                                if (!text.isNullOrBlank()) {
-                                    database.voiceNoteDao().updateTranscription(insertedId, text, "COMPLETED")
-                                } else {
-                                    database.voiceNoteDao().updateTranscription(insertedId, null, "SKIPPED")
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.e("AudioService", "Transcription failed", e)
-                        }
-                    }
-                }
+                // Automatic on-device transcription (opt-in), from the saved file, on the transcription worker
+                if (speechToTextEnabled) Transcription.manager(this@AudioMonitoringService).enqueue(insertedId)
             } catch (e: Exception) {
                 ErrorLogger.log(this@AudioMonitoringService, "AudioService", "Error saving voice note", e)
             }
@@ -684,18 +704,86 @@ class AudioMonitoringService : Service() {
         memoDetector.matchConfidenceThreshold = MatchConfidenceThreshold.toDetectorConfidence(percent)
     }
 
+    /** Wake-phrase settings changed during a memo; applied when it ends (see ACTION_RELOAD_TEMPLATE). */
+    @Volatile
+    private var wakePhraseReloadPending = false
+
+    // Generation of the most recent wake-phrase backend request; older (slower) loads are discarded
+    private val engineGeneration = java.util.concurrent.atomic.AtomicInteger(0)
+    // A backend that finished loading while a memo was recorded; installed when the memo ends
+    private var pendingEngine: WakeWordEngines.Engine? = null
+
+    /**
+     * (Re)creates the wake-phrase backend from the settings: detection model, built-in phrase, enrolled samples and
+     * phrase text. Standard is built at once; the speech check loads its model in the background while the current
+     * backend keeps running, and falls back to Standard (with the reason in [wakeWordStatus]) if it cannot be used.
+     */
     private fun loadSavedKeywordTemplate() {
-        try {
-            val templates = WakePhraseStore(filesDir).loadSampleTemplates()
-            // No enrolled samples (or all deleted): the built-in default wake phrase is used
-            val loaded = memoDetector.keywordDetector.loadTemplates(templates)
+        val generation = engineGeneration.incrementAndGet()
+        val prefs = SettingsMigrator.preferences(this)
+        val requested = WakeWordModel.fromId(try { prefs.getString(PreferenceKeys.WAKE_WORD_MODEL, null) } catch (_: ClassCastException) { null })
+        val builtIn = SettingsMigrator.builtInWakePhrase(prefs)
+        val phraseText = try { prefs.getString(PreferenceKeys.RECORDED_WAKE_PHRASE_TEXT, null) } catch (_: ClassCastException) { null }
+        val language = (try { prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, null) } catch (_: ClassCastException) { null })
+            ?.takeUnless { it == TranscriptionSettings.AUTO_LANGUAGE } ?: "en"
+        val build = {
+            val templates = try {
+                WakePhraseStore(filesDir).loadSampleTemplates()
+            } catch (e: Exception) {
+                ErrorLogger.log(this, "AudioService", "Failed to load wake-phrase samples", e)
+                emptyList()
+            }
+            // No enrolled samples (or all deleted): the built-in wake phrase is used
+            val engine = WakeWordEngines.create(requested, builtIn, templates, phraseText, { text ->
+                WhisperPhraseVerifier(SpeechCheckModel.acquire(this), text, language)
+            })
+            val loaded = when (val d = engine.detector) {
+                is TemplateKeywordDetector -> d.referenceCount
+                is SpeechCheckedKeywordDetector -> d.template.referenceCount
+                else -> templates.size
+            }
             if (loaded < templates.size) {
                 ErrorLogger.log(this, "AudioService", "${templates.size - loaded} enrolled wake-phrase sample(s) are invalid and were skipped")
             }
-            Log.d("AudioService", "Loaded $loaded wake-phrase sample(s)")
-        } catch (e: Exception) {
-            ErrorLogger.log(this, "AudioService", "Failed to load wake-phrase samples", e)
+            engine.status.message?.let { Log.w("AudioService", "Wake-word model: $it") }
+            installEngine(engine, generation)
         }
+        if (requested == WakeWordModel.STANDARD) {
+            build()
+        } else {
+            _wakeWordStatus.value = WakeWordStatus(requested, _wakeWordStatus.value?.active ?: WakeWordModel.STANDARD, "Loading the speech model…")
+            serviceScope.launch(Dispatchers.IO) { build() }
+        }
+    }
+
+    @Synchronized
+    private fun installEngine(engine: WakeWordEngines.Engine, generation: Int) {
+        if (generation != engineGeneration.get()) {
+            releaseDetector(engine.detector) // superseded by a newer request
+            return
+        }
+        val previous = memoDetector.replaceKeywordDetector(engine.detector)
+        if (previous == null) {
+            // A memo is being recorded: it must be stopped by the backend that started it
+            releaseDetector(pendingEngine?.detector)
+            pendingEngine = engine
+            return
+        }
+        if (previous !== engine.detector) releaseDetector(previous) // frees the speech model
+        _wakeWordStatus.value = engine.status
+    }
+
+    /** Releases a backend off the calling thread (freeing the speech model can wait for a check in progress). */
+    private fun releaseDetector(detector: KeywordDetector?) {
+        val closeable = detector as? java.io.Closeable ?: return
+        Thread({ closeable.close() }, "WakeWordRelease").start()
+    }
+
+    @Synchronized
+    private fun installPendingEngine() {
+        val engine = pendingEngine ?: return
+        pendingEngine = null
+        installEngine(engine, engineGeneration.get())
     }
 
     private fun registerAudioDeviceListeners() {
@@ -879,6 +967,7 @@ class AudioMonitoringService : Service() {
         _isServiceRunning.value = false
         RecordingTileService.requestUpdate(this)
         _liveKeywordConfidence.value = 0f
+        _liveLevelDbfs.value = null
         _currentRecordingState.value = RecordingLifecycleState.IDLE
         _isCurrentlyRecording.value = false
 
@@ -892,6 +981,12 @@ class AudioMonitoringService : Service() {
 
         recordingJob?.cancel()
         releaseAudioRecord(currentAudioRecord)
+        // Release the wake-phrase backend (frees the speech model of the speech check)
+        engineGeneration.incrementAndGet()
+        releaseDetector(pendingEngine?.detector)
+        pendingEngine = null
+        releaseDetector(memoDetector.keywordDetector)
+        _wakeWordStatus.value = null
         _engineState.value = MonitoringEngineState.STOPPED
         feedbackSoundPlayer.release()
 

@@ -14,9 +14,11 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaPlayer
 import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.DocumentsContract
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
@@ -44,9 +46,23 @@ import io.github.elgrande73.voicememo.memo.VoiceNoteRepository
 import io.github.elgrande73.voicememo.monitoring.AudioMonitoringService
 import io.github.elgrande73.voicememo.playback.ChimePlayer
 import io.github.elgrande73.voicememo.playback.MemoAudioOutput
+import io.github.elgrande73.voicememo.memo.DeleteReport
+import io.github.elgrande73.voicememo.memo.MemoArchive
+import io.github.elgrande73.voicememo.memo.MemoDeleter
+import io.github.elgrande73.voicememo.memo.MemoFilter
+import io.github.elgrande73.voicememo.memo.VoiceNoteDao
+import io.github.elgrande73.voicememo.memo.VoiceNoteFilter
 import io.github.elgrande73.voicememo.playback.MemoPlaybackSequencer
+import io.github.elgrande73.voicememo.playback.PlaybackMode
 import io.github.elgrande73.voicememo.playback.PlaybackCue
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
+import io.github.elgrande73.voicememo.transcription.SpeechModelStore
+import io.github.elgrande73.voicememo.transcription.Transcription
+import io.github.elgrande73.voicememo.transcription.TranscriptionJobState
+import io.github.elgrande73.voicememo.transcription.TranscriptionQuality
+import io.github.elgrande73.voicememo.transcription.TranscriptionSettings
+import io.github.elgrande73.voicememo.transcription.TranscriptionStatus
+import io.github.elgrande73.voicememo.settings.WakePhraseLevel
 import io.github.elgrande73.voicememo.shortcuts.HardwareGesture
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
 import io.github.elgrande73.voicememo.shortcuts.ShortcutConfig
@@ -55,6 +71,13 @@ import io.github.elgrande73.voicememo.shortcuts.ShortcutSettings
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.settings.SettingsMigrator
 import io.github.elgrande73.voicememo.ui.theme.ThemeMode
+import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
+import io.github.elgrande73.voicememo.wakephrase.WakePhraseText
+import io.github.elgrande73.voicememo.wakephrase.WakeWordEngines
+import io.github.elgrande73.voicememo.wakephrase.WakeWordModel
+import io.github.elgrande73.voicememo.wakephrase.WakeWordStatus
+import io.github.elgrande73.voicememo.transcription.SpeechCheckModel
+import io.github.elgrande73.voicememo.transcription.WhisperPhraseVerifier
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseEnrollment
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseEvaluation
@@ -64,6 +87,7 @@ import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseTestResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -77,16 +101,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Calendar
-
-/**
- * Filter categories for voice note listings.
- */
-enum class VoiceNoteFilter(val label: String) {
-    ALL("All Memos"),
-    TODAY("Today"),
-    FAVORITES("Favorites"),
-    KEYWORD("Wake Phrase")
-}
 
 /**
  * ViewModel for Voice Memo - Automatic Voice-Note App.
@@ -108,7 +122,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     private val voiceNoteRepository: VoiceNoteRepository
     private val database = AppDatabase.getDatabase(context)
     private val exportManager = VoiceNoteExportManager(context)
-    private val keywordDetector = TemplateKeywordDetector()
+    private val keywordDetector = TemplateKeywordDetector(builtInPhrase = SettingsMigrator.builtInWakePhrase(prefs))
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
     // Voice Notes stream
@@ -119,8 +133,9 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
 
-    private val _activeFilter = MutableStateFlow(VoiceNoteFilter.ALL)
-    val activeFilter = _activeFilter.asStateFlow()
+    // Active filter chips (empty = all memos); combined as described in MemoFilter
+    private val _activeFilters = MutableStateFlow<Set<VoiceNoteFilter>>(emptySet())
+    val activeFilters: StateFlow<Set<VoiceNoteFilter>> = _activeFilters.asStateFlow()
 
     // Filtered Voice Notes
     val filteredVoiceNotes: StateFlow<List<VoiceNote>>
@@ -171,6 +186,21 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     val detectionMode = _detectionMode.asStateFlow()
 
     private val _thresholdDb = MutableStateFlow(prefs.getFloat("thresholdDb", 48.0f))
+
+    // Optional minimum audio level of the wake phrase (dBFS); written by SettingsMigrator for every installation
+    private val _wakePhraseMinLevelEnabled = MutableStateFlow<Boolean>(
+        prefs.getBoolean(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_ENABLED, WakePhraseLevel.DEFAULT_ENABLED)
+    )
+    val wakePhraseMinLevelEnabled: StateFlow<Boolean> = _wakePhraseMinLevelEnabled.asStateFlow()
+
+    private val _wakePhraseMinLevelDbfs = MutableStateFlow<Float>(
+        WakePhraseLevel.clampDbfs(prefs.getFloat(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_DBFS, WakePhraseLevel.DEFAULT_DBFS))
+    )
+    val wakePhraseMinLevelDbfs: StateFlow<Float> = _wakePhraseMinLevelDbfs.asStateFlow()
+
+    /** The level condition as the detector uses it (VAD dB scale), or null when it is off. */
+    private fun wakePhraseMinLevelDb(): Float? =
+        if (_wakePhraseMinLevelEnabled.value) WakePhraseLevel.toDetectorDb(_wakePhraseMinLevelDbfs.value) else null
     val thresholdDb = _thresholdDb.asStateFlow()
 
     private val _minTriggerDurationMs = MutableStateFlow(prefs.getLong("minTriggerDurationMs", 250L))
@@ -198,6 +228,44 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         )
     )
     val matchConfidenceThresholdPercent = _matchConfidenceThresholdPercent.asStateFlow()
+
+    // Wake-word detection model (Standard or speech check) and the words of a recorded phrase (needed by the check)
+    private val _wakeWordModel = MutableStateFlow<WakeWordModel>(
+        WakeWordModel.fromId(try { prefs.getString(PreferenceKeys.WAKE_WORD_MODEL, null) } catch (_: ClassCastException) { null })
+    )
+    val wakeWordModel: StateFlow<WakeWordModel> = _wakeWordModel.asStateFlow()
+
+    private val _recordedPhraseText = MutableStateFlow<String>(
+        try { prefs.getString(PreferenceKeys.RECORDED_WAKE_PHRASE_TEXT, null) } catch (_: ClassCastException) { null } ?: ""
+    )
+    val recordedPhraseText: StateFlow<String> = _recordedPhraseText.asStateFlow()
+
+    /** The model monitoring actually uses (null while monitoring is off). */
+    val wakeWordStatus: StateFlow<WakeWordStatus?> = AudioMonitoringService.wakeWordStatus
+
+    /** Selects the detection model; a running monitor switches when no memo is being recorded. Samples are kept. */
+    fun setWakeWordModel(model: WakeWordModel) {
+        if (model == _wakeWordModel.value) return
+        _wakeWordModel.value = model
+        prefs.edit().putString(PreferenceKeys.WAKE_WORD_MODEL, model.id).apply()
+        notifyServiceTemplateChanged()
+    }
+
+    fun setRecordedPhraseText(text: String) {
+        val trimmed = text.trim().take(WakePhraseText.MAX_LETTERS + 20)
+        if (trimmed == _recordedPhraseText.value) return
+        _recordedPhraseText.value = trimmed
+        prefs.edit().apply { if (trimmed.isEmpty()) remove(PreferenceKeys.RECORDED_WAKE_PHRASE_TEXT) else putString(PreferenceKeys.RECORDED_WAKE_PHRASE_TEXT, trimmed) }.apply()
+        notifyServiceTemplateChanged()
+    }
+
+    /** Why the speech check cannot be used with the current phrase, or null. */
+    fun speechCheckProblem(): String? =
+        WakePhraseText.problem(if (_hasKeywordTemplate.value) _recordedPhraseText.value else _builtInWakePhrase.value.displayName)
+
+    // Built-in wake phrase, used while no sample is enrolled (new installations: Mango Tango, see SettingsMigrator v3)
+    private val _builtInWakePhrase = MutableStateFlow<BuiltInWakePhrase>(SettingsMigrator.builtInWakePhrase(prefs))
+    val builtInWakePhrase: StateFlow<BuiltInWakePhrase> = _builtInWakePhrase.asStateFlow()
 
     // Recording shortcuts (hardware buttons, external keyboard) and lock-screen controls
     private val _shortcutConfig = MutableStateFlow<ShortcutConfig>(ShortcutSettings.load(prefs))
@@ -310,6 +378,8 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         voiceNoteRepository = VoiceNoteRepository(database.voiceNoteDao())
+        // Creating the manager resumes memos that were still queued when the app was last stopped
+        Transcription.manager(context)
 
         allVoiceNotes = voiceNoteRepository.allNotes.stateIn(
             scope = viewModelScope,
@@ -324,30 +394,14 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         )
 
         // Filtered notes stream
-        filteredVoiceNotes = combine(allVoiceNotes, _searchQuery, _activeFilter) { notes, query, filter ->
+        filteredVoiceNotes = combine(allVoiceNotes, _searchQuery, _activeFilters) { notes, query, filters ->
             val calendar = Calendar.getInstance().apply {
                 set(Calendar.HOUR_OF_DAY, 0)
                 set(Calendar.MINUTE, 0)
                 set(Calendar.SECOND, 0)
                 set(Calendar.MILLISECOND, 0)
             }
-            val startOfToday = calendar.timeInMillis
-
-            notes.filter { note ->
-                val matchesQuery = if (query.isBlank()) true else {
-                    note.title.contains(query, ignoreCase = true) ||
-                            (note.transcriptionText?.contains(query, ignoreCase = true) == true)
-                }
-
-                val matchesFilter = when (filter) {
-                    VoiceNoteFilter.ALL -> true
-                    VoiceNoteFilter.TODAY -> note.timestamp >= startOfToday
-                    VoiceNoteFilter.FAVORITES -> note.isFavorite
-                    VoiceNoteFilter.KEYWORD -> note.triggerType.contains("KEYWORD", ignoreCase = true)
-                }
-
-                matchesQuery && matchesFilter
-            }
+            MemoFilter.apply(notes, query, filters, calendar.timeInMillis)
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
         timelineDisplayState = AudioMonitoringService.currentSessionData.stateIn(
@@ -397,6 +451,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
             putExtra("maxMemoDurationMs", _maxMemoDurationMs.value)
             putExtra("noiseFilterEnabled", _noiseFilterEnabled.value)
             putExtra(AudioMonitoringService.EXTRA_MATCH_CONFIDENCE_THRESHOLD_PERCENT, _matchConfidenceThresholdPercent.value)
+            putExtra(AudioMonitoringService.EXTRA_WAKE_PHRASE_MIN_LEVEL_DB, wakePhraseMinLevelDb() ?: Float.NaN)
             putExtra("keywordBehavior", _keywordBehavior.value.name)
             putExtra("speechToTextEnabled", _speechToTextEnabled.value)
             putExtra("feedbackSoundsEnabled", _feedbackSoundsEnabled.value)
@@ -535,8 +590,9 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         _searchQuery.value = query
     }
 
-    fun setFilter(filter: VoiceNoteFilter) {
-        _activeFilter.value = filter
+    /** Toggles a filter chip; [VoiceNoteFilter.ALL] clears all filters. */
+    fun toggleFilter(filter: VoiceNoteFilter) {
+        _activeFilters.value = MemoFilter.toggle(_activeFilters.value, filter)
     }
 
     fun renameVoiceNote(id: Int, newTitle: String) {
@@ -552,26 +608,98 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun deleteVoiceNote(note: VoiceNote) {
-        if (playbackSequencer.currentNoteId == note.id) {
-            stopPlayback()
-        }
+    fun deleteVoiceNote(note: VoiceNote) = deleteMemos(setOf(note.id))
+
+    /** Settings → "Delete All Voice Memos": every memo in the database, through the same safe path. */
+    fun deleteAllVoiceNotes() {
         viewModelScope.launch {
-            voiceNoteRepository.deleteVoiceNote(note)
+            val ids = withContext(Dispatchers.IO) { database.voiceNoteDao().getAllNoteIds() }.toSet()
+            deleteMemos(ids)
         }
     }
 
-    fun deleteAllVoiceNotes() {
-        stopPlayback()
+    // --- SELECTION (multi-select delete / export) ---
+
+    private val memoDeleter = MemoDeleter(database.voiceNoteDao(), File(context.filesDir, "memos"))
+
+    private val _selectionMode = MutableStateFlow(false)
+    val selectionMode: StateFlow<Boolean> = _selectionMode.asStateFlow()
+
+    private val _selectedIds = MutableStateFlow<Set<Int>>(emptySet())
+    /** Selected memo ids; may include memos hidden by the current filter (see [selectWholeLibrary]). */
+    val selectedIds: StateFlow<Set<Int>> = _selectedIds.asStateFlow()
+
+    private val _deleteInProgress = MutableStateFlow(false)
+    val deleteInProgress: StateFlow<Boolean> = _deleteInProgress.asStateFlow()
+
+    /** One-off result messages of bulk operations (shown once by the UI, then cleared with [consumeHistoryMessage]). */
+    private val _historyMessage = MutableStateFlow<String?>(null)
+    val historyMessage: StateFlow<String?> = _historyMessage.asStateFlow()
+
+    fun consumeHistoryMessage() {
+        _historyMessage.value = null
+    }
+
+    fun startSelection(initialId: Int? = null) {
+        _selectionMode.value = true
+        _selectedIds.value = setOfNotNull(initialId)
+    }
+
+    fun exitSelection() {
+        _selectionMode.value = false
+        _selectedIds.value = emptySet()
+    }
+
+    fun toggleSelected(id: Int) {
+        val current = _selectedIds.value
+        _selectedIds.value = if (id in current) current - id else current + id
+    }
+
+    /** Selects every memo currently shown (filters and search applied); others stay as they are. */
+    fun selectAllShown() {
+        _selectedIds.value = _selectedIds.value + filteredVoiceNotes.value.map { it.id }
+    }
+
+    /** Selects every memo in the library, including those hidden by filters or search. */
+    fun selectWholeLibrary() {
         viewModelScope.launch {
-            val all = allVoiceNotes.value
-            for (note in all) {
-                try {
-                    File(note.audioFilePath).delete()
-                } catch (_: Exception) {}
-            }
-            voiceNoteRepository.deleteAll()
+            _selectedIds.value = withContext(Dispatchers.IO) { database.voiceNoteDao().getAllNoteIds() }.toSet()
         }
+    }
+
+    fun clearSelection() {
+        _selectedIds.value = emptySet()
+    }
+
+    /**
+     * Deletes exactly [ids] (a snapshot taken when the user confirmed, so later selection changes cannot widen it):
+     * audio file and database entry of each memo, nothing else. Playback of a deleted memo is stopped first and its
+     * transcription is cancelled. The result (including partial failures) is reported via [historyMessage].
+     */
+    fun deleteMemos(ids: Set<Int>, onDone: ((DeleteReport) -> Unit)? = null) {
+        if (ids.isEmpty() || _deleteInProgress.value) return
+        if (playbackSequencer.currentNoteId in ids) stopPlayback()
+        _deleteInProgress.value = true
+        viewModelScope.launch {
+            ids.forEach { transcriptionManager.cancel(it) }
+            val report = try {
+                memoDeleter.delete(ids)
+            } catch (e: Exception) {
+                Log.e(TAG, "Deleting memos failed", e)
+                DeleteReport(emptySet(), emptySet(), ids)
+            }
+            _selectedIds.value = _selectedIds.value - report.deleted - report.alreadyGone
+            if (_selectedIds.value.isEmpty()) _selectionMode.value = false
+            _deleteInProgress.value = false
+            _historyMessage.value = describe(report)
+            onDone?.invoke(report)
+        }
+    }
+
+    private fun describe(report: DeleteReport): String = buildString {
+        append(if (report.deleted.size == 1) "1 memo deleted." else "${report.deleted.size} memos deleted.")
+        if (report.alreadyGone.isNotEmpty()) append(" ${report.alreadyGone.size} had already been deleted.")
+        if (report.failed.isNotEmpty()) append(" ${report.failed.size} could not be deleted and were kept unchanged.")
     }
 
     // --- PLAYBACK: displayed-list queue framed by beginning/ending chimes ---
@@ -583,6 +711,20 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     private var startWhenPrepared = true
     // Last note explicitly requested, so a memo shown outside the history list (dashboard) can be resolved
     private var requestedNote: VoiceNote? = null
+
+    private val _playbackMode = MutableStateFlow<PlaybackMode>(
+        PlaybackMode.fromId(try { prefs.getString(PreferenceKeys.HISTORY_PLAYBACK_MODE, null) } catch (_: ClassCastException) { null })
+    )
+    /** Autoplay or Single; persisted. */
+    val playbackMode: StateFlow<PlaybackMode> = _playbackMode.asStateFlow()
+
+    /** Changes the playback mode without touching the memo that is playing (it applies when that memo ends). */
+    fun setPlaybackMode(mode: PlaybackMode) {
+        if (mode == _playbackMode.value) return
+        _playbackMode.value = mode
+        playbackSequencer.autoAdvance = mode == PlaybackMode.AUTOPLAY
+        prefs.edit().putString(PreferenceKeys.HISTORY_PLAYBACK_MODE, mode.id).apply()
+    }
 
     private val playbackSequencer = MemoPlaybackSequencer(
         chimes = object : ChimePlayer {
@@ -600,6 +742,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         },
         isPlayable = { noteId -> findNote(noteId)?.let { File(it.audioFilePath).isFile } == true }
     ).apply {
+        autoAdvance = _playbackMode.value == PlaybackMode.AUTOPLAY
         onStateChanged = { state -> onPlaybackStateChanged(state) }
         onUnplayable = { noteId -> Log.w(TAG, "Voice memo $noteId is not playable") }
     }
@@ -839,6 +982,84 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         exportManager.createShareIntent(exportResult, "Share Memo: ${note.title}")
     }
 
+    private var exportJob: Job? = null
+
+    /**
+     * Exports [ids] (one memo: its original WAV; several: a ZIP with the original WAVs and a manifest) to [destination],
+     * a document the user created with the system file picker (Storage Access Framework; no storage permission).
+     * Source files are only read. Cancel with [cancelExport]; a partial file is then removed.
+     */
+    fun exportMemosTo(ids: Set<Int>, destination: Uri) {
+        if (_exportInProgress.value) return
+        _exportInProgress.value = true
+        exportJob = viewModelScope.launch {
+            val message = try {
+                val notes = orderedNotes(ids)
+                withContext(Dispatchers.IO) {
+                    val job = coroutineContext[Job]
+                    val out = requireNotNull(context.contentResolver.openOutputStream(destination, "w")) { "Cannot open the destination" }
+                    try {
+                        if (notes.size == 1) {
+                            if (MemoArchive.writeWav(notes[0], out) { job?.isActive == false }) "Memo exported."
+                            else throw java.io.IOException("The memo's audio file is missing")
+                        } else {
+                            val report = out.use { MemoArchive.writeZip(notes, it, { job?.isActive == false }) }
+                            if (report.missing.isEmpty()) "${report.exported} memos exported."
+                            else "${report.exported} memos exported; ${report.missing.size} without audio (listed in the manifest)."
+                        }
+                    } catch (e: Throwable) {
+                        // Never leave a truncated export behind
+                        try { DocumentsContract.deleteDocument(context.contentResolver, destination) } catch (_: Exception) {}
+                        throw e
+                    }
+                }
+            } catch (e: CancellationException) {
+                "Export cancelled. Nothing was changed."
+            } catch (e: Exception) {
+                Log.e(TAG, "Export failed", e)
+                "Export failed: ${e.message ?: e.javaClass.simpleName}. Your memos were not changed."
+            }
+            _exportInProgress.value = false
+            _historyMessage.value = message
+        }
+    }
+
+    /** Shares [ids] with another app (one memo: WAV; several: ZIP as in [exportMemosTo]). */
+    fun shareMemos(ids: Set<Int>, onResult: (Intent?) -> Unit) {
+        if (_exportInProgress.value) return
+        _exportInProgress.value = true
+        exportJob = viewModelScope.launch {
+            try {
+                val notes = orderedNotes(ids)
+                val result = if (notes.size == 1) exportManager.prepareSingleNoteForSharing(notes[0]) else exportManager.exportNotesAsZip(notes)
+                onResult(result?.let { exportManager.createShareIntent(it) })
+            } catch (e: CancellationException) {
+                _historyMessage.value = "Export cancelled. Nothing was changed."
+            } catch (e: Exception) {
+                Log.e(TAG, "Share failed", e)
+                onResult(null)
+            } finally {
+                _exportInProgress.value = false
+            }
+        }
+    }
+
+    fun cancelExport() {
+        exportJob?.cancel()
+    }
+
+    /** Suggested file name and MIME type for exporting [ids]. */
+    fun exportTarget(ids: Set<Int>): Pair<String, String> {
+        val single = if (ids.size == 1) allVoiceNotes.value.firstOrNull { it.id in ids } else null
+        return if (single != null) MemoArchive.baseName(single) + ".wav" to "audio/wav"
+        else MemoArchive.zipName(ids.size) to "application/zip"
+    }
+
+    /** Current database rows of [ids], newest first (the library order); memos deleted meanwhile are skipped. */
+    private suspend fun orderedNotes(ids: Set<Int>): List<VoiceNote> = withContext(Dispatchers.IO) {
+        ids.toList().chunked(VoiceNoteDao.SQL_CHUNK).flatMap { database.voiceNoteDao().getNotesByIds(it) }.sortedByDescending { it.timestamp }
+    }
+
     fun exportAllNotesAsZip(onResult: (Intent?) -> Unit) {
         viewModelScope.launch {
             _exportInProgress.value = true
@@ -1023,11 +1244,27 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun evaluateTestFrames(frames: List<ShortArray>): WakePhraseEvaluation {
+        val templates = wakePhraseStore.loadSampleTemplates()
+        // The same backend as monitoring: with the speech check selected (and usable) the test runs it too
+        val speechCheck = _wakeWordModel.value == WakeWordModel.SPEECH_CHECK && speechCheckProblem() == null
+        val language = (prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, null) ?: TranscriptionSettings.AUTO_LANGUAGE)
+            .takeUnless { it == TranscriptionSettings.AUTO_LANGUAGE } ?: "en"
         val evaluation = WakePhraseEvaluator.evaluate(
             frames = frames,
-            templates = wakePhraseStore.loadSampleTemplates(),
+            templates = templates,
             matchConfidenceThreshold = MatchConfidenceThreshold.toDetectorConfidence(_matchConfidenceThresholdPercent.value),
-            activationThresholdDb = _thresholdDb.value
+            minLevelDb = wakePhraseMinLevelDb(),
+            builtInPhrase = _builtInWakePhrase.value,
+            matcherFactory = if (!speechCheck) null else {
+                {
+                    val engine = WakeWordEngines.create(
+                        WakeWordModel.SPEECH_CHECK, _builtInWakePhrase.value, templates, _recordedPhraseText.value,
+                        { text -> WhisperPhraseVerifier(SpeechCheckModel.acquire(context), text, language) }, synchronous = true
+                    )
+                    engine.status.message?.let { _phraseMessage.value = it }
+                    engine.detector
+                }
+            }
         )
         _lastTestEvaluation.value = evaluation
         return evaluation
@@ -1067,6 +1304,31 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     fun setThresholdDb(db: Float) {
         _thresholdDb.value = db
         prefs.edit().putFloat("thresholdDb", db).apply()
+        restartServiceIfRunning()
+    }
+
+    /**
+     * Selects the built-in wake phrase. Enrolled samples stay untouched and keep taking precedence; a running monitor
+     * applies the change when no memo is being recorded.
+     */
+    fun setBuiltInWakePhrase(phrase: BuiltInWakePhrase) {
+        if (phrase == _builtInWakePhrase.value) return
+        _builtInWakePhrase.value = phrase
+        keywordDetector.builtInPhrase = phrase
+        prefs.edit().putString(PreferenceKeys.BUILT_IN_WAKE_PHRASE, phrase.id).apply()
+        notifyServiceTemplateChanged()
+    }
+
+    fun setWakePhraseMinLevelEnabled(enabled: Boolean) {
+        _wakePhraseMinLevelEnabled.value = enabled
+        prefs.edit().putBoolean(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_ENABLED, enabled).apply()
+        restartServiceIfRunning()
+    }
+
+    fun setWakePhraseMinLevelDbfs(dbfs: Float) {
+        val clamped = WakePhraseLevel.clampDbfs(dbfs)
+        _wakePhraseMinLevelDbfs.value = clamped
+        prefs.edit().putFloat(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_DBFS, clamped).apply()
         restartServiceIfRunning()
     }
 
@@ -1144,8 +1406,136 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setSpeechToTextEnabled(enabled: Boolean) {
         _speechToTextEnabled.value = enabled
-        prefs.edit().putBoolean("speechToTextEnabled", enabled).apply()
+        prefs.edit().putBoolean(PreferenceKeys.SPEECH_TO_TEXT_ENABLED, enabled).apply()
         restartServiceIfRunning()
+    }
+
+    // --- ON-DEVICE TRANSCRIPTION ---
+
+    private val transcriptionManager by lazy { Transcription.manager(context) }
+    private val modelStore by lazy { Transcription.modelStore(context) }
+
+    /** Queue/progress state per memo id (memos not listed are idle). */
+    val transcriptionJobs: StateFlow<Map<Int, TranscriptionJobState>> get() = transcriptionManager.jobs
+
+    private val _transcriptionLanguage = MutableStateFlow<String>(
+        prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, null) ?: TranscriptionSettings.AUTO_LANGUAGE
+    )
+    val transcriptionLanguage: StateFlow<String> = _transcriptionLanguage.asStateFlow()
+
+    private val _transcriptionQuality = MutableStateFlow<TranscriptionQuality>(Transcription.settings(context).quality)
+    val transcriptionQuality: StateFlow<TranscriptionQuality> = _transcriptionQuality.asStateFlow()
+
+    private val _speechModels = MutableStateFlow<List<SpeechModelSummary>>(emptyList())
+    val speechModels: StateFlow<List<SpeechModelSummary>> = _speechModels.asStateFlow()
+
+    private val _activeSpeechModelId = MutableStateFlow<String>(prefs.getString(SpeechModelStore.PREF_ACTIVE_MODEL, null) ?: SpeechModelStore.BUNDLED_ID)
+    val activeSpeechModelId: StateFlow<String> = _activeSpeechModelId.asStateFlow()
+
+    private val _modelMessage = MutableStateFlow<String?>(null)
+    val modelMessage: StateFlow<String?> = _modelMessage.asStateFlow()
+
+    private val _modelImportRunning = MutableStateFlow(false)
+    val modelImportRunning: StateFlow<Boolean> = _modelImportRunning.asStateFlow()
+
+    fun transcribeNote(note: VoiceNote) = transcriptionManager.enqueue(note.id)
+
+    fun cancelTranscription(note: VoiceNote) = transcriptionManager.cancel(note.id)
+
+    /** Saves a corrected transcript (the audio is not changed). */
+    fun editTranscript(note: VoiceNote, text: String) {
+        transcriptionManager.clearState(note.id)
+        viewModelScope.launch(Dispatchers.IO) {
+            val trimmed = text.trim()
+            if (trimmed.isEmpty()) {
+                database.voiceNoteDao().updateTranscription(note.id, null, TranscriptionStatus.SKIPPED)
+            } else {
+                database.voiceNoteDao().updateTranscription(note.id, trimmed, TranscriptionStatus.COMPLETED)
+            }
+        }
+    }
+
+    /** Removes only the transcript; the recording stays. */
+    fun deleteTranscript(note: VoiceNote) {
+        transcriptionManager.cancel(note.id)
+        transcriptionManager.clearState(note.id)
+        viewModelScope.launch(Dispatchers.IO) {
+            database.voiceNoteDao().updateTranscription(note.id, null, TranscriptionStatus.SKIPPED)
+        }
+    }
+
+    fun setTranscriptionLanguage(code: String) {
+        _transcriptionLanguage.value = code
+        prefs.edit().putString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, code).apply()
+    }
+
+    fun setTranscriptionQuality(quality: TranscriptionQuality) {
+        _transcriptionQuality.value = quality
+        prefs.edit().putString(PreferenceKeys.TRANSCRIPTION_QUALITY, quality.name).apply()
+    }
+
+    fun refreshSpeechModels() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = mutableListOf<SpeechModelSummary>()
+            list += SpeechModelSummary(
+                SpeechModelStore.BUNDLED_ID, SpeechModelStore.BUNDLED_NAME,
+                "Whisper base, multilingual, ${SpeechModelStore.BUNDLED_SIZE / 1_000_000} MB", bundled = true
+            )
+            modelStore.importedModels().forEach { list += SpeechModelSummary(it.id, it.displayName, it.description, bundled = false) }
+            _speechModels.value = list
+            _activeSpeechModelId.value = modelStore.activeModelId.takeIf { id -> list.any { it.id == id } } ?: SpeechModelStore.BUNDLED_ID
+        }
+    }
+
+    fun selectSpeechModel(id: String) {
+        modelStore.activeModelId = id
+        _activeSpeechModelId.value = id
+        transcriptionManager.releaseModel()
+    }
+
+    fun deleteSpeechModel(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (modelStore.delete(id)) {
+                transcriptionManager.releaseModel()
+                _modelMessage.value = "Model removed."
+            }
+            refreshSpeechModels()
+        }
+    }
+
+    /** Imports a whisper.cpp model file chosen by the user (no network access involved). */
+    fun importSpeechModel(uri: android.net.Uri) {
+        if (_modelImportRunning.value) return
+        _modelImportRunning.value = true
+        _modelMessage.value = "Checking the model…"
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val resolver = context.contentResolver
+                var name = ""
+                var size: Long? = null
+                resolver.query(uri, null, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val n = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        val s = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                        if (n >= 0) name = cursor.getString(n) ?: ""
+                        if (s >= 0 && !cursor.isNull(s)) size = cursor.getLong(s)
+                    }
+                }
+                val result = resolver.openInputStream(uri)?.use { input ->
+                    modelStore.import(input, name.removeSuffix(".bin"), size) { file -> Transcription.engine(context).canLoad(file) }
+                } ?: SpeechModelStore.ImportResult.Rejected("The file could not be opened.")
+                _modelMessage.value = when (result) {
+                    is SpeechModelStore.ImportResult.Imported -> "Imported ${result.model.displayName} (${result.model.description}). Select it to use it."
+                    is SpeechModelStore.ImportResult.Rejected -> result.reason
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Model import failed", e)
+                _modelMessage.value = "The model could not be imported."
+            } finally {
+                _modelImportRunning.value = false
+                refreshSpeechModels()
+            }
+        }
     }
 
     fun setSelectedAudioInput(device: AudioInputDevice) {
@@ -1222,3 +1612,6 @@ private fun WakePhraseSample.toSummary() = WakePhraseSampleSummary(
     phraseDurationMs = phraseDurationMs,
     legacyFeatures = TemplateKeywordDetector().apply { loadTemplate(templateBytes) }.isLegacyTemplate
 )
+
+/** A speech-to-text model as shown in Settings. */
+data class SpeechModelSummary(val id: String, val name: String, val description: String, val bundled: Boolean)

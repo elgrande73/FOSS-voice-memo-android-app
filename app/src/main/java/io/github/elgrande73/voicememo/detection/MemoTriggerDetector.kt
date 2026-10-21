@@ -12,7 +12,7 @@ import kotlin.math.log10
  * Detection mode for triggering voice note recordings.
  */
 enum class DetectionMode(val title: String, val description: String) {
-    KEYWORD_ONLY("Wake Phrase Only", "Starts recording only when the wake phrase (default 'Ciao Linda') is spoken and exceeds the loudness threshold."),
+    KEYWORD_ONLY("Wake Phrase Only", "Starts recording only when the wake phrase (recommended: 'Mango Tango') is spoken and exceeds the loudness threshold."),
     AUTO_SOUND("Loudness Only", "Automatically starts recording whenever speech or sound exceeds the dB threshold.");
 
     val displayName: String get() = title
@@ -93,11 +93,39 @@ sealed class MemoDetectionEvent {
  */
 class MemoTriggerDetector(
     private val vad: VoiceActivityDetector = VoiceActivityDetector(),
-    val keywordDetector: KeywordDetector = TemplateKeywordDetector()
+    keywordDetector: KeywordDetector = TemplateKeywordDetector()
 ) {
+    /** The wake-phrase backend; replaced only through [replaceKeywordDetector]. */
+    var keywordDetector: KeywordDetector = keywordDetector
+        private set
+
+    /**
+     * Switches the wake-phrase backend (Settings → detection model). Refused (returns null) while a memo is being
+     * recorded, so a memo is always stopped by the backend that started it; the caller retries when it has ended.
+     * Returns the previous backend, which the caller releases.
+     */
+    @Synchronized
+    fun replaceKeywordDetector(detector: KeywordDetector): KeywordDetector? {
+        if (currentState == RecordingLifecycleState.RECORDING) return null
+        val previous = keywordDetector
+        detector.setMatchConfidenceThreshold(matchConfidenceThreshold)
+        detector.resetStream()
+        keywordDetector = detector
+        matchStreak = 0
+        lastKeywordResult = null
+        return previous
+    }
+
     // Configuration Parameters
     var detectionMode: DetectionMode = DetectionMode.KEYWORD_ONLY
     var thresholdDb: Float = 48.0f
+
+    /**
+     * Optional additional wake-phrase condition: the loudest 50 ms frame of the matched phrase (VAD dB scale, i.e.
+     * dBFS + 90) must reach this level. Applied identically when the phrase starts and when it stops a memo; null = off.
+     * It never removes audio from a memo and never stops frames from reaching the matcher.
+     */
+    var wakePhraseMinLevelDb: Float? = null
     var minTriggerDurationMs: Long = 250L // Audio must exceed threshold for this duration before trigger in Loudness Only
     var silenceTimeoutMs: Long = 2000L // Silence duration after which recording is auto-finalized
     var preTriggerDurationMs: Long = 800L // Audio kept in buffer BEFORE trigger
@@ -236,7 +264,8 @@ class MemoTriggerDetector(
         // Rolling pre-trigger ring buffer maintenance
         // In KEYWORD_ONLY mode, buffer is large enough to retain the full wake phrase plus pre-phrase padding
         val targetPreTriggerMs = if (detectionMode == DetectionMode.KEYWORD_ONLY) {
-            maxOf(preTriggerDurationMs + 1500L, 2500L)
+            // Plus the time a backend may need to decide after the phrase ended (speech check)
+            maxOf(preTriggerDurationMs + 1500L, 2500L) + keywordDetector.decisionLatencyMs
         } else {
             preTriggerDurationMs.coerceAtLeast(400L)
         }
@@ -258,10 +287,10 @@ class MemoTriggerDetector(
 
                         // Trigger only if the wake phrase matched AND the phrase reached the activation (loudness)
                         // threshold; during media playback (noise filter on) wake-phrase triggers are suppressed
-                        if (!shouldSuppressSound && kwResult.matched && recentPeakDb() >= thresholdDb) {
+                        if (!shouldSuppressSound && kwResult.matched && phraseLoudEnough(kwResult)) {
                             currentState = RecordingLifecycleState.RECORDING
                             // Persisted trigger type of wake-phrase memos; stored in the database, so it must not be renamed
-                            activeTriggerType = "KEYWORD_CIAO_LINDA"
+                            activeTriggerType = "KEYWORD_CIAO_LINDA" // persisted for every wake phrase; never rename
                             triggerStartTime = now
                             lastSpeechTime = now
                             soundSustainStartTime = 0L
@@ -275,7 +304,7 @@ class MemoTriggerDetector(
                             sessionSumDb = vadResult.db.toDouble()
                             sessionDbCount = 1
 
-                            // Prepend the entire pre-trigger ring buffer (containing pre-roll audio + "Ciao Linda")
+                            // Prepend the entire pre-trigger ring buffer (containing pre-roll audio + the wake phrase)
                             activeRecordingChunks.clear()
                             val preChunks = preTriggerBuffer.toList()
                             activeRecordingChunks.addAll(preChunks)
@@ -373,7 +402,7 @@ class MemoTriggerDetector(
                     if (keywordBehavior == KeywordBehavior.START_AND_STOP &&
                         framesSinceTrigger * chunkDurationMs > STOP_PHRASE_DEBOUNCE_MS && // not the start phrase
                         kwStopResult.matched &&
-                        recentPeakDb() >= thresholdDb
+                        phraseLoudEnough(kwStopResult)
                     ) {
                         keywordStop = kwStopResult
                     }
@@ -547,11 +576,21 @@ class MemoTriggerDetector(
         return if (raw.matched && matchStreak < consecutiveMatchFrames) raw.copy(matched = false) else raw
     }
 
-    /** Loudest frame (VAD dB scale) within the longest window the wake-phrase matcher evaluates. */
-    private fun recentPeakDb(): Float {
-        val count = minOf(recentFrameCount, RECENT_LEVEL_FRAMES)
+    /**
+     * The optional level condition, evaluated on the matched phrase only (its [KeywordMatchResult.windowFrames] most
+     * recent frames). Measuring a longer window would let preceding memo speech satisfy it when stopping, but not
+     * silence when starting.
+     */
+    private fun phraseLoudEnough(match: KeywordMatchResult): Boolean {
+        val minLevel = wakePhraseMinLevelDb ?: return true
+        return phraseLevelDb(match.windowFrames) >= minLevel
+    }
+
+    /** Loudest frame (VAD dB scale) among the [frames] most recent ones. */
+    fun phraseLevelDb(frames: Int): Float {
+        val count = minOf(recentFrameCount, RECENT_LEVEL_FRAMES, frames.coerceAtLeast(1))
         var peak = 0f
-        for (i in 0 until count) peak = maxOf(peak, recentFrameDb[i])
+        for (k in 1..count) peak = maxOf(peak, recentFrameDb[(recentFrameCount - k) % RECENT_LEVEL_FRAMES])
         return peak
     }
 

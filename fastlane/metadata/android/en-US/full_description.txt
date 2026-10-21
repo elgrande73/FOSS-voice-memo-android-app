@@ -2,14 +2,16 @@
 <p><b>Features</b></p>
 <ul>
 <li>Automatic recording when speech or sound exceeds a configurable activation threshold; stops after a configurable silence timeout</li>
-<li>Wake phrase "Ciao Linda" to start (and optionally stop) a memo, with an offline keyword spotter; record the phrase in your own voice for a personal template</li>
+<li>Wake phrase "Mango Tango" to start (and optionally stop) a memo, with an offline keyword spotter; record it, or your own phrase, in your own voice for a personal template</li>
 <li>One <i>Match confidence threshold</i> (20–80 %) with a live match gauge on the dashboard</li>
 <li>Start and stop memos from the lock screen (notification button and Quick Settings tile), with a large record button on the dashboard</li>
 <li>Optional shortcuts: hold the volume buttons, or a key combination on a Bluetooth/USB keyboard (an optional accessibility service, which only checks key presses, extends them to other apps)</li>
+<li>Speech-to-text on the phone: memos are transcribed with whisper.cpp and the included multilingual Whisper model, without internet or account; edit or delete transcripts</li>
+<li>Live microphone level and an optional minimum level for the wake phrase</li>
 <li>Rolling pre-trigger buffer, so the first word is never cut off</li>
 <li>Continuous playback through the list you are viewing, with short beginning and ending chimes</li>
 <li>Built-in, USB and Bluetooth microphones</li>
 <li>WAV files stored locally; search, favorites, playback speed and ZIP export</li>
 </ul>
 <p>Voice Memo was previously called "Ciao Linda" and uses a new application ID. It is installed as a separate app and cannot access data of the old app.</p>
-<p>Optional transcription (off by default) uses the speech recognition service provided by your device, which may be proprietary or use the network.</p>
+<p>Includes OpenAI Whisper "base" model weights (MIT licence) and whisper.cpp (MIT).</p>

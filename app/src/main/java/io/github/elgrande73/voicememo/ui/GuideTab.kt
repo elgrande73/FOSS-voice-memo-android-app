@@ -92,18 +92,18 @@ fun GuideTab() {
             ),
             GuideSection(
                 id = "sec_keyword_spotter",
-                title = "\"Ciao Linda\" Wake Phrase Detection",
+                title = "\"Mango Tango\" Wake Phrase Detection",
                 category = "2. Wake Phrase",
                 summary = "Train and use the custom offline wake phrase to initiate or stop memos hands-free.",
                 content = """
-                    In addition to raw sound level detection, Voice Memo features a built-in offline Keyword Spotter. The default wake phrase is "Ciao Linda".
+                    In addition to raw sound level detection, Voice Memo features a built-in offline Keyword Spotter. The recommended wake phrase is "Mango Tango": say it to start a memo, and say it again to stop.
                     
-                    You can record your personal reference phrase in Settings → Wake Phrase. When monitoring is active, incoming audio is analyzed using local spectral filterbanks and Dynamic Time Warping (DTW) to match your voice.
+                    The built-in phrase works without setup, but it was made from synthetic voices and does not recognise every voice. For reliable detection, record the phrase in your own voice in Settings → Wake Phrase (you can also record a different phrase). Installations set up before "Mango Tango" became the default keep "Ciao Linda"; you can switch the built-in phrase there too. When monitoring is active, incoming audio is analyzed using local spectral filterbanks and Dynamic Time Warping (DTW) to match your voice.
                     
                     You can configure the keyword to Start only, Stop only, or both Start & Stop recording.
                 """.trimIndent(),
                 tips = listOf(
-                    "Record the \"Ciao Linda\" template in a quiet room at your normal conversational speaking distance.",
+                    "Record \"Mango Tango\" (or your own phrase) in a quiet room at your normal conversational speaking distance.",
                     "Use the 'Test Phrase' button in Settings to check the match confidence of your voice; the result is saved and is computed exactly as during monitoring.",
                     "Monitoring pauses automatically while you record or test a phrase in Settings and resumes afterwards.",
                     "Raise the Match confidence threshold (20%–80%, default 50%) if the phrase triggers too easily, lower it if it is hard to trigger. Below 50% ordinary speech can start memos too. The dashboard shows the same value as the Trigger threshold."
@@ -119,7 +119,7 @@ fun GuideTab() {
                     
                     Voice Memo solves this with a Rolling Pre-Trigger Ring Buffer. While passively monitoring, it retains the last 500ms to 1200ms of audio in temporary memory.
                     
-                    When a trigger is detected, the buffered pre-roll audio is immediately prepended to the WAV file. Your initial word ("Remember...", "Idea for...", "Ciao Linda...") is captured in full clarity.
+                    When a trigger is detected, the buffered pre-roll audio is immediately prepended to the WAV file. Your initial word ("Remember...", "Idea for...", "Mango Tango...") is captured in full clarity.
                 """.trimIndent(),
                 tips = listOf(
                     "Configure Pre-Trigger duration in Settings (800ms is optimal for most speech).",
@@ -149,14 +149,30 @@ fun GuideTab() {
                 )
             ),
             GuideSection(
+                id = "sec_transcription",
+                title = "Speech-to-Text on Your Phone",
+                category = "5. Transcription",
+                summary = "Turn memos into text without any internet connection.",
+                content = """
+                    Voice Memo includes a speech-recognition model (OpenAI Whisper "base", multilingual) that runs entirely on your phone with whisper.cpp. Tap Transcribe on a memo in History; you can edit or delete the text afterwards. The recording itself is never changed.
+
+                    Transcription only runs when you ask for it, unless you turn on "Transcribe new memos automatically" in Settings. It runs in the background at low priority; a long memo can take a while on older phones.
+                """.trimIndent(),
+                tips = listOf(
+                    "Choose the language in Settings → Speech-to-Text: it is more accurate than automatic detection.",
+                    "\"Fast\" quality is quicker; \"Accurate\" (default) makes fewer mistakes.",
+                    "Optional: import a larger or smaller whisper.cpp model file (ggml .bin) in Settings. The included model always stays available."
+                )
+            ),
+            GuideSection(
                 id = "sec_privacy_foss",
                 title = "100% Offline, Privacy-First & FOSS",
-                category = "5. Privacy & Offline FOSS",
+                category = "6. Privacy & Offline FOSS",
                 summary = "Your voice recordings never leave your device. Zero cloud, zero tracking.",
                 content = """
                     Voice Memo is built according to strict Free and Open Source Software (FOSS) principles and privacy standards:
                     
-                    - All audio processing (RMS, DSP, FFT, Keyword Spotting) runs 100% locally on your device CPU.
+                    - All audio processing (levels, noise suppression, wake phrase, speech-to-text) runs locally on your device CPU.
                     - No audio is ever uploaded to the cloud or third-party servers.
                     - No telemetry, analytics, or advertising SDKs.
                     - Standard open formats: Audio is stored as standard 16-bit PCM WAV.
@@ -228,7 +244,7 @@ fun GuideTab() {
 
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "Learn how to configure hands-free voice-note capture, train the wake phrase (default \"Ciao Linda\"), and manage your offline voice memos.",
+                        text = "Learn how to configure hands-free voice-note capture, train the wake phrase (recommended: \"Mango Tango\"), and manage your offline voice memos.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )

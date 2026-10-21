@@ -6,8 +6,10 @@ import androidx.test.core.app.ApplicationProvider
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.settings.SettingsMigrator
+import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -128,5 +130,85 @@ class SettingsMigratorTest {
         prefs.edit().putString(PreferenceKeys.LEGACY_KEYWORD_SENSITIVITY, "garbage").commit()
         SettingsMigrator.migrate(prefs)
         assertEquals(MatchConfidenceThreshold.DEFAULT_PERCENT, threshold())
+    }
+
+    // --- v2: optional minimum audio level of the wake phrase ---
+
+    private fun minLevelEnabled() = prefs.getBoolean(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_ENABLED, false)
+    private fun minLevelDbfs() = prefs.getFloat(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_DBFS, Float.NaN)
+
+    @Test
+    fun freshInstallationGetsTheMeasuredLevelDefault() {
+        SettingsMigrator.migrate(prefs)
+        assertEquals(io.github.elgrande73.voicememo.settings.WakePhraseLevel.DEFAULT_ENABLED, minLevelEnabled())
+        assertEquals(io.github.elgrande73.voicememo.settings.WakePhraseLevel.DEFAULT_DBFS, minLevelDbfs(), 0.001f)
+    }
+
+    @Test
+    fun existingInstallationKeepsTheLoudnessConditionItHad() {
+        // v1 with the default activation threshold (48 = −42 dBFS), never changed by the user
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 1).putInt(PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT, 60).commit()
+        SettingsMigrator.migrate(prefs)
+        assertTrue(minLevelEnabled())
+        assertEquals(-42f, minLevelDbfs(), 0.001f)
+        assertEquals(60, threshold())
+        assertEquals(SettingsMigrator.CURRENT_VERSION, prefs.getInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 0))
+    }
+
+    @Test
+    fun customisedActivationThresholdIsCarriedOverAndLeftUntouched() {
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 1).putFloat(PreferenceKeys.ACTIVATION_THRESHOLD_DB, 57f).commit()
+        SettingsMigrator.migrate(prefs)
+        assertTrue(minLevelEnabled())
+        assertEquals(-33f, minLevelDbfs(), 0.001f)
+        assertEquals(57f, prefs.getFloat(PreferenceKeys.ACTIVATION_THRESHOLD_DB, 0f), 0.001f)
+    }
+
+    @Test
+    fun levelSettingsTheUserChoseAreNeverReplaced() {
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 1)
+            .putBoolean(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_ENABLED, false)
+            .putFloat(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_DBFS, -37f).commit()
+        repeat(3) { SettingsMigrator.migrate(prefs) }
+        assertFalse(minLevelEnabled())
+        assertEquals(-37f, minLevelDbfs(), 0.001f)
+    }
+
+    private fun builtInPhrase() = prefs.getString(PreferenceKeys.BUILT_IN_WAKE_PHRASE, null)
+
+    @Test
+    fun freshInstallationGetsMangoTango() {
+        SettingsMigrator.migrate(prefs)
+        assertEquals("mango_tango", builtInPhrase())
+        assertEquals(BuiltInWakePhrase.MANGO_TANGO, SettingsMigrator.builtInWakePhrase(prefs))
+    }
+
+    @Test
+    fun existingInstallationsKeepCiaoLinda() {
+        for (version in 0..2) {
+            prefs.edit().clear().putInt(PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT, 55).apply {
+                if (version > 0) putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, version)
+            }.commit()
+            SettingsMigrator.migrate(prefs)
+            assertEquals("v$version", "ciao_linda", builtInPhrase())
+            assertEquals(55, threshold())
+        }
+    }
+
+    @Test
+    fun aChosenBuiltInPhraseIsNeverReplaced() {
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 2).putString(PreferenceKeys.BUILT_IN_WAKE_PHRASE, "mango_tango").commit()
+        repeat(3) { SettingsMigrator.migrate(prefs) }
+        assertEquals("mango_tango", builtInPhrase())
+        prefs.edit().putString(PreferenceKeys.BUILT_IN_WAKE_PHRASE, "ciao_linda").commit()
+        SettingsMigrator.migrate(prefs)
+        assertEquals("ciao_linda", builtInPhrase())
+    }
+
+    @Test
+    fun corruptBuiltInPhraseFallsBackToTheDefaultWithoutCrashing() {
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 3).putInt(PreferenceKeys.BUILT_IN_WAKE_PHRASE, 7).commit()
+        SettingsMigrator.migrate(prefs)
+        assertEquals(BuiltInWakePhrase.DEFAULT, SettingsMigrator.builtInWakePhrase(prefs))
     }
 }
