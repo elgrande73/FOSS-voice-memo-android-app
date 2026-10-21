@@ -29,6 +29,14 @@ First public release of **Voice Memo** (`io.github.elgrande73.voicememo`), inten
 - Guide: rewritten to be shorter and match the app; its filter chips now match the sections (the Transcription
   section had no chip and the Privacy chip showed nothing). It now mentions that Android's app backup can include
   memos.
+- **Fixed: Bluetooth headset microphones recorded silence.** Voice Memo now activates the headset's voice link
+  (Android 12+: communication device; Android 7–11: Bluetooth SCO) before recording and releases it afterwards. The
+  phone microphone setting now really uses the phone microphone when a headset or USB microphone is plugged in. Only
+  real microphones are listed (headset, USB, Bluetooth headset); a device is found again after it reconnects; the
+  Settings phrase recording uses the selected microphone. If the selected microphone is missing or cannot be
+  activated, the phone microphone is used and the dashboard says why; a silent input is reported. Monitoring switches
+  microphone when one is connected or removed (after the current memo). See `docs/AUDIO_INPUT.md`. Not yet tested
+  with real headsets.
 - History: when a search or filter hides all memos, the empty list says so instead of "No voice memos recorded yet".
 - README rewritten for users; F-Droid notes, metadata draft and store texts updated for 1.0.0.
 
@@ -39,7 +47,10 @@ First public release of **Voice Memo** (`io.github.elgrande73.voicememo`), inten
   about 148 MB of storage.
 - Starting the microphone from outside the app (tile, widget, launcher shortcut while monitoring is off) opens the app
   first; Android does not allow background apps to start the microphone.
-- Not tested on physical devices as part of this release preparation; see `docs/FDROID.md`.
+- While Voice Memo listens through a Bluetooth headset, the headset is in call mode (lower audio quality, music
+  sounds like a call, more battery use).
+- Not tested on physical devices as part of this release preparation; see `docs/FDROID.md` and
+  `docs/AUDIO_INPUT.md`.
 
 ## Development history before 1.0.0 (pre-releases v0.0.1–v0.0.5)
 

@@ -71,7 +71,7 @@ graph TB
 
     subgraph Service_Layer ["Core Service & Audio Capture Engine"]
         Service["AudioMonitoringService<br/>(Foreground Service + WakeLock)"]
-        InputMgr["AudioInputManager<br/>(HAL Enumeration & SCO/USB Routing)"]
+        InputMgr["AndroidInputRouter / InputRouting<br/>(microphone list, Bluetooth link, preferred device)"]
         MediaDet["MediaPlaybackDetector<br/>(AudioPlaybackCallback Evaluator)"]
     end
 
@@ -128,7 +128,7 @@ graph TB
 1. **Deterministic State Machine**: Continuous transitions between `IDLE`, `MONITORING`, `TRIGGER_DETECTED`, `RECORDING`, and `SAVED`.
 2. **Pre-Trigger Buffering**: Rolling circular buffer ensures the start of speech is never truncated when sound exceeds the threshold.
 3. **Keyword Spotting**: Local filterbanks + DTW allows fast, zero-cloud phrase detection.
-4. **Resilient Audio Routing**: Automatic device failover to phone mic if external headsets disconnect.
+4. **Resilient Audio Routing**: the selected microphone is opened through `AndroidInputRouter` (Bluetooth voice link activated first); if it is missing or cannot be activated, the phone microphone is used and the dashboard says why. See `docs/AUDIO_INPUT.md`.
 5. **Foreground Service Compliance**: Proper `FOREGROUND_SERVICE_MICROPHONE` type and notification channel separation for Android 14+.
 6. **No destructive database migrations**: the Room schema is exported to `app/schemas/`; schema changes must ship with an explicit migration (`AppDatabase.MIGRATIONS`). `DatabasePersistenceTest` opens a database created from the committed schema with the current code.
 

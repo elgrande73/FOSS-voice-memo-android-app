@@ -114,7 +114,7 @@ fun GuideTab() {
 
                     The tile, the "Record memo" home-screen widget and the "Record memo" launcher shortcut (long-press the app icon) also work when monitoring is off: they open Voice Memo and start a memo. A key combination on a Bluetooth or USB keyboard can start and stop memos while the app is open.
 
-                    Voice Memo can record from the built-in microphone, USB microphones and Bluetooth headsets (Settings → Microphone). The dashboard shows which microphone is in use.
+                    Voice Memo can record from the phone microphone, a wired headset, USB microphones and Bluetooth headsets (Settings → Microphone). A Bluetooth headset is used like in a phone call: lower sound quality, music on it sounds like a call, and its battery drains faster. The dashboard shows which microphone is in use, and why if it is not the one you selected.
                 """.trimIndent(),
                 tips = listOf(
                     "Add the tile: pull down Quick Settings, tap the edit (pencil) button and drag \"Voice memo\" in.",

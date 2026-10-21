@@ -407,6 +407,7 @@ fun DashboardScreen(
     val isVoiceDetected by AudioMonitoringService.isVoiceDetected.collectAsState()
     val activeInputDevice by AudioMonitoringService.activeInputDeviceName.collectAsState()
     val isFallbackActive by AudioMonitoringService.isFallbackActive.collectAsState()
+    val inputProblem by AudioMonitoringService.inputProblem.collectAsState()
     val sessionCount by AudioMonitoringService.sessionEventCount.collectAsState()
     val lastRecordedNote by AudioMonitoringService.lastRecordedNote.collectAsState()
     val detectionMode by viewModel.detectionMode.collectAsState()
@@ -547,9 +548,18 @@ fun DashboardScreen(
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = if (isFallbackActive) "$activeInputDevice (Default)" else activeInputDevice,
+                            text = activeInputDevice,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.primary
+                            color = if (isFallbackActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.testTag("active_microphone")
+                        )
+                    }
+                    if (isServiceRunning) inputProblem?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.testTag("microphone_problem")
                         )
                     }
                 }
@@ -2236,6 +2246,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
     val speechToTextEnabled by viewModel.speechToTextEnabled.collectAsState()
     val availableDevices by viewModel.availableInputDevices.collectAsState()
     val selectedDeviceId by viewModel.selectedAudioInputId.collectAsState()
+    val selectedDeviceName by viewModel.selectedAudioInputName.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
     val dynamicColor by viewModel.dynamicColor.collectAsState()
 
@@ -2723,8 +2734,27 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
+                Text(
+                    text = "Headset, USB and Bluetooth microphones appear here while they are connected. A Bluetooth " +
+                        "headset is used like in a phone call while Voice Memo listens: its sound quality is lower, " +
+                        "music on it sounds like a call, and its battery drains faster. If the selected microphone is " +
+                        "not available, the phone microphone is used and the dashboard says so.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Spacer(modifier = Modifier.height(8.dp))
 
+                if (availableDevices.none { it.id == selectedDeviceId }) {
+                    // The selected device is disconnected: show it, so the user sees what is selected
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).testTag("audio_input_not_connected")
+                    ) {
+                        RadioButton(selected = true, onClick = null, enabled = false)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(text = "$selectedDeviceName (not connected)", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
                 availableDevices.forEach { dev ->
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -2738,7 +2768,18 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                             onClick = { viewModel.setSelectedAudioInput(dev) }
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = dev.name, style = MaterialTheme.typography.bodyMedium)
+                        Column {
+                            Text(text = dev.name, style = MaterialTheme.typography.bodyMedium)
+                            val kind = when {
+                                dev.isBluetooth -> "Bluetooth headset"
+                                dev.isUsb -> "USB"
+                                dev.isWired -> "Wired headset"
+                                else -> null
+                            }
+                            kind?.let {
+                                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                     }
                 }
             }

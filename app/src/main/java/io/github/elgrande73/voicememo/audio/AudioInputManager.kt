@@ -2,7 +2,6 @@ package io.github.elgrande73.voicememo.audio
 
 import android.content.Context
 import android.media.AudioDeviceInfo
-import android.media.AudioManager
 import android.os.Build
 
 /**
@@ -16,7 +15,9 @@ data class AudioInputDevice(
     val isBuiltIn: Boolean,
     val isBluetooth: Boolean,
     val isUsb: Boolean,
-    val isWired: Boolean
+    val isWired: Boolean,
+    /** Bluetooth address (Android 9+), used to find the device again after it reconnects under a new id. */
+    val address: String = ""
 ) {
     val displayName: String get() = name
 
@@ -49,52 +50,24 @@ data class AudioRoutingEvaluation(
  */
 object AudioInputManager {
 
-    fun getAvailableInputDevices(context: Context): List<AudioInputDevice> {
-        val devices = mutableListOf<AudioInputDevice>()
-        devices.add(AudioInputDevice.PHONE_MIC)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-            val audioDevices = audioManager?.getDevices(AudioManager.GET_DEVICES_INPUTS) ?: emptyArray()
-
-            for (device in audioDevices) {
-                if (device.isSource) {
-                    val name = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        val address = device.address
-                        val prodName = device.productName.toString()
-                        if (prodName.isNotBlank()) prodName else "Input device (${device.id})"
-                    } else {
-                        val prodName = device.productName.toString()
-                        if (prodName.isNotBlank()) prodName else "Input device (${device.id})"
-                    }
-
-                    val isBuiltIn = isBuiltInType(device.type)
-                    val isBluetooth = isBluetoothType(device.type)
-                    val isUsb = isUsbType(device.type)
-                    val isWired = isWiredType(device.type)
-                    val typeName = getDeviceTypeName(device.type)
-
-                    // Avoid duplicate phone microphone entry
-                    if (!isBuiltIn) {
-                        devices.add(
-                            AudioInputDevice(
-                                id = device.id,
-                                name = name,
-                                type = device.type,
-                                typeName = typeName,
-                                isBuiltIn = isBuiltIn,
-                                isBluetooth = isBluetooth,
-                                isUsb = isUsb,
-                                isWired = isWired
-                            )
-                        )
-                    }
-                }
-            }
+    /**
+     * The phone microphone plus the connected headset, USB and Bluetooth microphones ([InputRouting.selectable]).
+     * Output-only devices (Bluetooth music profiles, headphones without microphone) and virtual inputs are not listed.
+     */
+    fun getAvailableInputDevices(context: Context): List<AudioInputDevice> =
+        listOf(AudioInputDevice.PHONE_MIC) + AndroidInputRouter(context).selectablePorts().map { port ->
+            AudioInputDevice(
+                id = port.id,
+                name = port.name,
+                type = port.type,
+                typeName = getDeviceTypeName(port.type),
+                isBuiltIn = false,
+                isBluetooth = port.kind == InputKind.BLUETOOTH,
+                isUsb = port.kind == InputKind.USB,
+                isWired = port.kind == InputKind.WIRED,
+                address = port.address
+            )
         }
-
-        return devices
-    }
 
     fun isUsbType(type: Int): Boolean {
         return type == AudioDeviceInfo.TYPE_USB_DEVICE ||
@@ -126,11 +99,13 @@ object AudioInputManager {
         return when (type) {
             AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Internal Phone Microphone"
             AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth Headset / Mask (SCO)"
+            InputRouting.TYPE_BLE_HEADSET -> "Bluetooth LE Headset Microphone"
             AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth A2DP Device"
             AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired Headset Microphone"
             AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Wired Headphones"
             AudioDeviceInfo.TYPE_USB_DEVICE -> "USB Audio Microphone"
             AudioDeviceInfo.TYPE_USB_HEADSET -> "USB Headset Microphone"
+            AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB Audio Accessory"
             AudioDeviceInfo.TYPE_LINE_ANALOG -> "Analog Line-in"
             AudioDeviceInfo.TYPE_LINE_DIGITAL -> "Digital Line-in"
             AudioDeviceInfo.TYPE_BUS -> "System Bus Audio"

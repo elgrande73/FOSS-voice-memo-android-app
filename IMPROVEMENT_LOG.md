@@ -2,6 +2,18 @@
 
 Newest first. Numbers come from synthetic fixtures unless stated otherwise.
 
+## 2026-10-21 — Microphone routing (Bluetooth headsets recorded silence)
+
+- **Root cause:** a Bluetooth headset was only passed to `setPreferredDevice`; its voice link (SCO / LE audio) was
+  never activated, so the stream was silent or used another microphone. Also: "Phone microphone" was not pinned
+  (headsets took over), virtual inputs were listed, ids went stale after reconnects, the phrase recording ignored the
+  selection.
+- **Change:** `InputRouting` (pure, tested) + `AndroidInputRouter` (communication device on Android 12+, SCO before;
+  awaited events, 4 s timeout; release only what it started); routed-device check, digital-silence check, dashboard
+  messages, restart on device changes after the current memo. Reference: the snore-detector app's routing (same
+  APIs; there the legacy SCO link is not awaited).
+- **Not verified on hardware** (no phone or headset here); checklist in `docs/AUDIO_INPUT.md`.
+
 ## 2026-10-21 — Release preparation 1.0.0
 
 - Version 1.0.0 / versionCode 10000 (scheme major×10000 + minor×100 + patch; pre-releases used 1); *Settings → About*

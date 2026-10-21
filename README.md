@@ -19,7 +19,7 @@ or analytics.
   99 languages, or automatic detection). The model is a one-time download of about 148 MB that you start yourself.
 - **History.** Search, filters, favourites, playback speed, autoplay through the list, and export of one memo (WAV)
   or many (ZIP with the WAV files and a CSV/JSON list).
-- **Your microphone of choice.** Built-in, USB and Bluetooth headset microphones.
+- **Your microphone of choice.** Phone, wired headset, USB and Bluetooth headset microphones.
 
 ## Install
 
@@ -77,6 +77,7 @@ app before uninstalling it; the WAV files play in any audio player. Then record 
   on synthetic test speech.
 - [docs/SHORTCUTS_AND_LOCK_SCREEN.md](docs/SHORTCUTS_AND_LOCK_SCREEN.md): tile, widget, shortcuts and what Android
   allows on the lock screen.
+- [docs/AUDIO_INPUT.md](docs/AUDIO_INPUT.md): microphone selection, Bluetooth headsets and routing.
 - [ARCHITECTURE.md](ARCHITECTURE.md): code structure and data-persistence rules.
 - [docs/FDROID.md](docs/FDROID.md): F-Droid readiness and release checklist.
 
