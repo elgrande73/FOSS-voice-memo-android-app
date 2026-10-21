@@ -1,4 +1,4 @@
-<p><b>Voice Memo</b> records voice memos automatically and hands-free. All detection runs on your device: no accounts, no cloud, no analytics, no ads, and no internet permission.</p>
+<p><b>Voice Memo</b> records voice memos automatically and hands-free. All detection and transcription run on your device: no accounts, no cloud, no analytics, no ads. The internet is used only if you download the speech model in Settings.</p>
 <p><b>Features</b></p>
 <ul>
 <li>Automatic recording when speech or sound exceeds a configurable activation threshold; stops after a configurable silence timeout</li>
@@ -6,12 +6,12 @@
 <li>One <i>Match confidence threshold</i> (20–80 %) with a live match gauge on the dashboard</li>
 <li>Start and stop memos from the lock screen (notification button and Quick Settings tile), with a large record button on the dashboard</li>
 <li>Optional shortcuts: hold the volume buttons, or a key combination on a Bluetooth/USB keyboard (an optional accessibility service, which only checks key presses, extends them to other apps)</li>
-<li>Speech-to-text on the phone: memos are transcribed with whisper.cpp and the included multilingual Whisper model, without internet or account; edit or delete transcripts</li>
+<li>Speech-to-text on the phone: memos are transcribed with whisper.cpp and the multilingual Whisper base model, which you download once from Settings (about 149 MB); after that, no internet or account is needed; edit or delete transcripts</li>
 <li>Live microphone level and an optional minimum level for the wake phrase</li>
 <li>Rolling pre-trigger buffer, so the first word is never cut off</li>
-<li>Continuous playback through the list you are viewing, with short beginning and ending chimes</li>
+<li>Autoplay through the list you are viewing, or single memos, with short beginning and ending chimes</li>
 <li>Built-in, USB and Bluetooth microphones</li>
-<li>WAV files stored locally; search, favorites, playback speed and ZIP export</li>
+<li>WAV files stored locally; search, filters, favorites, playback speed; select several memos to delete or export them (WAV or ZIP with a manifest)</li>
 </ul>
-<p>Voice Memo was previously called "Ciao Linda" and uses a new application ID. It is installed as a separate app and cannot access data of the old app.</p>
-<p>Includes OpenAI Whisper "base" model weights (MIT licence) and whisper.cpp (MIT).</p>
+<p>Voice Memo replaces an earlier app with a different name and application ID. It is installed as a separate app and cannot access data of the old app.</p>
+<p>Uses whisper.cpp (MIT); the optional OpenAI Whisper "base" model (MIT) is downloaded from the whisper.cpp project only when you ask for it.</p>

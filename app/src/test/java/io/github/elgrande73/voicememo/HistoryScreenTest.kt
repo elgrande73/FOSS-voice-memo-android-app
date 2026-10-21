@@ -1,5 +1,6 @@
 package io.github.elgrande73.voicememo
 
+import io.github.elgrande73.voicememo.detection.MemoTriggerDetector
 import android.app.Application
 import android.content.Context
 import android.os.Looper
@@ -85,7 +86,7 @@ class HistoryScreenTest {
 
     @Test
     fun manualFilterCombinesWithWakePhraseFilter() {
-        insert(6) { if (it % 3 == 0) "MANUAL" else if (it % 3 == 1) "KEYWORD_CIAO_LINDA" else "AUTO_SOUND" }
+        insert(6) { if (it % 3 == 0) "MANUAL" else if (it % 3 == 1) MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE else "AUTO_SOUND" }
         val viewModel = VoiceMemoViewModel(app)
         showHistory(viewModel)
         waitFor { viewModel.filteredVoiceNotes.value.size == 6 }

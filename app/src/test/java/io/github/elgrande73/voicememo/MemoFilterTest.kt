@@ -1,5 +1,6 @@
 package io.github.elgrande73.voicememo
 
+import io.github.elgrande73.voicememo.detection.MemoTriggerDetector
 import io.github.elgrande73.voicememo.memo.MemoFilter
 import io.github.elgrande73.voicememo.memo.MemoSource
 import io.github.elgrande73.voicememo.memo.VoiceNote
@@ -14,12 +15,12 @@ class MemoFilterTest {
         VoiceNote(id = id, title = title, timestamp = ts, durationSeconds = 1.0, audioFilePath = "/x/$id.wav", triggerType = trigger, isFavorite = favorite)
 
     private val notes = listOf(
-        note(1, "KEYWORD_CIAO_LINDA"),
+        note(1, MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE),
         note(2, "MANUAL", favorite = true),
         note(3, "AUTO_SOUND"),
         note(4, "AUTO_VOICE", ts = today - 10),
         note(5, "", favorite = true), // value of an interrupted early version
-        note(6, "KEYWORD_CIAO_LINDA", ts = today - 5, favorite = true, title = "Groceries"),
+        note(6, MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE, ts = today - 5, favorite = true, title = "Groceries"),
         note(7, "manual") // other casing
     )
 
@@ -27,7 +28,7 @@ class MemoFilterTest {
 
     @Test
     fun persistedTriggerTypesAreInterpretedIncludingOldAndUnknownValues() {
-        assertEquals(MemoSource.WAKE_PHRASE, MemoSource.of("KEYWORD_CIAO_LINDA"))
+        assertEquals(MemoSource.WAKE_PHRASE, MemoSource.of(MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE))
         assertEquals(MemoSource.WAKE_PHRASE, MemoSource.of("keyword"))
         assertEquals(MemoSource.MANUAL, MemoSource.of("MANUAL"))
         assertEquals(MemoSource.SOUND, MemoSource.of("AUTO_SOUND"))

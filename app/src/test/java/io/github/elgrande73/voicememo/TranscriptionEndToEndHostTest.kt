@@ -21,7 +21,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import io.github.elgrande73.voicememo.transcription.CancelToken
+import io.github.elgrande73.voicememo.transcription.ModelDownloader
+import io.github.elgrande73.voicememo.transcription.ModelSource
+import io.github.elgrande73.voicememo.transcription.TranscriptionException
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -31,10 +36,12 @@ import java.io.File
 import java.util.concurrent.Executors
 
 /**
- * End-to-end transcription with real inference: the app's TranscriptionManager, WhisperTranscriber, model store and
- * Room database, the JNI bridge and whisper.cpp with the bundled model, on the build machine (host build of the
- * native code; no network is used). Skipped unless scripts/host-whisper-jni/build.sh was run.
- * Not covered here: loading the model from the APK asset and the Android CPU-variant selection (device only).
+ * End-to-end transcription with real inference on the build machine: the model is "downloaded" by the app's
+ * [ModelDownloader] from a local HTTP server (checksum, header check and test load with the real engine), registered in
+ * the model store, and used by TranscriptionManager, WhisperTranscriber, the JNI bridge and whisper.cpp with a Room
+ * database. Skipped unless scripts/host-whisper-jni/build.sh (engine) and scripts/whisper-model/build-bundled-model.sh
+ * (Whisper base q5_0 test model) were run. Not covered: the real download source (not reachable here), the Android
+ * CPU-variant selection and phone performance (device only).
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -42,20 +49,37 @@ class TranscriptionEndToEndHostTest {
 
     private val root = generateSequence(File("").absoluteFile) { it.parentFile }.first { File(it, "settings.gradle.kts").exists() }
     private val hostLib = File(root, "build/host-whisper-jni/lib/libvmwhisper.so")
-    private val modelFile = File(root, "app/src/main/assets/models/ggml-base-q5_0.bin")
+    private val modelFile = WhisperNativeHostTest.model
 
     @Test
     fun memoIsTranscribedLocallyStoredAndStillThereAfterRestart() {
         assumeTrue("host library not built", hostLib.exists())
+        assumeTrue("test model not built", modelFile.exists())
         WhisperNative.loadFrom(hostLib.absolutePath, File(root, "build/host-whisper-jni/bin").absolutePath)
         val app = ApplicationProvider.getApplicationContext<Application>()
         val prefs = app.getSharedPreferences(PreferenceKeys.PREFS_NAME, Context.MODE_PRIVATE)
         File(app.noBackupFilesDir, SpeechModelStore.DIRECTORY_NAME).deleteRecursively()
         val store = SpeechModelStore(app, prefs)
-        // On the host the APK asset loader is unavailable: the same bundled model file is used directly
-        val bundled = store.bundledModel()
-        val engine = WhisperTranscriber(app, store) { bundled.copy(assetPath = null, file = modelFile) }
-        assertTrue(engine.canLoad(modelFile))
+        assertNull("the app contains no model", store.activeModelOrNull())
+        val engine = WhisperTranscriber(app, store)
+        // Without a model, transcription fails at once with the download hint (no endless "waiting")
+        val missing = runCatching { engine.transcribe(FloatArray(16000), TranscriptionSettings(), CancelToken()) }.exceptionOrNull()
+        assertEquals(TranscriptionException.Kind.MODEL_MISSING, (missing as TranscriptionException).kind)
+
+        // Download through the app's downloader from a local server (same file name as the real source)
+        val bytes = modelFile.readBytes()
+        val server = TestHttpServer { bytes }
+        val sha1 = java.security.MessageDigest.getInstance("SHA-1").digest(bytes).joinToString("") { "%02x".format(it) }
+        val source = ModelSource.WHISPER_BASE.copy(url = "http://127.0.0.1:${server.port}/ggml-base.bin", sha1 = sha1)
+        val downloadStart = System.nanoTime()
+        val result = ModelDownloader(allowHttp = true).download(
+            source, store.downloadDirectory, isCancelled = { false }, onProgress = { _, _ -> }, onStage = {},
+            verifyLoad = { engine.canLoad(it) }
+        ) as ModelDownloader.Result.Installed
+        server.close()
+        store.registerDownload(result.file, result.sha256)
+        println("MEASURE local download + checksum + test load of %d MB: %.1f s (host)".format(modelFile.length() / 1_000_000, (System.nanoTime() - downloadStart) / 1e9))
+        assertEquals(ModelSource.WHISPER_BASE.id, store.activeModel().id)
 
         // Real audio: "Can you send me the file later" (synthetic speech fixture) with silence around it
         val speech = AudioFixtures.load("neg_speech_5")

@@ -2,7 +2,6 @@ package io.github.elgrande73.voicememo.monitoring
 
 import android.util.Log
 import io.github.elgrande73.voicememo.detection.MemoTriggerDetector
-import io.github.elgrande73.voicememo.wakephrase.SpeechCheckedKeywordDetector
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
 import kotlin.math.max
 
@@ -30,11 +29,7 @@ class WakePhraseDiagnosticsLog(private val framesPerSummary: Int = 20) {
     private var processingMaxNanos = 0L
 
     fun record(frame: ShortArray, detector: MemoTriggerDetector, processingNanos: Long) {
-        val keyword = when (val k = detector.keywordDetector) {
-            is TemplateKeywordDetector -> k
-            is SpeechCheckedKeywordDetector -> k.template
-            else -> null
-        }
+        val keyword = detector.keywordDetector as? TemplateKeywordDetector
         val d = keyword?.diagnostics
         frames++
         if (d != null) {
@@ -56,11 +51,11 @@ class WakePhraseDiagnosticsLog(private val framesPerSummary: Int = 20) {
         if (frames >= framesPerSummary) {
             Log.d(
                 TAG,
-                "fmt=16kHz/mono/PCM16 frame=${frame.size} | in rms=%.1f peak=%.1f clipped=%d nearSilent=%d/%d | noise=%.1f supp=%.1fdB | feat=[%.3f..%.3f] tpl=%d legacy=%s | score=%.2f dist=%.3f shown=%.2f thr=%.2f | proc avg=%dus max=%dus".format(
+                "fmt=16kHz/mono/PCM16 frame=${frame.size} | in rms=%.1f peak=%.1f clipped=%d nearSilent=%d/%d | noise=%.1f supp=%.1fdB | feat=[%.3f..%.3f] tpl=%d | score=%.2f dist=%.3f shown=%.2f thr=%.2f | proc avg=%dus max=%dus".format(
                     rmsSum / frames, peakDbfs, clipped, nearSilent, frames,
                     keyword?.noiseFloorDbfs ?: -120f, suppressionSum / frames,
                     if (featureMin == Float.MAX_VALUE) 0f else featureMin, featureMax,
-                    keyword?.templateFrameCount ?: 0, keyword?.isLegacyTemplate ?: false,
+                    keyword?.templateFrameCount ?: 0,
                     bestScore, if (bestDistance == Float.MAX_VALUE) 0f else bestDistance,
                     detector.keywordConfidence, detector.matchConfidenceThreshold,
                     processingSumNanos / frames / 1000, processingMaxNanos / 1000

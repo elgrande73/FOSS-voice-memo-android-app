@@ -1,5 +1,6 @@
 package io.github.elgrande73.voicememo
 
+import io.github.elgrande73.voicememo.detection.MemoTriggerDetector
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import io.github.elgrande73.voicememo.memo.VoiceNote
@@ -29,7 +30,7 @@ class VoiceNoteExportManagerTest {
                 timestamp = 1771372800000L,
                 durationSeconds = 4.5,
                 audioFilePath = "/dummy/path/memo_1.wav",
-                triggerType = "KEYWORD_CIAO_LINDA",
+                triggerType = MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE,
                 transcriptionText = "Buy groceries",
                 peakDb = 68.5f,
                 avgDb = 54.0f,
@@ -53,7 +54,7 @@ class VoiceNoteExportManagerTest {
         assertNotNull(csv)
         assertTrue(csv.contains("ID,Timestamp,Date_Time,Title,Duration_Sec,Peak_dB,Avg_dB,Trigger_Type,Transcription_Status,Transcription_Text"))
         assertTrue(csv.contains("Idea for project"))
-        assertTrue(csv.contains("KEYWORD_CIAO_LINDA"))
+        assertTrue(csv.contains(MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE))
         assertTrue(csv.contains("Buy groceries"))
         assertTrue(csv.contains("Quick reminder"))
     }

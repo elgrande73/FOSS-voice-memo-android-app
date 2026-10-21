@@ -44,18 +44,10 @@ object WhisperNative {
     external fun systemInfo(): String
     /** Returns a handle, or 0 if the model could not be loaded (invalid file, not enough memory). */
     external fun init(modelPath: String): Long
-    /** Loads a model stored uncompressed in the APK's assets (no copy on disk); 0 on failure. */
-    external fun initFromAsset(assetManager: android.content.res.AssetManager, assetPath: String): Long
     external fun free(handle: Long)
     external fun requestAbort(handle: Long)
     /** Progress of the running transcription in percent (whisper.cpp's progress callback). */
     external fun progress(handle: Long): Int
     /** Returns [languageCode, text], or null on failure or abort. */
     external fun transcribe(handle: Long, samples: FloatArray, language: String, threads: Int, beamSize: Int): Array<String>?
-
-    /** Short-snippet recognition for wake-phrase verification; [audioCtx] in 20 ms encoder frames (0 = 30 s). */
-    /** Mean token log-probability of each of [phrases] for the snippet (forced decoding); null on failure. */
-    external fun phraseLogProb(handle: Long, samples: FloatArray, language: String, threads: Int, audioCtx: Int, phrases: Array<String>): FloatArray?
-
-    external fun recognizeSnippet(handle: Long, samples: FloatArray, language: String, threads: Int, audioCtx: Int): String?
 }

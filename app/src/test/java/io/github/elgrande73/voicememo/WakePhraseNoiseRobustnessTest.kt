@@ -25,7 +25,7 @@ class WakePhraseNoiseRobustnessTest {
         var otherTrials = 0
         for ((noiseDbfs, noise) in conditions) {
             val enroll = TemplateKeywordDetector(frontEndConfig = config)
-            val recording = AudioFixtures.scene(AudioFixtures.atPeak(AudioFixtures.load("ciao_linda_a"), -10.0), 2.5, 0.3, noiseDbfs, noise, 1)
+            val recording = AudioFixtures.scene(AudioFixtures.atPeak(AudioFixtures.load("wake_phrase_a"), -10.0), 2.5, 0.3, noiseDbfs, noise, 1)
             check(enroll.recordTemplate(AudioFixtures.frames(recording)))
             val template = enroll.getTemplateData()!!
             for (peak in listOf(-10.0, -20.0, -25.0)) {

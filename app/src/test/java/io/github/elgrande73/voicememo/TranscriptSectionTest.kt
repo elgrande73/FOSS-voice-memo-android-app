@@ -9,9 +9,11 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import io.github.elgrande73.voicememo.memo.VoiceNote
 import io.github.elgrande73.voicememo.transcription.TranscriptionJobState
+import io.github.elgrande73.voicememo.transcription.TranscriptionStage
 import io.github.elgrande73.voicememo.transcription.TranscriptionStatus
 import io.github.elgrande73.voicememo.ui.theme.MyApplicationTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -38,10 +40,10 @@ class TranscriptSectionTest {
             }
         }
         composeTestRule.onNodeWithTag("transcript_start_7").assertTextEquals("Transcribe").performClick()
-        composeTestRule.runOnIdle { job = TranscriptionJobState.Running() }
-        composeTestRule.onNodeWithTag("transcript_status_7").assertTextEquals("Transcribing on this device…")
-        composeTestRule.runOnIdle { job = TranscriptionJobState.Running(35) }
-        composeTestRule.onNodeWithTag("transcript_status_7").assertTextEquals("Transcribing on this device… 35%")
+        composeTestRule.runOnIdle { job = TranscriptionJobState.Running(TranscriptionStage.LOADING_MODEL) }
+        composeTestRule.onNodeWithTag("transcript_status_7").assertTextEquals("Loading speech model… · 0:03 of audio")
+        composeTestRule.runOnIdle { job = TranscriptionJobState.Running(TranscriptionStage.TRANSCRIBING, 35) }
+        composeTestRule.onNodeWithTag("transcript_status_7").assertTextEquals("Transcribing on this device… 35% · 0:03 of audio")
         composeTestRule.onNodeWithTag("transcript_cancel_7").performClick()
         composeTestRule.runOnIdle { job = TranscriptionJobState.Failed("Not enough memory to transcribe this memo.") }
         composeTestRule.onNodeWithTag("transcript_status_7").assertTextEquals("Transcription failed: Not enough memory to transcribe this memo.")
@@ -59,5 +61,23 @@ class TranscriptSectionTest {
         composeTestRule.runOnIdle { noteState = note.copy(transcriptionStatus = TranscriptionStatus.PENDING) }
         composeTestRule.onNodeWithTag("transcript_status_7").assertTextEquals("Waiting to be transcribed…")
         composeTestRule.onNodeWithTag("transcript_cancel_7").assertIsDisplayed()
+    }
+
+    @Test
+    fun statusTextShowsStageElapsedTimeAndOutcome() {
+        val running = TranscriptionJobState.Running(TranscriptionStage.TRANSCRIBING, null, startedAtMs = 10_000)
+        assertEquals("Transcribing on this device… · 0:04 elapsed · 0:03 of audio", transcriptionStatusText(note, running, 14_200))
+        val long = note.copy(durationSeconds = 95.0)
+        assertEquals(
+            "Saving transcript… · 1:05 elapsed · 1:35 of audio",
+            transcriptionStatusText(long, TranscriptionJobState.Running(TranscriptionStage.SAVING, null, 1_000), 66_000)
+        )
+        assertEquals("Transcribed 1:35 of audio in 0:21.", transcriptionStatusText(long, TranscriptionJobState.Completed(95_000, 21_400), 0))
+        assertEquals("Transcription cancelled.", transcriptionStatusText(note, TranscriptionJobState.Cancelled, 0))
+        assertEquals(
+            "Transcription cancelled; the previous text was kept.",
+            transcriptionStatusText(note.copy(transcriptionText = "old"), TranscriptionJobState.Cancelled, 0)
+        )
+        assertNull(transcriptionStatusText(note, null, 0))
     }
 }

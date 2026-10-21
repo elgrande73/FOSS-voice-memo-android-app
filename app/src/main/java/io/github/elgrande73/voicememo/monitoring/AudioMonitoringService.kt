@@ -56,15 +56,7 @@ import io.github.elgrande73.voicememo.shortcuts.ShortcutSettings
 import io.github.elgrande73.voicememo.shortcuts.ToggleDebouncer
 import io.github.elgrande73.voicememo.transcription.Transcription
 import io.github.elgrande73.voicememo.transcription.TranscriptionStatus
-import io.github.elgrande73.voicememo.wakephrase.KeywordDetector
-import io.github.elgrande73.voicememo.wakephrase.SpeechCheckedKeywordDetector
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
-import io.github.elgrande73.voicememo.wakephrase.WakeWordEngines
-import io.github.elgrande73.voicememo.wakephrase.WakeWordModel
-import io.github.elgrande73.voicememo.wakephrase.WakeWordStatus
-import io.github.elgrande73.voicememo.transcription.SpeechCheckModel
-import io.github.elgrande73.voicememo.transcription.TranscriptionSettings
-import io.github.elgrande73.voicememo.transcription.WhisperPhraseVerifier
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -162,10 +154,6 @@ class AudioMonitoringService : Service() {
          * chime muting); null while there is no live input (monitoring off, microphone unavailable or released).
          */
         val liveLevelDbfs = _liveLevelDbfs.asStateFlow()
-
-        private val _wakeWordStatus = MutableStateFlow<WakeWordStatus?>(null)
-        /** Wake-word model in use while monitoring runs (with the fallback reason, if any); null when not running. */
-        val wakeWordStatus = _wakeWordStatus.asStateFlow()
 
         private val _liveNoiseFloorDb = MutableStateFlow(25f)
         val liveNoiseFloorDb = _liveNoiseFloorDb.asStateFlow()
@@ -627,12 +615,9 @@ class AudioMonitoringService : Service() {
     }
 
     private fun onRecordingStateChanged(state: RecordingLifecycleState) {
-        if (state != RecordingLifecycleState.RECORDING) {
-            installPendingEngine()
-            if (wakePhraseReloadPending) {
-                wakePhraseReloadPending = false
-                loadSavedKeywordTemplate()
-            }
+        if (state != RecordingLifecycleState.RECORDING && wakePhraseReloadPending) {
+            wakePhraseReloadPending = false
+            loadSavedKeywordTemplate()
         }
         _currentRecordingState.value = state
         _isCurrentlyRecording.value = state == RecordingLifecycleState.RECORDING
@@ -708,82 +693,18 @@ class AudioMonitoringService : Service() {
     @Volatile
     private var wakePhraseReloadPending = false
 
-    // Generation of the most recent wake-phrase backend request; older (slower) loads are discarded
-    private val engineGeneration = java.util.concurrent.atomic.AtomicInteger(0)
-    // A backend that finished loading while a memo was recorded; installed when the memo ends
-    private var pendingEngine: WakeWordEngines.Engine? = null
-
-    /**
-     * (Re)creates the wake-phrase backend from the settings: detection model, built-in phrase, enrolled samples and
-     * phrase text. Standard is built at once; the speech check loads its model in the background while the current
-     * backend keeps running, and falls back to Standard (with the reason in [wakeWordStatus]) if it cannot be used.
-     */
     private fun loadSavedKeywordTemplate() {
-        val generation = engineGeneration.incrementAndGet()
-        val prefs = SettingsMigrator.preferences(this)
-        val requested = WakeWordModel.fromId(try { prefs.getString(PreferenceKeys.WAKE_WORD_MODEL, null) } catch (_: ClassCastException) { null })
-        val builtIn = SettingsMigrator.builtInWakePhrase(prefs)
-        val phraseText = try { prefs.getString(PreferenceKeys.RECORDED_WAKE_PHRASE_TEXT, null) } catch (_: ClassCastException) { null }
-        val language = (try { prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, null) } catch (_: ClassCastException) { null })
-            ?.takeUnless { it == TranscriptionSettings.AUTO_LANGUAGE } ?: "en"
-        val build = {
-            val templates = try {
-                WakePhraseStore(filesDir).loadSampleTemplates()
-            } catch (e: Exception) {
-                ErrorLogger.log(this, "AudioService", "Failed to load wake-phrase samples", e)
-                emptyList()
-            }
-            // No enrolled samples (or all deleted): the built-in wake phrase is used
-            val engine = WakeWordEngines.create(requested, builtIn, templates, phraseText, { text ->
-                WhisperPhraseVerifier(SpeechCheckModel.acquire(this), text, language)
-            })
-            val loaded = when (val d = engine.detector) {
-                is TemplateKeywordDetector -> d.referenceCount
-                is SpeechCheckedKeywordDetector -> d.template.referenceCount
-                else -> templates.size
-            }
+        try {
+            val templates = WakePhraseStore(filesDir).loadSampleTemplates()
+            // No enrolled samples (or all deleted): the built-in default wake phrase is used
+            val loaded = memoDetector.keywordDetector.loadTemplates(templates)
             if (loaded < templates.size) {
                 ErrorLogger.log(this, "AudioService", "${templates.size - loaded} enrolled wake-phrase sample(s) are invalid and were skipped")
             }
-            engine.status.message?.let { Log.w("AudioService", "Wake-word model: $it") }
-            installEngine(engine, generation)
+            Log.d("AudioService", "Loaded $loaded wake-phrase sample(s)")
+        } catch (e: Exception) {
+            ErrorLogger.log(this, "AudioService", "Failed to load wake-phrase samples", e)
         }
-        if (requested == WakeWordModel.STANDARD) {
-            build()
-        } else {
-            _wakeWordStatus.value = WakeWordStatus(requested, _wakeWordStatus.value?.active ?: WakeWordModel.STANDARD, "Loading the speech model…")
-            serviceScope.launch(Dispatchers.IO) { build() }
-        }
-    }
-
-    @Synchronized
-    private fun installEngine(engine: WakeWordEngines.Engine, generation: Int) {
-        if (generation != engineGeneration.get()) {
-            releaseDetector(engine.detector) // superseded by a newer request
-            return
-        }
-        val previous = memoDetector.replaceKeywordDetector(engine.detector)
-        if (previous == null) {
-            // A memo is being recorded: it must be stopped by the backend that started it
-            releaseDetector(pendingEngine?.detector)
-            pendingEngine = engine
-            return
-        }
-        if (previous !== engine.detector) releaseDetector(previous) // frees the speech model
-        _wakeWordStatus.value = engine.status
-    }
-
-    /** Releases a backend off the calling thread (freeing the speech model can wait for a check in progress). */
-    private fun releaseDetector(detector: KeywordDetector?) {
-        val closeable = detector as? java.io.Closeable ?: return
-        Thread({ closeable.close() }, "WakeWordRelease").start()
-    }
-
-    @Synchronized
-    private fun installPendingEngine() {
-        val engine = pendingEngine ?: return
-        pendingEngine = null
-        installEngine(engine, engineGeneration.get())
     }
 
     private fun registerAudioDeviceListeners() {
@@ -981,12 +902,6 @@ class AudioMonitoringService : Service() {
 
         recordingJob?.cancel()
         releaseAudioRecord(currentAudioRecord)
-        // Release the wake-phrase backend (frees the speech model of the speech check)
-        engineGeneration.incrementAndGet()
-        releaseDetector(pendingEngine?.detector)
-        pendingEngine = null
-        releaseDetector(memoDetector.keywordDetector)
-        _wakeWordStatus.value = null
         _engineState.value = MonitoringEngineState.STOPPED
         feedbackSoundPlayer.release()
 

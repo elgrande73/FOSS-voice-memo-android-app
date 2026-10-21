@@ -98,7 +98,7 @@ fun GuideTab() {
                 content = """
                     In addition to raw sound level detection, Voice Memo features a built-in offline Keyword Spotter. The recommended wake phrase is "Mango Tango": say it to start a memo, and say it again to stop.
                     
-                    The built-in phrase works without setup, but it was made from synthetic voices and does not recognise every voice. For reliable detection, record the phrase in your own voice in Settings → Wake Phrase (you can also record a different phrase). Installations set up before "Mango Tango" became the default keep "Ciao Linda"; you can switch the built-in phrase there too. When monitoring is active, incoming audio is analyzed using local spectral filterbanks and Dynamic Time Warping (DTW) to match your voice.
+                    The built-in phrase works without setup, but it was made from synthetic voices and does not recognise every voice. For reliable detection, record the phrase in your own voice in Settings → Wake Phrase (you can also record a different phrase). When monitoring is active, incoming audio is analyzed using local spectral filterbanks and Dynamic Time Warping (DTW) to match your voice.
                     
                     You can configure the keyword to Start only, Stop only, or both Start & Stop recording.
                 """.trimIndent(),
@@ -106,7 +106,7 @@ fun GuideTab() {
                     "Record \"Mango Tango\" (or your own phrase) in a quiet room at your normal conversational speaking distance.",
                     "Use the 'Test Phrase' button in Settings to check the match confidence of your voice; the result is saved and is computed exactly as during monitoring.",
                     "Monitoring pauses automatically while you record or test a phrase in Settings and resumes afterwards.",
-                    "Raise the Match confidence threshold (20%–80%, default 50%) if the phrase triggers too easily, lower it if it is hard to trigger. Below 50% ordinary speech can start memos too. The dashboard shows the same value as the Trigger threshold."
+                    "Raise the Match confidence threshold (20%–80%, default 50%) if the phrase triggers too easily, lower it if it is hard to trigger. Below 50% similar-sounding words start memos much more often, and at the lowest values ordinary speech can too. The dashboard shows the same value as the Trigger threshold."
                 )
             ),
             GuideSection(
@@ -152,21 +152,22 @@ fun GuideTab() {
                 id = "sec_transcription",
                 title = "Speech-to-Text on Your Phone",
                 category = "5. Transcription",
-                summary = "Turn memos into text without any internet connection.",
+                summary = "Turn memos into text on your phone; the speech model is downloaded once.",
                 content = """
-                    Voice Memo includes a speech-recognition model (OpenAI Whisper "base", multilingual) that runs entirely on your phone with whisper.cpp. Tap Transcribe on a memo in History; you can edit or delete the text afterwards. The recording itself is never changed.
+                    Voice Memo transcribes with the speech-recognition model OpenAI Whisper "base" (multilingual), which runs entirely on your phone with whisper.cpp. The model is not part of the app: download it once in Settings → Speech-to-Text (about 149 MB, Wi-Fi recommended); after that, transcription works without an internet connection. Tap Transcribe on a memo in History; you can edit or delete the text afterwards. The recording itself is never changed.
 
-                    Transcription only runs when you ask for it, unless you turn on "Transcribe new memos automatically" in Settings. It runs in the background at low priority; a long memo can take a while on older phones.
+                    Transcription only runs when you ask for it, unless you turn on "Transcribe new memos automatically" in Settings. It keeps running in the background with a notification; a long memo can take a while on older phones.
                 """.trimIndent(),
                 tips = listOf(
                     "Choose the language in Settings → Speech-to-Text: it is more accurate than automatic detection.",
-                    "\"Fast\" quality is quicker; \"Accurate\" (default) makes fewer mistakes.",
-                    "Optional: import a larger or smaller whisper.cpp model file (ggml .bin) in Settings. The included model always stays available."
+                    "\"Fast\" quality (default) is quicker; \"Accurate\" makes fewer mistakes.",
+                    "Optional: import a larger or smaller whisper.cpp model file (ggml .bin) in Settings.",
+                    "Removing the downloaded model frees space; your transcripts and recordings are kept."
                 )
             ),
             GuideSection(
                 id = "sec_privacy_foss",
-                title = "100% Offline, Privacy-First & FOSS",
+                title = "Offline, Privacy-First & FOSS",
                 category = "6. Privacy & Offline FOSS",
                 summary = "Your voice recordings never leave your device. Zero cloud, zero tracking.",
                 content = """
@@ -174,12 +175,13 @@ fun GuideTab() {
                     
                     - All audio processing (levels, noise suppression, wake phrase, speech-to-text) runs locally on your device CPU.
                     - No audio is ever uploaded to the cloud or third-party servers.
+                    - The only network access is the speech-model download you start in Settings; everything else works offline.
                     - No telemetry, analytics, or advertising SDKs.
                     - Standard open formats: Audio is stored as standard 16-bit PCM WAV.
-                    - Export easily via standard Android Share, or package all memos into a ZIP archive with CSV/JSON metadata.
+                    - Export one memo as its original WAV, or several as a ZIP archive with the original WAVs and CSV/JSON metadata, to a file you choose or another app.
                 """.trimIndent(),
                 tips = listOf(
-                    "You can backup all your voice notes anytime from Settings → Export All Notes as ZIP.",
+                    "Back up all memos anytime: History → Select → Select entire library → Save to….",
                     "Files are stored in private app storage and can be shared to any messaging or cloud backup app of your choice."
                 )
             )

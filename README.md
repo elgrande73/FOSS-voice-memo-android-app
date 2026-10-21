@@ -5,7 +5,7 @@
 
 A privacy-first, open-source Android app for automatic, hands-free voice memos. Detection (voice activity, loudness, wake phrase) runs entirely on the device: no accounts, no cloud services, no analytics, no ads.
 
-The default wake phrase is **"Mango Tango"** (installations set up with an earlier version keep **"Ciao Linda"**; both can be chosen in Settings).
+The default wake phrase is **"Mango Tango"**; you can also record your own phrase.
 
 ---
 
@@ -14,12 +14,11 @@ The default wake phrase is **"Mango Tango"** (installations set up with an earli
 - **Automatic recording**: starts when speech or sound exceeds the activation threshold and stops after a configurable silence timeout.
 - **Wake phrase**: say **"Mango Tango"** to start (and optionally stop) a memo. An offline keyword spotter (spectral filterbanks + Dynamic Time Warping) is built in; for reliable detection record one to five samples of the phrase — or any other phrase — in your own voice (natural variations help); they are matched on the device and never leave it. When the phrase is repeated to stop a memo, the spoken stop phrase is removed from the recording; a memo ended by the silence timeout keeps its complete ending. Monitoring and the Settings phrase test use the same detection pipeline, and monitoring pauses automatically while a phrase is recorded in Settings.
 - **Adaptive noise handling**: the background noise floor is estimated automatically and conservative spectral noise suppression keeps background sounds from being mistaken for the wake phrase (see [`docs/WAKE_PHRASE_DETECTION.md`](docs/WAKE_PHRASE_DETECTION.md)).
-- **Detection model**: *Standard* (template matching, default) or *Speech-checked*, which confirms each utterance with the bundled offline speech model; trade-offs and measurements in [`docs/WAKE_PHRASE_DETECTION.md`](docs/WAKE_PHRASE_DETECTION.md) (section 16).
 - **Match confidence threshold**: one setting (20 %–80 %, default 50 %) controls how closely speech must match the wake phrase; the dashboard shows the same value as the *Trigger threshold* next to a live match gauge.
 - **Rolling pre-trigger buffer**: keeps the start of your sentence.
 - **Playback**: *Autoplay* (default) continues with the next memo of the list you are viewing (filters, search and order respected; stops at the end), *Single* stops after each memo; chimes frame every memo, and the list scrolls to keep the playing memo visible in Autoplay.
 - **Recording controls**: a large Quick Memo / Stop Memo button at the bottom of the dashboard; Start/Stop from the lock screen through the monitoring notification and a Quick Settings tile; optional volume-button and Bluetooth/USB keyboard shortcuts (see [`docs/SHORTCUTS_AND_LOCK_SCREEN.md`](docs/SHORTCUTS_AND_LOCK_SCREEN.md) for what Android allows).
-- **On-device speech-to-text**: transcribe memos with the bundled multilingual Whisper model (works immediately after installation, no account, no download); edit, retry or delete transcripts; optional automatic transcription.
+- **On-device speech-to-text**: transcribe memos with the multilingual Whisper base model, which you download once from Settings (about 149 MB; the app itself is about 13 MB); after that it works offline, with no account. Edit, retry or delete transcripts; optional automatic transcription.
 - **Live audio level**: the dashboard shows the real microphone level (dBFS, about 10 updates per second) while monitoring, and an optional *Minimum audio level* can be required for the wake phrase (start and stop alike).
 - **Recording chimes**: optional sounds when a recording starts and stops.
 - **Audio routing**: built-in microphone, USB audio and Bluetooth headsets.
@@ -31,25 +30,25 @@ The default wake phrase is **"Mango Tango"** (installations set up with an earli
 
 ## 🆔 New application identity
 
-This app was previously published as **Ciao Linda** (`com.aistudio.ciaolinda`). It is now **Voice Memo** with the application ID **`io.github.elgrande73.voicememo`**.
+This app was previously published under a different name and application ID. It is now **Voice Memo** with the application ID **`io.github.elgrande73.voicememo`**.
 
 > ⚠️ The ID `io.github.elgrande73.voicememo` is derived from the GitHub account hosting the source code (`github.com/elgrande73`). It is **provisional until the maintainer confirms it** before the first release; changing it after a release would again create a separate app.
 
-Changing the application ID is a deliberate breaking change. Android treats Voice Memo as a **different app**, not as an update of Ciao Linda:
+Changing the application ID is a deliberate breaking change. Android treats Voice Memo as a **different app**, not as an update of the previous app:
 
 | Scenario | What happens |
 |---|---|
 | **Fresh installation of Voice Memo** | Starts with no memos, the built-in "Mango Tango" wake phrase and a 50 % match confidence threshold. |
 | **Update from one Voice Memo version to a later one** | Memos, audio files, settings, the threshold, your recorded wake-phrase samples (a single phrase recorded with an earlier version becomes sample 1), the test recording and its result are kept (see [Persistent user data](ARCHITECTURE.md#5-persistent-user-data--stable-identifiers)). |
-| **Voice Memo installed alongside the old Ciao Linda app** | Both apps are installed independently. Voice Memo **cannot read** Ciao Linda's private database, settings, recordings or wake-phrase template (Android app sandbox), and does not claim to have imported them. |
-| **Moving data from Ciao Linda** | There is **no automatic import**. Recordings can be moved manually: in Ciao Linda use *History → Export All (ZIP)* and keep the archive; the WAV files remain playable with any audio player. Voice Memo has no importer, so settings and the wake-phrase template must be configured again (record the phrase once more under *Settings → Wake Phrase*). |
+| **Voice Memo installed alongside the previous app** | Both apps are installed independently. Voice Memo **cannot read** the previous app's private database, settings, recordings or wake-phrase template (Android app sandbox), and does not claim to have imported them. |
+| **Moving data from the previous app** | There is **no automatic import**. Recordings can be moved manually: in the previous app use *History → Export All (ZIP)* and keep the archive; the WAV files remain playable with any audio player. Voice Memo has no importer, so settings and the wake-phrase template must be configured again (record the phrase once more under *Settings → Wake Phrase*). |
 
 ---
 
 ## 🔒 Privacy & Permissions
 
-- **No network access**: the app does not request the `INTERNET` permission and contains no networking libraries, analytics, trackers or ads.
-- **Speech-to-text on the device**: memos are transcribed with whisper.cpp and the included OpenAI Whisper "base" model (MIT), on the phone, from the saved recording; nothing is sent anywhere. Transcription runs only when you tap *Transcribe* (or for new memos if you turn on automatic transcription). Further models can be imported from a file; the app never downloads anything. Details and measurements: [`docs/TRANSCRIPTION.md`](docs/TRANSCRIPTION.md).
+- **Network only for the model download you start**: the `INTERNET` permission is used for one thing — downloading the speech model when you tap *Download Whisper Base model* in Settings (HTTPS, from the whisper.cpp project on Hugging Face, verified by checksum). No analytics, trackers, ads or other network access; everything else works offline.
+- **Speech-to-text on the device**: memos are transcribed with whisper.cpp and OpenAI's Whisper "base" model (MIT), on the phone, from the saved recording; nothing is sent anywhere. Transcription runs only when you tap *Transcribe* (or for new memos if you turn on automatic transcription). Further models can be imported from a file. Details and measurements: [`docs/TRANSCRIPTION.md`](docs/TRANSCRIPTION.md).
 - **Optional accessibility service** ("Voice Memo recording shortcuts", off until you enable it in Android's settings): only checks key presses for your configured shortcut so it works in other apps and on the lock screen; it requests no accessibility events and cannot read screen content or typed text.
 - **Lock screen**: while monitoring runs, anyone holding the locked phone can start or stop a memo from the notification or the Quick Settings tile (turn this off under *Settings → Shortcuts & Lock Screen*). Memos can only be listened to after unlocking.
 - **Backups**: Android's standard app backup is enabled (`allowBackup`), so memos and settings can be included in device backups configured by the user.
@@ -62,6 +61,8 @@ Changing the application ID is a deliberate breaking change. Android treats Voic
 | `WAKE_LOCK` | Keeps monitoring running with the screen off |
 | `MODIFY_AUDIO_SETTINGS` | Audio routing for external/Bluetooth microphones |
 | `BLUETOOTH` (≤ Android 11), `BLUETOOTH_CONNECT` | Detecting and using Bluetooth headset microphones |
+| `INTERNET` | Only the speech model download you start in Settings |
+| `FOREGROUND_SERVICE_DATA_SYNC`, `FOREGROUND_SERVICE_MEDIA_PROCESSING` | Keeping the model download and transcription running, with a notification, while the app is in the background |
 
 ---
 

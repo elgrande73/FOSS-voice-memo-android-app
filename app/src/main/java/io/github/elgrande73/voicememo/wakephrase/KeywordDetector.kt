@@ -1,13 +1,9 @@
 package io.github.elgrande73.voicememo.wakephrase
 
-import io.github.elgrande73.voicememo.detection.FFT
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlin.math.cos
-import kotlin.math.log10
 import kotlin.math.min
-import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -22,7 +18,7 @@ data class KeywordMatchResult(
 )
 
 /**
- * Interface for Wake-Phrase / Keyword Spotting (built-in wake phrases: [BuiltInWakePhrase]).
+ * Interface for Wake-Phrase / Keyword Spotting (built-in wake phrase: [BuiltInWakePhrase]).
  */
 interface KeywordDetector {
     fun processFrame(frame: ShortArray, rms: Float, db: Float): KeywordMatchResult
@@ -50,15 +46,12 @@ interface KeywordDetector {
 
     /** Starts a new audio stream: clears the matching window and the front end's adaptive state. */
     fun resetStream() = resetWindow()
-
-    /** How long after the end of the phrase a match can still be reported (0 = on the phrase's last frame). */
-    val decisionLatencyMs: Long get() = 0L
 }
 
 /**
  * Offline Dynamic Time Warping (DTW) keyword spotter over 16-band spectral features.
- * Supports the built-in wake phrases ([BuiltInWakePhrase], default "Mango Tango"), enrolled (custom) templates,
- * persistence and continuous sliding-window matching.
+ * Supports the built-in wake phrase "Mango Tango" ([BuiltInWakePhrase]), enrolled (custom) templates, persistence and
+ * continuous sliding-window matching.
  *
  * Score semantics: for each candidate window the DTW path cost between the template and the most recent frames is
  * divided by the path length (mean Euclidean distance between L2-normalised feature vectors, range 0..√2) and mapped to
@@ -68,9 +61,8 @@ interface KeywordDetector {
  * Every frame of a stream must be passed to [processFrame] in order (the matcher needs contiguous temporal context and
  * the front end tracks the background noise continuously). Monitoring and the Settings phrase test both do this.
  *
- * Feature versions: templates enrolled with this version ('CIA2') use [WakePhraseFrontEnd]; templates saved by earlier
- * versions ('CIAO') keep being matched with the legacy feature extractor they were recorded with, so existing user
- * templates continue to work (re-recording is recommended to benefit from the new front end).
+ * Template format: [MAGIC_FRONT_END_TEMPLATE] with [WakePhraseFrontEnd] features. Templates in any other format (such
+ * as those of the very first app version) are not loaded; the user records the phrase again.
  */
 /**
  * How the scores of several enrolled references (wake-phrase samples) are combined into one match score.
@@ -84,8 +76,6 @@ enum class ReferenceAggregation {
 }
 
 class TemplateKeywordDetector(
-    private val frameSize: Int = 800, // 50ms at 16kHz
-    private val fftSize: Int = 512,
     private val numBands: Int = 16,
     private val frontEndConfig: FrontEndConfig = FrontEndConfig.DEFAULT,
     private val aggregation: ReferenceAggregation = DEFAULT_AGGREGATION,
@@ -96,23 +86,31 @@ class TemplateKeywordDetector(
     private val localMismatchWeight: Float = DEFAULT_LOCAL_MISMATCH_WEIGHT,
     /** Distance that maps to a score of 0 (score = 1 − distance / distanceScale). */
     private val distanceScale: Float = DEFAULT_DISTANCE_SCALE,
-    builtInPhrase: BuiltInWakePhrase = BuiltInWakePhrase.DEFAULT
+    /** References used without enrolled samples; replaced only by evaluation tests. */
+    private val builtInPhrase: () -> List<List<FloatArray>> = { BuiltInWakePhrase.referenceFeatures },
+    /**
+     * Compare spectral shape relative to each sequence's own average (per-band mean subtracted from the reference and
+     * from each candidate window before alignment), which removes a speaker's or microphone's constant spectral
+     * colouring. Evaluated in docs/WAKE_PHRASE_DETECTION.md (section "Mean-normalised matching"); false only to
+     * reproduce the earlier matcher in evaluation tests.
+     */
+    private val meanNormalization: Boolean = DEFAULT_MEAN_NORMALIZATION
 ) : KeywordDetector {
 
-    /** One enrolled sample: its feature sequence and the feature extractor it was recorded with. */
-    private class Reference(val features: List<FloatArray>, val legacy: Boolean)
+    /** One enrolled sample (or built-in reference): its feature sequence, and the sequence used for alignment. */
+    private inner class Reference(val features: List<FloatArray>) {
+        val aligned: List<FloatArray> = if (meanNormalization) meanNormalized(features) else features
+    }
 
     private data class ReferenceMatch(val confidence: Float, val distance: Float, val windowFrames: Int)
 
-    private val fft = FFT(fftSize)
     private val frontEnd = WakePhraseFrontEnd(frontEndConfig)
     // Minimum confidence for a match; see MatchConfidenceThreshold for the user-facing mapping
     private var matchConfidenceThreshold: Float =
         MatchConfidenceThreshold.toDetectorConfidence(MatchConfidenceThreshold.DEFAULT_PERCENT)
 
-    // Sliding windows of feature vectors (legacy features only while a legacy reference is loaded)
+    // Sliding window of feature vectors
     private val slidingWindow = mutableListOf<FloatArray>()
-    private val legacyWindow = mutableListOf<FloatArray>()
     private val maxWindowFrames = 50 // Up to 2.5 seconds history
 
     // Enrolled samples (empty: the built-in default wake phrase is used)
@@ -124,22 +122,9 @@ class TemplateKeywordDetector(
     /** Background level estimated by the front end, in dBFS, or null before any audio was processed. */
     val noiseFloorDbfs: Float? get() = frontEnd.noiseFloorDbfs
 
-    /** True when an enrolled sample was saved by an older version and uses the legacy features. */
-    val isLegacyTemplate: Boolean
-        @Synchronized get() = references.any { it.legacy }
-
-    /** Phrase matched while no sample is enrolled. Changing it clears the matching window. */
-    @get:Synchronized
-    var builtInPhrase: BuiltInWakePhrase = builtInPhrase
-        @Synchronized set(value) {
-            if (field != value) {
-                field = value
-                builtInReferences = null
-                resetWindow()
-            }
-        }
-
-    private var builtInReferences: List<Reference>? = null
+    private val builtInReferences: List<Reference> by lazy {
+        builtInPhrase().map { Reference(it) }
+    }
 
     /** Number of enrolled samples in use (0 = built-in default wake phrase). */
     val referenceCount: Int
@@ -150,9 +135,7 @@ class TemplateKeywordDetector(
         @Synchronized get() = activeReferences().maxOf { it.features.size }
 
     /** Enrolled samples, or the references of the built-in phrase if none are enrolled. */
-    private fun activeReferences(): List<Reference> = references.ifEmpty {
-        builtInReferences ?: builtInPhrase.referenceFeatures().map { Reference(it, legacy = false) }.also { builtInReferences = it }
-    }
+    private fun activeReferences(): List<Reference> = references.ifEmpty { builtInReferences }
 
     @Synchronized
     override fun setMatchConfidenceThreshold(threshold: Float) {
@@ -179,7 +162,6 @@ class TemplateKeywordDetector(
     override fun loadTemplates(templates: List<ByteArray>): Int {
         references = templates.mapNotNull { parseTemplate(it) }.take(MAX_REFERENCES)
         slidingWindow.clear()
-        legacyWindow.clear()
         return references.size
     }
 
@@ -187,15 +169,11 @@ class TemplateKeywordDetector(
         try {
             if (templateBytes.size < 12) return null
             val buffer = ByteBuffer.wrap(templateBytes).order(ByteOrder.LITTLE_ENDIAN)
-            val legacy = when (buffer.int) {
-                MAGIC_FRONT_END_TEMPLATE -> false
-                MAGIC_LEGACY_TEMPLATE -> true
-                else -> return null
-            }
+            if (buffer.int != MAGIC_FRONT_END_TEMPLATE) return null
             val frameCount = buffer.int
             val bands = buffer.int
-            // 16 shape values, optionally followed by the speech-presence value (17); legacy templates have 16
-            if (frameCount <= 0 || frameCount > 200 || bands !in numBands..numBands + 1 || (legacy && bands != numBands)) return null
+            // 16 shape values, optionally followed by the speech-presence value (17)
+            if (frameCount <= 0 || frameCount > 200 || bands !in numBands..numBands + 1) return null
             if (templateBytes.size < 12 + frameCount * bands * 4) return null
             val template = ArrayList<FloatArray>(frameCount)
             for (f in 0 until frameCount) {
@@ -203,7 +181,7 @@ class TemplateKeywordDetector(
                 if (vec.any { it.isNaN() || it.isInfinite() }) return null
                 template.add(vec)
             }
-            return Reference(template, legacy)
+            return Reference(template)
         } catch (_: Exception) {
             return null
         }
@@ -215,7 +193,7 @@ class TemplateKeywordDetector(
     @Synchronized
     fun getTemplateData(): ByteArray? {
         val reference = references.singleOrNull() ?: return null
-        return serialize(reference.features, reference.legacy)
+        return serialize(reference.features)
     }
 
     /**
@@ -227,9 +205,8 @@ class TemplateKeywordDetector(
     @Synchronized
     fun recordTemplate(chunks: List<ShortArray>): Boolean {
         val features = extractPhraseFeatures(chunks, frontEndConfig) ?: return false
-        references = listOf(Reference(features, legacy = false))
+        references = listOf(Reference(features))
         slidingWindow.clear()
-        legacyWindow.clear()
         return true
     }
 
@@ -237,13 +214,11 @@ class TemplateKeywordDetector(
     override fun clearTemplate() {
         references = emptyList()
         slidingWindow.clear()
-        legacyWindow.clear()
     }
 
     @Synchronized
     override fun resetWindow() {
         slidingWindow.clear()
-        legacyWindow.clear()
     }
 
     @Synchronized
@@ -263,12 +238,9 @@ class TemplateKeywordDetector(
 
     @Synchronized
     override fun processFrame(frame: ShortArray, rms: Float, db: Float): KeywordMatchResult {
-        // The front end always runs (noise floor, diagnostics); legacy references are matched with legacy features
+        // The front end always runs (noise floor, diagnostics)
         appendBounded(slidingWindow, frontEnd.process(frame))
-        val active = activeReferences()
-        if (active.any { it.legacy }) appendBounded(legacyWindow, extractFeatureVector(frame))
-
-        val matches = active.mapNotNull { matchReference(it, if (it.legacy) legacyWindow else slidingWindow) }
+        val matches = activeReferences().mapNotNull { matchReference(it, slidingWindow) }
         if (matches.isEmpty()) return KeywordMatchResult(matched = false, confidence = 0f, distance = 1.0f)
 
         val sorted = matches.sortedByDescending { it.confidence }
@@ -292,7 +264,7 @@ class TemplateKeywordDetector(
 
     /** Best match of [reference] against windows ending at the newest frame, or null if none qualifies. */
     private fun matchReference(reference: Reference, window: List<FloatArray>): ReferenceMatch? {
-        val template = reference.features
+        val template = reference.aligned
         val minLen = (template.size * 0.70).toInt().coerceAtLeast(6)
         if (window.size < minLen) return null
 
@@ -312,7 +284,7 @@ class TemplateKeywordDetector(
             }
             val avgFlux = fluxSum / (testSlice.size - 1).coerceAtLeast(1)
             if (avgFlux >= 0.040f) { // otherwise: reject stationary sound/noise
-                val (cost, stepCount) = computeDtwDistance(template, testSlice)
+                val (cost, stepCount) = computeDtwDistance(template, if (meanNormalization) meanNormalized(testSlice) else testSlice)
                 if (cost < Float.MAX_VALUE / 4f) {
                     val normalizedDist = cost / stepCount
                     // Confidence scale used by the user-facing match confidence threshold (percent / 100)
@@ -324,7 +296,8 @@ class TemplateKeywordDetector(
         }
         if (best != null && localMismatchWeight > 0f) {
             // Penalise a locally bad alignment (e.g. one different syllable) that the mean distance dilutes
-            val path = dtwPathCosts(template, window.subList(window.size - best.windowFrames, window.size))
+            val slice = window.subList(window.size - best.windowFrames, window.size)
+            val path = dtwPathCosts(template, if (meanNormalization) meanNormalized(slice) else slice)
             if (path != null && path.size >= LOCAL_SEGMENT_STEPS) {
                 var worst = 0f
                 for (i in 0..path.size - LOCAL_SEGMENT_STEPS) {
@@ -339,46 +312,12 @@ class TemplateKeywordDetector(
         return best
     }
 
-    /** Legacy (version 1) feature extractor, kept only for templates enrolled with earlier versions. */
-    fun extractFeatureVector(frame: ShortArray): FloatArray {
-        val fftBuffer = DoubleArray(fftSize)
-        val len = min(frame.size, fftSize)
-        for (i in 0 until len) {
-            // Apply Hann window
-            val window = 0.5 * (1.0 - cos(2.0 * Math.PI * i / (fftSize - 1)))
-            fftBuffer[i] = (frame[i] / 32768.0) * window
-        }
-
-        val power = fft.computePowerSpectrum(fftBuffer)
-        val features = FloatArray(numBands)
-        val binStep = (power.size - 1) / numBands
-
-        var totalEnergy = 0.0
-        for (b in 0 until numBands) {
-            var bandSum = 0.0
-            val start = b * binStep
-            val end = min(start + binStep, power.size)
-            for (k in start until end) {
-                bandSum += power[k]
-            }
-            totalEnergy += bandSum
-            val logEnergy = log10(bandSum + 1e-6).toFloat()
-            features[b] = (logEnergy + 4.0f).coerceAtLeast(0.01f)
-        }
-
-        // L2-normalize the 16-band feature vector so matching focuses on spectral shape
-        var sumSquares = 0.0
-        for (f in features) {
-            sumSquares += f * f
-        }
-        val norm = sqrt(sumSquares).toFloat()
-        if (norm > 1e-4f) {
-            for (b in 0 until numBands) {
-                features[b] /= norm
-            }
-        }
-
-        return features
+    /** [seq] with the mean of each of the first [numBands] (spectral shape) values subtracted; other values unchanged. */
+    private fun meanNormalized(seq: List<FloatArray>): List<FloatArray> {
+        val mean = FloatArray(numBands)
+        for (v in seq) for (b in 0 until min(numBands, v.size)) mean[b] += v[b]
+        for (b in 0 until numBands) mean[b] /= seq.size
+        return seq.map { v -> FloatArray(v.size) { b -> if (b < numBands) v[b] - mean[b] else v[b] } }
     }
 
     private fun computeDtwDistance(template: List<FloatArray>, input: List<FloatArray>): Pair<Float, Int> =
@@ -484,12 +423,13 @@ class TemplateKeywordDetector(
 
         /** Maximum number of enrolled samples (references) of the wake phrase. */
         const val MAX_REFERENCES = 5
+        const val DEFAULT_MEAN_NORMALIZATION = true
         val DEFAULT_AGGREGATION = ReferenceAggregation.MAX
 
-        fun serialize(features: List<FloatArray>, legacy: Boolean = false): ByteArray {
+        fun serialize(features: List<FloatArray>): ByteArray {
             val bands = features.first().size
             val buffer = ByteBuffer.allocate(12 + features.size * bands * 4).order(ByteOrder.LITTLE_ENDIAN)
-            buffer.putInt(if (legacy) MAGIC_LEGACY_TEMPLATE else MAGIC_FRONT_END_TEMPLATE)
+            buffer.putInt(MAGIC_FRONT_END_TEMPLATE)
             buffer.putInt(features.size)
             buffer.putInt(bands)
             features.forEach { vec -> vec.forEach { buffer.putFloat(it) } }
@@ -531,21 +471,21 @@ class TemplateKeywordDetector(
             return RecordingAnalysis(features, levels, clipped, noise, findSpeechSpan(levels, noise))
         }
 
-        /** Parses a serialized template into its feature sequence, or null if invalid (legacy flag ignored). */
+        /** Parses a serialized template into its feature sequence, or null if invalid or in another format. */
         fun parseFeatures(templateBytes: ByteArray): List<FloatArray>? = try {
             val buffer = ByteBuffer.wrap(templateBytes).order(ByteOrder.LITTLE_ENDIAN)
             val magic = buffer.int
             val frames = buffer.int
             val bands = buffer.int
-            if ((magic != MAGIC_FRONT_END_TEMPLATE && magic != MAGIC_LEGACY_TEMPLATE) || frames !in 1..200 || bands <= 0 ||
+            if (magic != MAGIC_FRONT_END_TEMPLATE || frames !in 1..200 || bands <= 0 ||
                 templateBytes.size < 12 + frames * bands * 4
             ) null else List(frames) { FloatArray(bands) { buffer.float } }
         } catch (_: Exception) {
             null
         }
 
-        const val MAGIC_LEGACY_TEMPLATE = 0x4349414F // 'CIAO': legacy features
-        const val MAGIC_FRONT_END_TEMPLATE = 0x32414943 // 'CIA2' (little endian): WakePhraseFrontEnd features
+        /** Template format with [WakePhraseFrontEnd] features (stored in enrolled samples): never change it. */
+        const val MAGIC_FRONT_END_TEMPLATE = 0x32414943
         const val MIN_TEMPLATE_FRAMES = 6
 
         /** A frame belongs to the phrase if it is this far above the recording's noise floor... */
@@ -577,82 +517,6 @@ class TemplateKeywordDetector(
             if (first < 0) return null
             val span = (first - SPEECH_PADDING_FRAMES).coerceAtLeast(0)..(last + SPEECH_PADDING_FRAMES).coerceAtMost(levelsDbfs.size - 1)
             return if (span.last - span.first + 1 >= MIN_TEMPLATE_FRAMES) span else null
-        }
-
-        /**
-         * Synthesizes canonical acoustic PCM sequence representing the phrase "Ciao Linda" (built-in reference of
-         * [BuiltInWakePhrase.CIAO_LINDA], the default of earlier versions; also used by tests).
-         * 16kHz, 50ms (800 samples) per frame.
-         * Segment breakdown:
-         * - Frames 0..2 (150ms): "Ch" (/tʃ/) affricate burst with high-frequency energy.
-         * - Frames 3..6 (200ms): "a" (/a/) open vowel with F1~750Hz, F2~1300Hz.
-         * - Frames 7..9 (150ms): "o" (/oʊ/) rounded vowel with F1~500Hz, F2~900Hz.
-         * - Frame 10 (50ms): Brief dip/inter-word boundary.
-         * - Frames 11..13 (150ms): "Li" (/lɪ/) lateral vowel with F1~380Hz, F2~2100Hz.
-         * - Frames 14..16 (150ms): "n" (/n/) nasal murmur with low F1~280Hz.
-         * - Frames 17..18 (100ms): "d" (/d/) alveolar stop closure & release burst.
-         * - Frames 19..22 (200ms): "a" (/a/) open vowel with F1~700Hz, F2~1250Hz.
-         */
-        fun generateCanonicalCiaoLindaAudio(
-            sampleRate: Int = 16000,
-            amplitude: Double = 12000.0
-        ): List<ShortArray> {
-            val chunks = mutableListOf<ShortArray>()
-            val frameSize = 800 // 50ms
-
-            for (f in 0 until 23) {
-                val chunk = ShortArray(frameSize)
-                for (i in 0 until frameSize) {
-                    val t = (f * frameSize + i).toDouble() / sampleRate
-                    val sample = when (f) {
-                        in 0..2 -> { // "Ch" - high frequency friction
-                            val n1 = sin(2.0 * Math.PI * 3800.0 * t) * 0.5
-                            val n2 = sin(2.0 * Math.PI * 5200.0 * t) * 0.5
-                            (n1 + n2) * amplitude * 0.75
-                        }
-                        in 3..6 -> { // "a" (/a/) - F1 750Hz, F2 1300Hz, F0 130Hz
-                            val f0 = sin(2.0 * Math.PI * 130.0 * t) * 0.3
-                            val f1 = sin(2.0 * Math.PI * 750.0 * t) * 0.4
-                            val f2 = sin(2.0 * Math.PI * 1300.0 * t) * 0.3
-                            (f0 + f1 + f2) * amplitude
-                        }
-                        in 7..9 -> { // "o" (/oʊ/) - F1 500Hz, F2 900Hz, F0 125Hz
-                            val f0 = sin(2.0 * Math.PI * 125.0 * t) * 0.3
-                            val f1 = sin(2.0 * Math.PI * 500.0 * t) * 0.5
-                            val f2 = sin(2.0 * Math.PI * 900.0 * t) * 0.2
-                            (f0 + f1 + f2) * amplitude * 0.9
-                        }
-                        10 -> { // Brief transition
-                            val f0 = sin(2.0 * Math.PI * 120.0 * t) * 0.2
-                            f0 * amplitude * 0.3
-                        }
-                        in 11..13 -> { // "Li" (/lɪ/) - F1 380Hz, F2 2100Hz, F0 135Hz
-                            val f0 = sin(2.0 * Math.PI * 135.0 * t) * 0.3
-                            val f1 = sin(2.0 * Math.PI * 380.0 * t) * 0.4
-                            val f2 = sin(2.0 * Math.PI * 2100.0 * t) * 0.3
-                            (f0 + f1 + f2) * amplitude * 0.95
-                        }
-                        in 14..16 -> { // "n" (/n/) - F1 280Hz nasal murmur
-                            val f0 = sin(2.0 * Math.PI * 130.0 * t) * 0.4
-                            val f1 = sin(2.0 * Math.PI * 280.0 * t) * 0.6
-                            (f0 + f1) * amplitude * 0.7
-                        }
-                        in 17..18 -> { // "d" (/d/) - release transient
-                            val f0 = sin(2.0 * Math.PI * 2200.0 * t) * 0.7
-                            f0 * amplitude * 0.6
-                        }
-                        else -> { // "a" (/a/) - final vowel
-                            val f0 = sin(2.0 * Math.PI * 120.0 * t) * 0.3
-                            val f1 = sin(2.0 * Math.PI * 700.0 * t) * 0.4
-                            val f2 = sin(2.0 * Math.PI * 1250.0 * t) * 0.3
-                            (f0 + f1 + f2) * amplitude * 0.9
-                        }
-                    }
-                    chunk[i] = sample.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-                }
-                chunks.add(chunk)
-            }
-            return chunks
         }
     }
 }

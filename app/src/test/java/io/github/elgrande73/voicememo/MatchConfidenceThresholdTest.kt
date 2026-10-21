@@ -5,20 +5,19 @@ import io.github.elgrande73.voicememo.detection.MemoDetectionEvent
 import io.github.elgrande73.voicememo.detection.MemoTriggerDetector
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import io.github.elgrande73.voicememo.settings.SettingsMigrator
-import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Threshold mechanics with a deterministic synthetic signal (the built-in "Ciao Linda" reference and its source signal). */
+/** Threshold mechanics with a deterministic synthetic phrase enrolled as the sample ([SyntheticPhrase]). */
 class MatchConfidenceThresholdTest {
 
-    private val canonicalPhrase = TemplateKeywordDetector.generateCanonicalCiaoLindaAudio(amplitude = 15000.0)
+    private val canonicalPhrase = SyntheticPhrase.generate(amplitude = 15000.0)
 
     private fun bestConfidenceAndMatch(thresholdPercent: Int, phrase: List<ShortArray> = canonicalPhrase): Pair<Float, Boolean> {
-        val detector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA)
+        val detector = SyntheticPhrase.detector()
         detector.setMatchConfidenceThreshold(MatchConfidenceThreshold.toDetectorConfidence(thresholdPercent))
         var best = 0f
         var matched = false
@@ -31,7 +30,7 @@ class MatchConfidenceThresholdTest {
     }
 
     /**
-     * The default phrase with some frames swapped (a mispronounced "Ciao Linda"), so its confidence lands inside the
+     * The default phrase with some frames swapped (a mispronounced phrase), so its confidence lands inside the
      * upper part of the 20%–80% range. Fully deterministic.
      */
     private fun partiallyMatchingPhrase(): Pair<List<ShortArray>, Float> {
@@ -74,7 +73,7 @@ class MatchConfidenceThresholdTest {
     @Test
     fun defaultWakePhraseIsRecognizedAtDefaultThreshold() {
         val (_, matched) = bestConfidenceAndMatch(MatchConfidenceThreshold.DEFAULT_PERCENT)
-        assertTrue("Synthetic 'Ciao Linda' must match its built-in reference at the default threshold", matched)
+        assertTrue("The synthetic phrase must match its enrolled template at the default threshold", matched)
     }
 
     @Test
@@ -92,7 +91,7 @@ class MatchConfidenceThresholdTest {
 
     @Test
     fun matchRequiresConfidenceAtLeastThreshold() {
-        val detector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA)
+        val detector = SyntheticPhrase.detector()
         detector.setMatchConfidenceThreshold(0.80f)
         for (chunk in canonicalPhrase) {
             val result = detector.processFrame(chunk, rms = 0.5f, db = 65f)
@@ -104,7 +103,7 @@ class MatchConfidenceThresholdTest {
     fun triggerDetectorAppliesThresholdToWakePhraseDetector() {
         val (phrase, confidence) = partiallyMatchingPhrase()
         fun triggers(percent: Int): Boolean {
-            val trigger = MemoTriggerDetector(keywordDetector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA))
+            val trigger = MemoTriggerDetector(keywordDetector = SyntheticPhrase.detector())
             trigger.detectionMode = DetectionMode.KEYWORD_ONLY
             trigger.thresholdDb = 45f
             trigger.matchConfidenceThreshold = MatchConfidenceThreshold.toDetectorConfidence(percent)

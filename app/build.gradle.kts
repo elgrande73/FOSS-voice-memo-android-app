@@ -59,10 +59,6 @@ android {
     }
   }
 
-  androidResources {
-    // The bundled speech model is read from a file; keep it uncompressed so it can be copied quickly
-    noCompress += listOf("bin")
-  }
   
   dependenciesInfo {
         includeInApk = false

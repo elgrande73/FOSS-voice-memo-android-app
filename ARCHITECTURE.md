@@ -1,8 +1,8 @@
 # System & Software Architecture Documentation (arc42 Aligned)
 
 **Application:** Voice Memo (Automatic Voice-Note Assistant for Android — FOSS / F-Droid Distribution)  
-**Application ID / package:** `io.github.elgrande73.voicememo` (formerly `com.aistudio.ciaolinda`, see [README](README.md#new-application-identity))  
-**Default wake phrase:** "Mango Tango" (new installations; earlier installations keep "Ciao Linda")  
+**Application ID / package:** `io.github.elgrande73.voicememo` (the app previously used another ID, see [README](README.md#new-application-identity))  
+**Default wake phrase:** "Mango Tango" (or the user's recorded phrase)  
 **Target Platform:** Android 7.0 (API Level 24) through Android 15 / 16 (API Level 36)
 
 ---
@@ -114,7 +114,7 @@ graph TB
 - `timestamp`: Epoch millisecond timestamp of recording onset (Long)
 - `durationSeconds`: Total duration in seconds (Double)
 - `audioFilePath`: Absolute path to 16-bit PCM WAV file (String)
-- `triggerType`: `AUTO_SOUND`, `AUTO_VOICE`, `KEYWORD_CIAO_LINDA` (any wake-phrase trigger; persisted value, never renamed), or `MANUAL` (String)
+- `triggerType`: `AUTO_SOUND`, `AUTO_VOICE`, `MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE` (any wake-phrase trigger; a value from the first version, persisted and never renamed), or `MANUAL` (String); interpreted by `MemoSource`
 - `transcriptionText`: Optional on-device speech-to-text transcript (String?)
 - `transcriptionStatus`: `NONE`, `PENDING`, `COMPLETED`, or `FAILED` (String)
 - `peakDb`: Maximum acoustic decibel level during note (Float)
@@ -145,13 +145,14 @@ All user data lives in app-private storage (never the cache directory) and survi
 | Settings | SharedPreferences `voice_memo_preferences` | Versioned by `settingsSchemaVersion`, migrated by `SettingsMigrator` |
 | Match confidence threshold | key `matchConfidenceThresholdPercent` (Int, 20–80) | Single authoritative value |
 | Transcripts | `voice_notes.transcription_text`, `transcription_status` | Never rewritten except by the user or a successful transcription |
-| Imported speech models | `noBackupFilesDir/speech_models/imported/*.bin` + `.json` | Not backed up; the bundled model stays in the APK |
+| Downloaded speech model | `noBackupFilesDir/speech_models/downloaded/ggml-base.bin` + `model.json` | Not backed up; installed only by the user's download; removed only by the user (transcripts stay) |
+| Imported speech models | `noBackupFilesDir/speech_models/imported/*.bin` + `.json` | Not backed up |
 | Enrolled wake-phrase samples (1–5) | `filesDir/wake_phrase/samples/sample_<id>.bin` | Versioned (`VMWS` v1), features only (no audio); deleting all restores the built-in phrase |
 | Single template of earlier versions | `filesDir/wake_phrase/enrolled_template.bin` | Read only for the one-time migration to sample 1; deleted after a verified copy |
 | Wake-phrase test recording | `filesDir/wake_phrase/test_recording.wav` | 16 kHz mono WAV of the last "Test Phrase" run |
 | Wake-phrase test result | `filesDir/wake_phrase/test_result.bin` | Best confidence + timestamp |
 
-`SettingsMigrator` runs before any setting is read. Each step runs once (guarded by the schema version), never replaces a value the user already saved, clamps out-of-range values and replaces corrupt values with defaults without touching other keys.
+`SettingsMigrator` runs before any setting is read. Each step runs once (guarded by the schema version), never replaces a value the user already saved, clamps out-of-range values and replaces corrupt values with defaults without touching other keys. Steps: v1 match confidence threshold; v2 optional minimum wake-phrase level; v3 (superseded by v4, no effect of its own); v4 removes the settings of removed features (choice of built-in phrase, speech-checked detection model and its phrase words) and sets the one-time notice `wakePhraseChangedNotice` for existing installations. Enrolled samples are never touched by settings migrations.
 
 ---
 
@@ -217,10 +218,11 @@ while-in-use microphone rule). Platform limits and the device test plan: [`docs/
 
 ## 10. On-Device Transcription
 
-`TranscriptionManager` queues memos and transcribes them one at a time on a low-priority background thread with
-`WhisperTranscriber` (JNI → whisper.cpp, `app/src/main/cpp`, submodule `third_party/whisper.cpp`). The bundled model
-is read from the APK (`assets/models/ggml-base-q5_0.bin`); imported models live in `noBackupFilesDir/speech_models`
-(`SpeechModelStore`). Results go into the memo's existing `transcription_text` / `transcription_status` columns
+`TranscriptionManager` queues memos and transcribes them one at a time on a worker thread (foreground service while working) with
+`WhisperTranscriber` (JNI → whisper.cpp, `app/src/main/cpp`, submodule `third_party/whisper.cpp`). The app contains
+no model: Whisper base is downloaded on request (`ModelDownloader`, `ModelDownloads`, `ModelDownloadService`; checksum
+and test load before use) and imported models are supported; both live in `noBackupFilesDir/speech_models`
+(`SpeechModelStore`). Without a model a request fails at once with a download action. Results go into the memo's existing `transcription_text` / `transcription_status` columns
 (`SKIPPED`, `PENDING`, `COMPLETED`, `FAILED`; queue state is in memory only). See
 [`docs/TRANSCRIPTION.md`](docs/TRANSCRIPTION.md).
 
@@ -228,8 +230,8 @@ is read from the APK (`assets/models/ggml-base-q5_0.bin`); imported models live 
 |---|---|---|
 | Automatic transcription of new memos | `speechToTextEnabled` | off |
 | Language | `transcriptionLanguage` (ISO code or `auto`) | `auto` |
-| Quality | `transcriptionQuality` (`ACCURATE`, `FAST`) | `ACCURATE` |
-| Speech model | `transcriptionModelId` | bundled |
+| Quality | `transcriptionQuality` (`ACCURATE`, `FAST`) | `FAST` |
+| Speech model | `transcriptionModelId` | the downloaded Whisper base (if installed) |
 | Minimum audio level for the wake phrase | `wakePhraseMinLevelEnabled`, `wakePhraseMinLevelDbfs` | on, −50 dBFS (new installs; settings v2 keeps the previous level for existing installs) |
 
 ---

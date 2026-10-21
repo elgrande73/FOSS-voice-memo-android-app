@@ -1,5 +1,6 @@
 package io.github.elgrande73.voicememo
 
+import io.github.elgrande73.voicememo.detection.MemoTriggerDetector
 import android.app.Application
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
@@ -156,7 +157,7 @@ class MemoDeletionAndExportTest {
 
     @Test
     fun zipContainsTheOriginalAudioUncompressedAndAManifest() {
-        val a = memo(1, title = "Shopping: milk/eggs", trigger = "KEYWORD_CIAO_LINDA")
+        val a = memo(1, title = "Shopping: milk/eggs", trigger = MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE)
         val b = memo(2, title = "Shopping: milk/eggs") // same title and minute: names must not collide
         val c = memo(3, title = "Idea \"quoted\"\nsecond line")
         val buffer = ByteArrayOutputStream()

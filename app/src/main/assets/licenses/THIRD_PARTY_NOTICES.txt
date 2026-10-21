@@ -27,7 +27,7 @@ SOFTWARE.
 
 ----------------------------------------------------------------------
 
-OpenAI Whisper "base" model weights (bundled speech model, converted to the whisper.cpp format and quantized to q5_0)
+OpenAI Whisper "base" model weights (speech model, downloaded on request from Settings in whisper.cpp's format)
 https://github.com/openai/whisper — "The code and the model weights of Whisper are released under the MIT License."
 
 MIT License

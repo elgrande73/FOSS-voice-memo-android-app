@@ -25,7 +25,7 @@ data class VoiceNote(
     val audioFilePath: String,
 
     @ColumnInfo(name = "trigger_type")
-    val triggerType: String = "AUTO_SOUND", // "KEYWORD_CIAO_LINDA" (any wake phrase; frozen persisted value), "AUTO_SOUND", "MANUAL"
+    val triggerType: String = "AUTO_SOUND", // MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE, "AUTO_SOUND", "AUTO_VOICE", "MANUAL"
 
     @ColumnInfo(name = "transcription_text")
     val transcriptionText: String? = null,

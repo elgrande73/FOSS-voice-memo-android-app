@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Rebuilds app/src/main/assets/models/ggml-base-q5_0.bin from public sources and checks every step's checksum.
+# Rebuilds Whisper base as a q5_0 ggml file (build/whisper-model/ggml-base-q5_0.bin) from public sources and checks
+# every step's checksum. The app no longer contains a model (users download Whisper base in Settings); this file is
+# used by the host tests (WhisperNativeHostTest, TranscriptionEndToEndHostTest) and can be imported in the app
+# (Settings → Import Model File) as a smaller alternative.
 #
 # Source: OpenAI Whisper "base" weights (MIT), as exported to ONNX by the k2-fsa/sherpa-onnx project and published
 # as a GitHub release asset. The ONNX files contain every weight of the original checkpoint; onnx_whisper_to_ggml.py
@@ -41,5 +44,6 @@ cmake -S "$ROOT/third_party/whisper.cpp" -B "$WORK/build" -DCMAKE_BUILD_TYPE=Rel
 cmake --build "$WORK/build" -j4 --target whisper-quantize > /dev/null
 "$WORK/build/bin/whisper-quantize" "$WORK/ggml-base.bin" "$WORK/ggml-base-q5_0.bin" q5_0 > /dev/null
 check "$WORK/ggml-base-q5_0.bin" "$OUTPUT_SHA256"
-cp "$WORK/ggml-base-q5_0.bin" "$ROOT/app/src/main/assets/models/ggml-base-q5_0.bin"
-echo "OK: app/src/main/assets/models/ggml-base-q5_0.bin reproduced ($OUTPUT_SHA256)"
+mkdir -p "$ROOT/build/whisper-model"
+cp "$WORK/ggml-base-q5_0.bin" "$ROOT/build/whisper-model/ggml-base-q5_0.bin"
+echo "OK: build/whisper-model/ggml-base-q5_0.bin reproduced ($OUTPUT_SHA256)"

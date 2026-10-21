@@ -3,7 +3,6 @@ package io.github.elgrande73.voicememo.settings
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
-import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
 
 /**
  * Names of persisted preference files and keys. These are stored on the user's device:
@@ -20,12 +19,8 @@ object PreferenceKeys {
     const val WAKE_PHRASE_MIN_LEVEL_DBFS = "wakePhraseMinLevelDbfs"
     /** History playback mode (PlaybackMode.id); absent means the default. */
     const val HISTORY_PLAYBACK_MODE = "historyPlaybackMode"
-    /** Wake-word detection backend (WakeWordModel.id); absent means Standard. */
-    const val WAKE_WORD_MODEL = "wakeWordModel"
-    /** Words of the user's recorded wake phrase (needed by the speech check); absent means not entered. */
-    const val RECORDED_WAKE_PHRASE_TEXT = "recordedWakePhraseText"
-    /** Built-in wake phrase used while no sample is enrolled (BuiltInWakePhrase.id). */
-    const val BUILT_IN_WAKE_PHRASE = "builtInWakePhrase"
+    /** True until the user dismissed the notice that the built-in wake phrase changed (set by migration v4). */
+    const val WAKE_PHRASE_CHANGED_NOTICE = "wakePhraseChangedNotice"
     /** Loudness-only activation threshold, VAD dB scale (dBFS + 90). Key predates the versioned settings. */
     const val ACTIVATION_THRESHOLD_DB = "thresholdDb"
 
@@ -53,7 +48,7 @@ object PreferenceKeys {
  * saved are never replaced by defaults, and unrelated keys are never touched.
  */
 object SettingsMigrator {
-    const val CURRENT_VERSION = 3
+    const val CURRENT_VERSION = 4
 
     private const val TAG = "SettingsMigrator"
 
@@ -81,8 +76,9 @@ object SettingsMigrator {
         if (version < 2) {
             migrateToV2(prefs, editor, existingInstallation)
         }
-        if (version < 3) {
-            migrateToV3(prefs, editor, existingInstallation)
+        // v3 stored a choice of built-in wake phrase; v4 replaces it, so there is nothing to do for v3 itself
+        if (version < 4) {
+            migrateToV4(prefs, editor, existingInstallation)
         }
 
         // Always validate the authoritative threshold, so a corrupt or out-of-range value can never reach the detector
@@ -141,19 +137,34 @@ object SettingsMigrator {
     }
 
     /**
-     * v3: the default wake phrase of new installations becomes "Mango Tango". Existing installations keep "Ciao Linda",
-     * the phrase they were set up with (it can be changed in Settings); enrolled samples are not affected.
+     * v4: one built-in wake phrase ("Mango Tango") and one detection method (template matching).
+     * - Settings of removed features are dropped: the choice of built-in phrase (v3) and the experimental
+     *   speech-checked detection with the typed words of the recorded phrase. Installations that used the speech check
+     *   continue with template matching and the same enrolled samples; samples are never touched here.
+     * - An existing installation whose built-in phrase was not already "Mango Tango" is told once (Settings, dashboard)
+     *   that the built-in phrase changed; its recorded samples keep working as before.
      */
-    private fun migrateToV3(prefs: SharedPreferences, editor: SharedPreferences.Editor, existingInstallation: Boolean) {
-        if (BuiltInWakePhrase.fromId(readString(prefs, PreferenceKeys.BUILT_IN_WAKE_PHRASE)) == null) {
-            val phrase = if (existingInstallation) BuiltInWakePhrase.CIAO_LINDA else BuiltInWakePhrase.DEFAULT
-            editor.putString(PreferenceKeys.BUILT_IN_WAKE_PHRASE, phrase.id)
+    private fun migrateToV4(prefs: SharedPreferences, editor: SharedPreferences.Editor, existingInstallation: Boolean) {
+        if (existingInstallation && readString(prefs, V3_BUILT_IN_WAKE_PHRASE) != V3_MANGO_TANGO_ID) {
+            editor.putBoolean(PreferenceKeys.WAKE_PHRASE_CHANGED_NOTICE, true)
         }
+        editor.remove(V3_BUILT_IN_WAKE_PHRASE)
+        editor.remove(REMOVED_WAKE_WORD_MODEL)
+        editor.remove(REMOVED_RECORDED_WAKE_PHRASE_TEXT)
     }
 
-    /** Built-in wake phrase stored in [prefs]; a missing or unknown value means the default. */
-    fun builtInWakePhrase(prefs: SharedPreferences): BuiltInWakePhrase =
-        BuiltInWakePhrase.fromId(readString(prefs, PreferenceKeys.BUILT_IN_WAKE_PHRASE)) ?: BuiltInWakePhrase.DEFAULT
+    /** Whether the one-time notice about the changed built-in wake phrase is still to be shown. */
+    fun wakePhraseChangedNotice(prefs: SharedPreferences): Boolean = try {
+        prefs.getBoolean(PreferenceKeys.WAKE_PHRASE_CHANGED_NOTICE, false)
+    } catch (_: ClassCastException) {
+        false
+    }
+
+    // Keys of settings removed by v4 (read or removed only by the migration)
+    private const val V3_BUILT_IN_WAKE_PHRASE = "builtInWakePhrase"
+    private const val V3_MANGO_TANGO_ID = "mango_tango"
+    private const val REMOVED_WAKE_WORD_MODEL = "wakeWordModel"
+    private const val REMOVED_RECORDED_WAKE_PHRASE_TEXT = "recordedWakePhraseText"
 
     /**
      * Effective confidence threshold of the former sensitivity model: a match required

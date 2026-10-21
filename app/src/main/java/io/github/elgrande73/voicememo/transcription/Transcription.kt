@@ -75,7 +75,11 @@ object Transcription {
         )
     }
 
-    /** Fewer threads while monitoring runs, so wake-phrase detection keeps enough CPU. */
+    /**
+     * Decoding threads (at most 4): one core stays free for the app, and while monitoring runs a second one for audio
+     * capture and wake-phrase detection (about 0.1 ms of CPU per 50 ms frame on the build host). Measured on the host:
+     * 4 threads decode about 1.8× faster than 2 (docs/TRANSCRIPTION.md).
+     */
     fun threadCount(monitoring: Boolean, cores: Int = Runtime.getRuntime().availableProcessors()): Int =
-        if (monitoring) 2.coerceAtMost(cores) else (cores - 1).coerceIn(1, 4)
+        (cores - if (monitoring) 2 else 1).coerceIn(1, 4)
 }

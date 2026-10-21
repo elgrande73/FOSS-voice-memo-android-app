@@ -12,7 +12,7 @@ import java.io.File
 import kotlin.concurrent.thread
 
 /**
- * Runs the real JNI bridge and whisper.cpp with the bundled model on the build machine (x86-64 host build, not a
+ * Runs the real JNI bridge and whisper.cpp with Whisper base (q5_0 test model) on the build machine (x86-64 host build, not a
  * phone). Skipped unless the host library was built: scripts/host-whisper-jni/build.sh. Measurements are printed with
  * "MEASURE" and are host numbers only.
  */
@@ -26,13 +26,14 @@ class WhisperNativeHostTest {
         private val root = generateSequence(File("").absoluteFile) { it.parentFile }.first { File(it, "settings.gradle.kts").exists() }
         private val hostLib = File(root, "build/host-whisper-jni/lib/libvmwhisper.so")
         private val backends = File(root, "build/host-whisper-jni/bin")
-        val model = File(root, "app/src/main/assets/models/ggml-base-q5_0.bin")
+        /** Whisper base q5_0 built by scripts/whisper-model/build-bundled-model.sh (not part of the app). */
+        val model = File(root, "build/whisper-model/ggml-base-q5_0.bin")
         private var handle = 0L
 
         @BeforeClass
         @JvmStatic
         fun load() {
-            if (!hostLib.exists()) return
+            if (!hostLib.exists() || !model.exists()) return
             WhisperNative.loadFrom(hostLib.absolutePath, backends.absolutePath)
             val start = System.nanoTime()
             handle = WhisperNative.init(model.absolutePath)
@@ -49,7 +50,8 @@ class WhisperNativeHostTest {
     private fun words(s: String) = s.lowercase().replace(Regex("[^\\p{L}\\p{N}' ]"), " ").split(Regex("\\s+")).filter { it.isNotBlank() }
 
     @Test
-    fun bundledModelHeaderIsWhisperBaseMultilingual() {
+    fun testModelHeaderIsWhisperBaseMultilingual() {
+        assumeTrue("test model not built", model.exists())
         val info = GgmlModelInfo.read(model)!!
         assertEquals("base", info.sizeName)
         assertTrue(info.multilingual)

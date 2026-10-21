@@ -26,7 +26,7 @@ class WakePhraseFrontEndTest {
     @Test
     fun backgroundIsAttenuatedButQuietSpeechIsPreserved() {
         val frontEnd = WakePhraseFrontEnd()
-        val phrase = AudioFixtures.atPeak(AudioFixtures.load("ciao_linda_a"), -30.0) // quiet speech
+        val phrase = AudioFixtures.atPeak(AudioFixtures.load("wake_phrase_a"), -30.0) // quiet speech
         val frames = AudioFixtures.frames(AudioFixtures.scene(phrase, 4.0, 2.5, noiseDbfs = -55.0))
         val speechStart = (2.5 * 16000 / 800).toInt()
         val backgroundSuppression = mutableListOf<Float>()
@@ -84,7 +84,7 @@ class WakePhraseFrontEndTest {
     @Test
     fun processingIsFastEnoughForRealTime() {
         val frontEnd = WakePhraseFrontEnd()
-        val frames = AudioFixtures.frames(AudioFixtures.scene(AudioFixtures.atPeak(AudioFixtures.load("ciao_linda_a"), -20.0), 10.0, 2.0, -50.0))
+        val frames = AudioFixtures.frames(AudioFixtures.scene(AudioFixtures.atPeak(AudioFixtures.load("wake_phrase_a"), -20.0), 10.0, 2.0, -50.0))
         repeat(2) { frames.forEach { frontEnd.process(it) } } // JIT warm-up
         val start = System.nanoTime()
         frames.forEach { frontEnd.process(it) }

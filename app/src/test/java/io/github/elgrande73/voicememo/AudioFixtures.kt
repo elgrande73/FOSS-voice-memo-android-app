@@ -18,7 +18,7 @@ object AudioFixtures {
     const val SAMPLE_RATE = 16000
 
     /** Same voice as the enrollment phrase ("a"): two renditions of the wake phrase. */
-    val WAKE_PHRASE_SAME_VOICE = listOf("ciao_linda_a", "ciao_linda_b")
+    val WAKE_PHRASE_SAME_VOICE = listOf("wake_phrase_a", "wake_phrase_b")
     /** Speech that does not contain the wake phrase. */
     val OTHER_SPEECH = listOf("other_speech", "other_speech_en")
 
@@ -74,7 +74,7 @@ object AudioFixtures {
     /** Enrolls voice "a" like the Settings workflow: 2.5 s recording, phrase after 0.3 s, close to the microphone. */
     fun enrollTemplate(noiseDbfs: Double = -65.0, noise: Noise = Noise.PINK): ByteArray {
         val detector = TemplateKeywordDetector()
-        val recording = scene(atPeak(load("ciao_linda_a"), -10.0), 2.5, 0.3, noiseDbfs, noise, seed = 1)
+        val recording = scene(atPeak(load("wake_phrase_a"), -10.0), 2.5, 0.3, noiseDbfs, noise, seed = 1)
         check(detector.recordTemplate(frames(recording))) { "Enrollment failed" }
         return detector.getTemplateData()!!
     }

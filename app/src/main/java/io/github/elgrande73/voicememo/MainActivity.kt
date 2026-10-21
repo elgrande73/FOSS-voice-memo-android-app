@@ -43,16 +43,14 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import io.github.elgrande73.voicememo.memo.MemoSource
+import io.github.elgrande73.voicememo.transcription.ModelDownloadState
+import io.github.elgrande73.voicememo.transcription.ModelSource
 import io.github.elgrande73.voicememo.playback.PlaybackMode
 import io.github.elgrande73.voicememo.ui.PlayingMemoAutoScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.selection.selectable
-import io.github.elgrande73.voicememo.wakephrase.WakePhraseText
-import io.github.elgrande73.voicememo.wakephrase.WakeWordModel
-import io.github.elgrande73.voicememo.wakephrase.WakeWordStatus
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -90,6 +88,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -104,6 +103,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -385,7 +385,7 @@ fun DashboardScreen(
     // Same persisted value the wake-phrase detector uses (Settings > Match confidence threshold)
     val matchConfidenceThresholdPercent by viewModel.matchConfidenceThresholdPercent.collectAsState()
     val usesRecordedWakePhrase by viewModel.hasKeywordTemplate.collectAsState()
-    val builtInWakePhrase by viewModel.builtInWakePhrase.collectAsState()
+    val wakePhraseChangedNotice by viewModel.wakePhraseChangedNotice.collectAsState()
 
     val context = LocalContext.current
 
@@ -541,6 +541,10 @@ fun DashboardScreen(
                 engineState = engineState
             )
 
+            if (wakePhraseChangedNotice) {
+                WakePhraseChangedNotice(hasRecordedSamples = usesRecordedWakePhrase, onDismiss = { viewModel.dismissWakePhraseChangedNotice() })
+            }
+
             // Live Wake-Phrase Match Confidence Gauge
             if (detectionMode == DetectionMode.KEYWORD_ONLY) {
                 Card(
@@ -568,7 +572,7 @@ fun DashboardScreen(
                             )
                             Text(
                                 text = if (usesRecordedWakePhrase) "Live similarity to your recorded wake phrase"
-                                else "Say \"${builtInWakePhrase.displayName}\" to start and stop a memo",
+                                else "Say \"${BuiltInWakePhrase.DISPLAY_NAME}\" to start and stop a memo",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.testTag("dashboard_wake_phrase_hint")
@@ -971,6 +975,35 @@ fun LiveLevelCard(
     }
 }
 
+/** Duration as m:ss. */
+private fun clockText(ms: Long): String {
+    val seconds = (ms.coerceAtLeast(0L) + 500) / 1000
+    return "%d:%02d".format(seconds / 60, seconds % 60)
+}
+
+/**
+ * Status line of a memo's transcription: the running stage (as reported by the queue, never estimated) with elapsed
+ * time and the memo's length, the outcome of the last attempt, or null when there is nothing to report.
+ */
+fun transcriptionStatusText(note: VoiceNote, job: TranscriptionJobState?, nowMs: Long): String? {
+    val audio = clockText((note.durationSeconds * 1000).toLong())
+    return when {
+        job is TranscriptionJobState.Running -> buildString {
+            append(job.stage.label)
+            job.progress?.let { append(" $it%") }
+            if (job.startedAtMs > 0) append(" · ${clockText(nowMs - job.startedAtMs)} elapsed")
+            append(" · $audio of audio")
+        }
+        job == TranscriptionJobState.Queued || (job == null && note.transcriptionStatus == TranscriptionStatus.PENDING) -> "Waiting to be transcribed…"
+        job is TranscriptionJobState.Failed -> "Transcription failed: ${job.message}"
+        job is TranscriptionJobState.Completed -> "Transcribed ${clockText(job.audioMs)} of audio in ${clockText(job.elapsedMs)}."
+        job == TranscriptionJobState.Cancelled ->
+            if (note.transcriptionText != null) "Transcription cancelled; the previous text was kept." else "Transcription cancelled."
+        note.transcriptionStatus == TranscriptionStatus.FAILED -> "The last transcription failed. Tap Retry."
+        else -> null
+    }
+}
+
 /** Transcript of a memo with its on-device transcription status and actions. */
 @Composable
 fun TranscriptSection(
@@ -979,7 +1012,9 @@ fun TranscriptSection(
     onTranscribe: () -> Unit,
     onCancel: () -> Unit,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    /** Shown when the transcription failed because no speech model is installed. */
+    onDownloadModel: () -> Unit = {}
 ) {
     val transcript = note.transcriptionText
     Column(modifier = Modifier.fillMaxWidth().testTag("transcript_section_${note.id}")) {
@@ -999,14 +1034,14 @@ fun TranscriptSection(
         // In-memory job state first; after a restart the stored status tells whether the memo is still queued
         val queued = job == TranscriptionJobState.Queued || (job == null && note.transcriptionStatus == TranscriptionStatus.PENDING)
         val running = job is TranscriptionJobState.Running
-        val status = when {
-            job is TranscriptionJobState.Running ->
-                if (job.progress > 0) "Transcribing on this device… ${job.progress}%" else "Transcribing on this device…"
-            queued -> "Waiting to be transcribed…"
-            job is TranscriptionJobState.Failed -> "Transcription failed: ${job.message}"
-            note.transcriptionStatus == TranscriptionStatus.FAILED -> "The last transcription failed. Tap Retry."
-            else -> null
+        // Elapsed time ticks once a second while the job runs
+        val now by produceState(System.currentTimeMillis(), job) {
+            while (job is TranscriptionJobState.Running) {
+                value = System.currentTimeMillis()
+                kotlinx.coroutines.delay(1000)
+            }
         }
+        val status = transcriptionStatusText(note, job, now)
         status?.let {
             Text(
                 text = it,
@@ -1032,6 +1067,11 @@ fun TranscriptSection(
                             else -> "Transcribe"
                         }
                     )
+                }
+                if ((job as? TranscriptionJobState.Failed)?.modelMissing == true) {
+                    TextButton(onClick = onDownloadModel, modifier = Modifier.testTag("transcript_download_model_${note.id}")) {
+                        Text("Download speech model")
+                    }
                 }
                 if (transcript != null) {
                     TextButton(onClick = onEdit, modifier = Modifier.testTag("transcript_edit_${note.id}")) { Text("Edit") }
@@ -1059,6 +1099,7 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
     val activeModel by viewModel.activeSpeechModelId.collectAsState()
     val modelMessage by viewModel.modelMessage.collectAsState()
     val importing by viewModel.modelImportRunning.collectAsState()
+    val downloadState by viewModel.modelDownloadState.collectAsState()
     var languageMenu by remember { mutableStateOf(false) }
     var showLicenses by remember { mutableStateOf(false) }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -1074,8 +1115,9 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
         Column(modifier = Modifier.padding(16.dp)) {
             Text(text = "Speech-to-Text (on this device)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(
-                text = "Memos are transcribed on the phone with the included Whisper model; no audio or text leaves the device " +
-                    "and no internet connection is used. Tap Transcribe on a memo in History.",
+                text = "Memos are transcribed on the phone with the Whisper speech model; no audio or text leaves the device. " +
+                    "The model is not part of the app: download it once below (the only time the app uses the internet). " +
+                    "After that, transcription works offline. Tap Transcribe on a memo in History.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1129,6 +1171,13 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
 
             Spacer(modifier = Modifier.height(8.dp))
             Text(text = "Speech model", fontWeight = FontWeight.SemiBold)
+            SpeechModelDownloadSection(
+                state = downloadState,
+                onDownload = { viewModel.downloadSpeechModel() },
+                onCancel = { viewModel.cancelSpeechModelDownload() },
+                onRemove = { viewModel.removeDownloadedSpeechModel() }
+            )
+            if (models.size > 1) Text(text = "Model used for transcription", style = MaterialTheme.typography.labelLarge)
             models.forEach { model ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -1139,7 +1188,7 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
                         Text(model.name, style = MaterialTheme.typography.bodyMedium)
                         Text(model.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    if (!model.bundled) {
+                    if (!model.downloaded) {
                         TextButton(onClick = { viewModel.deleteSpeechModel(model.id) }) { Text("Remove") }
                     }
                 }
@@ -1151,8 +1200,7 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
             ) { Text(if (importing) "Checking model…" else "Import Model File…") }
             Text(
                 text = "Optional: larger whisper.cpp models (ggml .bin, e.g. \"small\") are more accurate but slower and need " +
-                    "more memory; \"tiny\" is faster. Download one on a computer or in a browser, then import the file here. " +
-                    "The included model always stays available.",
+                    "more memory; \"tiny\" is faster. Download one on a computer or in a browser, then import the file here.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1183,6 +1231,68 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
                 )
             },
             confirmButton = { TextButton(onClick = { showLicenses = false }) { Text("Close") } }
+        )
+    }
+}
+
+/**
+ * Download of the Whisper base model: what it is, its size and storage, progress with Cancel, validation, ready with a
+ * Remove action (confirmed), and failures with Retry.
+ */
+@Composable
+fun SpeechModelDownloadSection(state: ModelDownloadState, onDownload: () -> Unit, onCancel: () -> Unit, onRemove: () -> Unit) {
+    var confirmRemove by remember { mutableStateOf(false) }
+    val sizeMb = ModelSource.WHISPER_BASE.approxBytes / 1_000_000
+    Column(modifier = Modifier.fillMaxWidth().testTag("speech_model_download"), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        val status = when (state) {
+            ModelDownloadState.Missing -> "Not installed. Transcription needs the Whisper base model: a one-time download of about " +
+                "$sizeMb MB (Wi-Fi recommended), stored on this device and kept until you remove it. Recording and wake-phrase " +
+                "detection do not need it."
+            is ModelDownloadState.Downloading -> "Downloading… ${state.downloadedBytes / 1_000_000} of ${state.totalBytes / 1_000_000} MB (${state.percent}%)"
+            ModelDownloadState.Validating -> "Checking the download (checksum)…"
+            ModelDownloadState.Initializing -> "Preparing the model…"
+            ModelDownloadState.Ready -> "Whisper base is installed (about $sizeMb MB on this device). Transcription works offline."
+            is ModelDownloadState.Failed -> state.message
+        }
+        Text(
+            status,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (state is ModelDownloadState.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .semantics { liveRegion = LiveRegionMode.Polite }
+                .testTag("speech_model_download_status")
+        )
+        when (state) {
+            is ModelDownloadState.Downloading -> {
+                LinearProgressIndicator(progress = { state.percent / 100f }, modifier = Modifier.fillMaxWidth())
+                OutlinedButton(onClick = onCancel, modifier = Modifier.testTag("cancel_model_download")) { Text("Cancel download") }
+            }
+            ModelDownloadState.Validating, ModelDownloadState.Initializing -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            ModelDownloadState.Ready -> TextButton(onClick = { confirmRemove = true }, modifier = Modifier.testTag("remove_speech_model")) {
+                Text("Remove Whisper base model")
+            }
+            ModelDownloadState.Missing -> Button(onClick = onDownload, modifier = Modifier.testTag("download_speech_model")) {
+                Text("Download Whisper Base model ($sizeMb MB)")
+            }
+            is ModelDownloadState.Failed -> if (state.retryable) {
+                Button(onClick = onDownload, modifier = Modifier.testTag("download_speech_model")) { Text("Retry download") }
+            }
+        }
+    }
+    if (confirmRemove) {
+        AlertDialog(
+            onDismissRequest = { confirmRemove = false },
+            title = { Text("Remove the speech model?") },
+            text = {
+                Text(
+                    "This frees about $sizeMb MB. Transcription stops working until you download the model again; " +
+                        "running transcriptions are cancelled. Your transcripts and recordings are kept."
+                )
+            },
+            confirmButton = {
+                Button(onClick = { confirmRemove = false; onRemove() }, modifier = Modifier.testTag("confirm_remove_speech_model")) { Text("Remove") }
+            },
+            dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("Cancel") } }
         )
     }
 }
@@ -1702,7 +1812,8 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
                                 onTranscribe = { viewModel.transcribeNote(note) },
                                 onCancel = { viewModel.cancelTranscription(note) },
                                 onEdit = { noteToEditTranscript = note; transcriptDraft = note.transcriptionText ?: "" },
-                                onDelete = { viewModel.deleteTranscript(note) }
+                                onDelete = { viewModel.deleteTranscript(note) },
+                                onDownloadModel = { viewModel.downloadSpeechModel() }
                             )
 
                             Spacer(modifier = Modifier.height(12.dp))
@@ -1965,89 +2076,25 @@ private fun HistorySelectionBar(
     }
 }
 
+/** One-time notice after an update that changed the built-in wake phrase (SettingsMigrator v4). */
 @Composable
-private fun WakeWordModelCard(
-    selected: WakeWordModel,
-    status: WakeWordStatus?,
-    monitoring: Boolean,
-    usesRecordedPhrase: Boolean,
-    builtInPhrase: BuiltInWakePhrase,
-    recordedPhraseText: String,
-    onSelect: (WakeWordModel) -> Unit,
-    onPhraseTextChange: (String) -> Unit
-) {
-    var draft by remember(recordedPhraseText) { mutableStateOf(recordedPhraseText) }
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        shape = RoundedCornerShape(20.dp),
+fun WakePhraseChangedNotice(hasRecordedSamples: Boolean, onDismiss: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("wake_word_model_card")
+            .testTag("wake_phrase_changed_notice")
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Wake-Word Detection Model", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Column(modifier = Modifier.selectableGroup()) {
-                WakeWordModel.entries.forEach { model ->
-                    Row(
-                        verticalAlignment = Alignment.Top,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .selectable(selected = model == selected, onClick = { onSelect(model) }, role = Role.RadioButton)
-                            .padding(vertical = 4.dp)
-                            .testTag("wake_word_model_${model.id}")
-                    ) {
-                        RadioButton(selected = model == selected, onClick = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Text(model.label, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
-                            Text(model.summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-            }
-            if (selected == WakeWordModel.SPEECH_CHECK) {
-                Text(
-                    "Uses the speech model already included in the app (Whisper base, about 55 MB, MIT license); nothing is " +
-                        "downloaded and audio never leaves the device. Your recorded samples are kept and used again with Standard.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (usesRecordedPhrase) {
-                    OutlinedTextField(
-                        value = draft,
-                        onValueChange = { draft = it },
-                        label = { Text("Words of your recorded phrase") },
-                        placeholder = { Text(builtInPhrase.displayName) },
-                        singleLine = true,
-                        supportingText = { WakePhraseText.problem(draft)?.let { Text(it) } },
-                        isError = WakePhraseText.problem(draft) != null,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .onFocusChanged {
-                                ShortcutRuntime.textInputFocused = it.isFocused
-                                if (!it.isFocused && draft != recordedPhraseText) onPhraseTextChange(draft)
-                            }
-                            .testTag("recorded_phrase_text")
-                    )
-                    TextButton(onClick = { onPhraseTextChange(draft) }, enabled = draft.trim() != recordedPhraseText) { Text("Save phrase words") }
-                } else {
-                    Text("Checks for the words \"${builtInPhrase.displayName}\".", style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            val statusText = when {
-                status == null || !monitoring -> "Takes effect when monitoring runs."
-                status.message != null -> status.message
-                else -> "Active: ${status.active.label}"
-            }
+        Column(modifier = Modifier.padding(12.dp)) {
             Text(
-                statusText,
+                text = "The built-in wake phrase is now \"${BuiltInWakePhrase.DISPLAY_NAME}\". " +
+                    if (hasRecordedSamples) "Your recorded phrase is unchanged and is still used."
+                    else "Record your own samples in Settings → Wake Phrase for the most reliable detection.",
                 style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.SemiBold,
-                color = if (status?.isFallback == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .semantics { liveRegion = LiveRegionMode.Polite }
-                    .testTag("wake_word_model_status")
+                color = MaterialTheme.colorScheme.onTertiaryContainer
             )
+            TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End).testTag("dismiss_wake_phrase_notice")) { Text("OK") }
         }
     }
 }
@@ -2080,11 +2127,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
     val feedbackSoundsEnabled by viewModel.feedbackSoundsEnabled.collectAsState()
 
     val matchConfidenceThresholdPercent by viewModel.matchConfidenceThresholdPercent.collectAsState()
-    val wakeWordModel by viewModel.wakeWordModel.collectAsState()
-    val wakeWordStatus by viewModel.wakeWordStatus.collectAsState()
-    val recordedPhraseText by viewModel.recordedPhraseText.collectAsState()
-    val isMonitoringServiceRunning by AudioMonitoringService.isServiceRunning.collectAsState()
-    val builtInWakePhrase by viewModel.builtInWakePhrase.collectAsState()
+    val wakePhraseChangedNotice by viewModel.wakePhraseChangedNotice.collectAsState()
     val keywordBehavior by viewModel.keywordBehavior.collectAsState()
     val hasKeywordTemplate by viewModel.hasKeywordTemplate.collectAsState()
     val wakePhraseSamples by viewModel.wakePhraseSamples.collectAsState()
@@ -2096,7 +2139,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
     val phraseCaptureState by viewModel.phraseCaptureState.collectAsState()
     val phraseCaptureError by viewModel.phraseCaptureError.collectAsState()
     val phraseMessage by viewModel.phraseMessage.collectAsState()
-    val isLegacyTemplate by viewModel.isLegacyTemplate.collectAsState()
+    val unusableSampleCount by viewModel.unusableSampleCount.collectAsState()
     val hasSavedTestRecording by viewModel.hasSavedTestRecording.collectAsState()
 
     val speechToTextEnabled by viewModel.speechToTextEnabled.collectAsState()
@@ -2201,25 +2244,9 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    text = if (hasKeywordTemplate) "Built-in phrase (used only after all samples are deleted)" else "Built-in phrase",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.selectableGroup()) {
-                    BuiltInWakePhrase.entries.forEach { phrase ->
-                        FilterChip(
-                            selected = builtInWakePhrase == phrase,
-                            onClick = { viewModel.setBuiltInWakePhrase(phrase) },
-                            label = {
-                                Text(if (phrase == BuiltInWakePhrase.DEFAULT) "${phrase.displayName} (recommended)" else "${phrase.displayName} (earlier default)")
-                            },
-                            modifier = Modifier
-                                .semantics { role = Role.RadioButton }
-                                .testTag("built_in_phrase_${phrase.id}")
-                        )
-                    }
+                if (wakePhraseChangedNotice) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    WakePhraseChangedNotice(hasRecordedSamples = hasKeywordTemplate, onDismiss = { viewModel.dismissWakePhraseChangedNotice() })
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -2301,9 +2328,10 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                         modifier = Modifier.testTag("phrase_message")
                     )
                 }
-                if (isLegacyTemplate) {
+                if (unusableSampleCount > 0) {
                     Text(
-                        text = "Your phrase was recorded with an earlier version. Record it again for more reliable detection.",
+                        text = "$unusableSampleCount sample(s) recorded with a much older version of the app can no longer be used. " +
+                            "Record the phrase again.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2328,8 +2356,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                                 )
                                 Text(
                                     text = dateFormat.format(Date(sample.createdAt)) +
-                                        (if (sample.phraseDurationMs > 0) " · %.1f s".format(sample.phraseDurationMs / 1000f) else "") +
-                                        (if (sample.legacyFeatures) " · earlier version" else ""),
+                                        (if (sample.phraseDurationMs > 0) " · %.1f s".format(sample.phraseDurationMs / 1000f) else ""),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -2476,18 +2503,6 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                 }
             }
         }
-
-        // Section: Wake-word detection model
-        WakeWordModelCard(
-            selected = wakeWordModel,
-            status = wakeWordStatus,
-            monitoring = isMonitoringServiceRunning,
-            usesRecordedPhrase = hasKeywordTemplate,
-            builtInPhrase = builtInWakePhrase,
-            recordedPhraseText = recordedPhraseText,
-            onSelect = { viewModel.setWakeWordModel(it) },
-            onPhraseTextChange = { viewModel.setRecordedPhraseText(it) }
-        )
 
         // Section: Thresholds & Durations
         Card(

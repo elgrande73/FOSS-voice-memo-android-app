@@ -56,6 +56,9 @@ import io.github.elgrande73.voicememo.playback.MemoPlaybackSequencer
 import io.github.elgrande73.voicememo.playback.PlaybackMode
 import io.github.elgrande73.voicememo.playback.PlaybackCue
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
+import io.github.elgrande73.voicememo.transcription.ModelDownloadState
+import io.github.elgrande73.voicememo.transcription.ModelDownloads
+import io.github.elgrande73.voicememo.transcription.ModelSource
 import io.github.elgrande73.voicememo.transcription.SpeechModelStore
 import io.github.elgrande73.voicememo.transcription.Transcription
 import io.github.elgrande73.voicememo.transcription.TranscriptionJobState
@@ -71,13 +74,6 @@ import io.github.elgrande73.voicememo.shortcuts.ShortcutSettings
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.settings.SettingsMigrator
 import io.github.elgrande73.voicememo.ui.theme.ThemeMode
-import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
-import io.github.elgrande73.voicememo.wakephrase.WakePhraseText
-import io.github.elgrande73.voicememo.wakephrase.WakeWordEngines
-import io.github.elgrande73.voicememo.wakephrase.WakeWordModel
-import io.github.elgrande73.voicememo.wakephrase.WakeWordStatus
-import io.github.elgrande73.voicememo.transcription.SpeechCheckModel
-import io.github.elgrande73.voicememo.transcription.WhisperPhraseVerifier
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseEnrollment
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseEvaluation
@@ -122,7 +118,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     private val voiceNoteRepository: VoiceNoteRepository
     private val database = AppDatabase.getDatabase(context)
     private val exportManager = VoiceNoteExportManager(context)
-    private val keywordDetector = TemplateKeywordDetector(builtInPhrase = SettingsMigrator.builtInWakePhrase(prefs))
+    private val keywordDetector = TemplateKeywordDetector()
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
     // Voice Notes stream
@@ -229,43 +225,14 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     )
     val matchConfidenceThresholdPercent = _matchConfidenceThresholdPercent.asStateFlow()
 
-    // Wake-word detection model (Standard or speech check) and the words of a recorded phrase (needed by the check)
-    private val _wakeWordModel = MutableStateFlow<WakeWordModel>(
-        WakeWordModel.fromId(try { prefs.getString(PreferenceKeys.WAKE_WORD_MODEL, null) } catch (_: ClassCastException) { null })
-    )
-    val wakeWordModel: StateFlow<WakeWordModel> = _wakeWordModel.asStateFlow()
+    // One-time notice for installations whose built-in wake phrase changed to "Mango Tango" (SettingsMigrator v4)
+    private val _wakePhraseChangedNotice = MutableStateFlow<Boolean>(SettingsMigrator.wakePhraseChangedNotice(prefs))
+    val wakePhraseChangedNotice: StateFlow<Boolean> = _wakePhraseChangedNotice.asStateFlow()
 
-    private val _recordedPhraseText = MutableStateFlow<String>(
-        try { prefs.getString(PreferenceKeys.RECORDED_WAKE_PHRASE_TEXT, null) } catch (_: ClassCastException) { null } ?: ""
-    )
-    val recordedPhraseText: StateFlow<String> = _recordedPhraseText.asStateFlow()
-
-    /** The model monitoring actually uses (null while monitoring is off). */
-    val wakeWordStatus: StateFlow<WakeWordStatus?> = AudioMonitoringService.wakeWordStatus
-
-    /** Selects the detection model; a running monitor switches when no memo is being recorded. Samples are kept. */
-    fun setWakeWordModel(model: WakeWordModel) {
-        if (model == _wakeWordModel.value) return
-        _wakeWordModel.value = model
-        prefs.edit().putString(PreferenceKeys.WAKE_WORD_MODEL, model.id).apply()
-        notifyServiceTemplateChanged()
+    fun dismissWakePhraseChangedNotice() {
+        _wakePhraseChangedNotice.value = false
+        prefs.edit().remove(PreferenceKeys.WAKE_PHRASE_CHANGED_NOTICE).apply()
     }
-
-    fun setRecordedPhraseText(text: String) {
-        val trimmed = text.trim().take(WakePhraseText.MAX_LETTERS + 20)
-        if (trimmed == _recordedPhraseText.value) return
-        _recordedPhraseText.value = trimmed
-        prefs.edit().apply { if (trimmed.isEmpty()) remove(PreferenceKeys.RECORDED_WAKE_PHRASE_TEXT) else putString(PreferenceKeys.RECORDED_WAKE_PHRASE_TEXT, trimmed) }.apply()
-        notifyServiceTemplateChanged()
-    }
-
-    /** Why the speech check cannot be used with the current phrase, or null. */
-    fun speechCheckProblem(): String? =
-        WakePhraseText.problem(if (_hasKeywordTemplate.value) _recordedPhraseText.value else _builtInWakePhrase.value.displayName)
-
-    // Built-in wake phrase, used while no sample is enrolled (new installations: Mango Tango, see SettingsMigrator v3)
-    private val _builtInWakePhrase = MutableStateFlow<BuiltInWakePhrase>(SettingsMigrator.builtInWakePhrase(prefs))
-    val builtInWakePhrase: StateFlow<BuiltInWakePhrase> = _builtInWakePhrase.asStateFlow()
 
     // Recording shortcuts (hardware buttons, external keyboard) and lock-screen controls
     private val _shortcutConfig = MutableStateFlow<ShortcutConfig>(ShortcutSettings.load(prefs))
@@ -324,9 +291,9 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     /** Full evaluation of the latest phrase test in this session (includes the loudness check). */
     val lastTestEvaluation = _lastTestEvaluation.asStateFlow()
 
-    private val _isLegacyTemplate = MutableStateFlow(false)
-    /** The enrolled phrase was recorded with an earlier version (legacy features); re-recording is recommended. */
-    val isLegacyTemplate = _isLegacyTemplate.asStateFlow()
+    // Samples on disk that cannot be used any more (unsupported format of the first app version)
+    private val _unusableSampleCount = MutableStateFlow(0)
+    val unusableSampleCount = _unusableSampleCount.asStateFlow()
 
     // Enrolled wake-phrase samples (1-5, optional); read synchronously so the screen starts with the stored state
     private val _wakePhraseSamples = MutableStateFlow(wakePhraseStore.loadSamples().map { it.toSummary() })
@@ -1133,7 +1100,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         if (loaded < samples.size) Log.w(TAG, "${samples.size - loaded} wake-phrase sample(s) could not be read")
         _wakePhraseSamples.value = samples.map { it.toSummary() }
         _hasKeywordTemplate.value = samples.isNotEmpty()
-        _isLegacyTemplate.value = keywordDetector.isLegacyTemplate
+        _unusableSampleCount.value = wakePhraseStore.unusableSampleCount()
     }
 
     /**
@@ -1244,27 +1211,11 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun evaluateTestFrames(frames: List<ShortArray>): WakePhraseEvaluation {
-        val templates = wakePhraseStore.loadSampleTemplates()
-        // The same backend as monitoring: with the speech check selected (and usable) the test runs it too
-        val speechCheck = _wakeWordModel.value == WakeWordModel.SPEECH_CHECK && speechCheckProblem() == null
-        val language = (prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, null) ?: TranscriptionSettings.AUTO_LANGUAGE)
-            .takeUnless { it == TranscriptionSettings.AUTO_LANGUAGE } ?: "en"
         val evaluation = WakePhraseEvaluator.evaluate(
             frames = frames,
-            templates = templates,
+            templates = wakePhraseStore.loadSampleTemplates(),
             matchConfidenceThreshold = MatchConfidenceThreshold.toDetectorConfidence(_matchConfidenceThresholdPercent.value),
-            minLevelDb = wakePhraseMinLevelDb(),
-            builtInPhrase = _builtInWakePhrase.value,
-            matcherFactory = if (!speechCheck) null else {
-                {
-                    val engine = WakeWordEngines.create(
-                        WakeWordModel.SPEECH_CHECK, _builtInWakePhrase.value, templates, _recordedPhraseText.value,
-                        { text -> WhisperPhraseVerifier(SpeechCheckModel.acquire(context), text, language) }, synchronous = true
-                    )
-                    engine.status.message?.let { _phraseMessage.value = it }
-                    engine.detector
-                }
-            }
+            minLevelDb = wakePhraseMinLevelDb()
         )
         _lastTestEvaluation.value = evaluation
         return evaluation
@@ -1305,18 +1256,6 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         _thresholdDb.value = db
         prefs.edit().putFloat("thresholdDb", db).apply()
         restartServiceIfRunning()
-    }
-
-    /**
-     * Selects the built-in wake phrase. Enrolled samples stay untouched and keep taking precedence; a running monitor
-     * applies the change when no memo is being recorded.
-     */
-    fun setBuiltInWakePhrase(phrase: BuiltInWakePhrase) {
-        if (phrase == _builtInWakePhrase.value) return
-        _builtInWakePhrase.value = phrase
-        keywordDetector.builtInPhrase = phrase
-        prefs.edit().putString(PreferenceKeys.BUILT_IN_WAKE_PHRASE, phrase.id).apply()
-        notifyServiceTemplateChanged()
     }
 
     fun setWakePhraseMinLevelEnabled(enabled: Boolean) {
@@ -1429,7 +1368,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     private val _speechModels = MutableStateFlow<List<SpeechModelSummary>>(emptyList())
     val speechModels: StateFlow<List<SpeechModelSummary>> = _speechModels.asStateFlow()
 
-    private val _activeSpeechModelId = MutableStateFlow<String>(prefs.getString(SpeechModelStore.PREF_ACTIVE_MODEL, null) ?: SpeechModelStore.BUNDLED_ID)
+    private val _activeSpeechModelId = MutableStateFlow<String>(prefs.getString(SpeechModelStore.PREF_ACTIVE_MODEL, null) ?: ModelSource.WHISPER_BASE.id)
     val activeSpeechModelId: StateFlow<String> = _activeSpeechModelId.asStateFlow()
 
     private val _modelMessage = MutableStateFlow<String?>(null)
@@ -1474,16 +1413,54 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         prefs.edit().putString(PreferenceKeys.TRANSCRIPTION_QUALITY, quality.name).apply()
     }
 
+    init {
+        // Declared after the model store: reflect an installed or finished download in the model list
+        viewModelScope.launch(Dispatchers.IO) {
+            ModelDownloads.refresh(context)
+            ModelDownloads.state.collect { state ->
+                if (state == ModelDownloadState.Ready) {
+                    refreshSpeechModels()
+                    // Memos that failed only because the model was missing are transcribed now
+                    transcriptionManager.jobs.value
+                        .filter { (_, job) -> (job as? TranscriptionJobState.Failed)?.modelMissing == true }
+                        .keys.forEach { transcriptionManager.enqueue(it) }
+                }
+            }
+        }
+    }
+
+    /** Download of the Whisper base model (Settings); the app contains no speech model. */
+    val modelDownloadState: StateFlow<ModelDownloadState> = ModelDownloads.state
+
+    /** Starts the download (user action only). A running download is not started twice. */
+    fun downloadSpeechModel() {
+        _modelMessage.value = null
+        ModelDownloads.start(context)
+    }
+
+    fun cancelSpeechModelDownload() = ModelDownloads.cancel(context)
+
+    /**
+     * Removes the downloaded model. Queued and running transcriptions are cancelled first (their memos keep their
+     * previous text); transcripts and recordings are not touched.
+     */
+    fun removeDownloadedSpeechModel() {
+        if (ModelDownloads.isRunning) return
+        transcriptionManager.jobs.value.keys.forEach { transcriptionManager.cancel(it) }
+        viewModelScope.launch(Dispatchers.IO) {
+            transcriptionManager.releaseModel()
+            val removed = modelStore.removeDownloaded()
+            ModelDownloads.refresh(context)
+            _modelMessage.value = if (removed) "Speech model removed. Your transcripts and recordings are kept." else null
+            refreshSpeechModels()
+        }
+    }
+
     fun refreshSpeechModels() {
         viewModelScope.launch(Dispatchers.IO) {
-            val list = mutableListOf<SpeechModelSummary>()
-            list += SpeechModelSummary(
-                SpeechModelStore.BUNDLED_ID, SpeechModelStore.BUNDLED_NAME,
-                "Whisper base, multilingual, ${SpeechModelStore.BUNDLED_SIZE / 1_000_000} MB", bundled = true
-            )
-            modelStore.importedModels().forEach { list += SpeechModelSummary(it.id, it.displayName, it.description, bundled = false) }
+            val list = modelStore.installedModels().map { SpeechModelSummary(it.id, it.displayName, it.description, downloaded = it.downloaded) }
             _speechModels.value = list
-            _activeSpeechModelId.value = modelStore.activeModelId.takeIf { id -> list.any { it.id == id } } ?: SpeechModelStore.BUNDLED_ID
+            _activeSpeechModelId.value = modelStore.activeModelOrNull()?.id ?: ModelSource.WHISPER_BASE.id
         }
     }
 
@@ -1604,14 +1581,9 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
 }
 
 /** What the Settings screen shows about an enrolled sample (no audio, no features). */
-data class WakePhraseSampleSummary(val id: Long, val createdAt: Long, val phraseDurationMs: Long, val legacyFeatures: Boolean)
+data class WakePhraseSampleSummary(val id: Long, val createdAt: Long, val phraseDurationMs: Long)
 
-private fun WakePhraseSample.toSummary() = WakePhraseSampleSummary(
-    id = id,
-    createdAt = createdAt,
-    phraseDurationMs = phraseDurationMs,
-    legacyFeatures = TemplateKeywordDetector().apply { loadTemplate(templateBytes) }.isLegacyTemplate
-)
+private fun WakePhraseSample.toSummary() = WakePhraseSampleSummary(id = id, createdAt = createdAt, phraseDurationMs = phraseDurationMs)
 
 /** A speech-to-text model as shown in Settings. */
-data class SpeechModelSummary(val id: String, val name: String, val description: String, val bundled: Boolean)
+data class SpeechModelSummary(val id: String, val name: String, val description: String, val downloaded: Boolean)

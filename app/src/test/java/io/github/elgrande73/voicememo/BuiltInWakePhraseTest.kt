@@ -33,11 +33,11 @@ class BuiltInWakePhraseTest {
     fun bundledMangoTangoReferenceIsReproducibleFromTheFixtures() {
         val rebuilt = rebuild()
         if (System.getenv("UPDATE_BUILT_IN_PHRASE") == "1") {
-            File("src/main/resources${BuiltInWakePhrase.MANGO_TANGO_RESOURCE}").apply { parentFile.mkdirs() }.writeBytes(rebuilt)
+            File("src/main/resources${BuiltInWakePhrase.RESOURCE}").apply { parentFile.mkdirs() }.writeBytes(rebuilt)
         }
-        val bundled = javaClass.getResourceAsStream(BuiltInWakePhrase.MANGO_TANGO_RESOURCE)!!.readBytes()
+        val bundled = javaClass.getResourceAsStream(BuiltInWakePhrase.RESOURCE)!!.readBytes()
         assertArrayEquals(rebuilt, bundled)
-        assertEquals(5, BuiltInWakePhrase.MANGO_TANGO.referenceFeatures().size)
+        assertEquals(5, BuiltInWakePhrase.referenceFeatures.size)
     }
 
     @Test
@@ -49,24 +49,19 @@ class BuiltInWakePhraseTest {
     }
 
     @Test
-    fun persistedIdsAreStable() {
-        assertEquals(BuiltInWakePhrase.MANGO_TANGO, BuiltInWakePhrase.DEFAULT)
-        assertEquals(BuiltInWakePhrase.MANGO_TANGO, BuiltInWakePhrase.fromId("mango_tango"))
-        assertEquals(BuiltInWakePhrase.CIAO_LINDA, BuiltInWakePhrase.fromId("ciao_linda"))
-        assertNull(BuiltInWakePhrase.fromId("something else"))
-    }
-
-    @Test
-    fun switchingTheBuiltInPhraseChangesWhatIsDetected() {
-        val detector = TemplateKeywordDetector()
-        assertEquals(BuiltInWakePhrase.MANGO_TANGO, detector.builtInPhrase)
-        val canonicalCiao = TemplateKeywordDetector.generateCanonicalCiaoLindaAudio(amplitude = 15000.0)
-        fun best(frames: List<ShortArray>) = (frames + List(4) { ShortArray(800) }).maxOf { detector.processFrame(it, 0f, 0f).confidence }
-        val asMango = best(canonicalCiao)
-        detector.builtInPhrase = BuiltInWakePhrase.CIAO_LINDA
-        detector.resetStream()
-        val asCiao = best(canonicalCiao)
-        assertTrue("ciao $asCiao vs mango $asMango", asCiao >= 0.9f && asMango < 0.5f)
-        assertFalse(detector.hasCustomTemplate())
+    fun withoutSamplesTheBuiltInPhraseIsMatchedAndSamplesReplaceIt() {
+        fun best(detector: TemplateKeywordDetector, clip: String): Float {
+            val frames = AudioFixtures.frames(AudioFixtures.scene(AudioFixtures.atPeak(AudioFixtures.load(clip), -14.0), 3.0, 0.5))
+            detector.resetStream()
+            return frames.maxOf { detector.processFrame(it, 0f, 0f).confidence }
+        }
+        val builtIn = TemplateKeywordDetector()
+        assertFalse(builtIn.hasCustomTemplate())
+        val reference = best(builtIn, "mango_ref_1") // a reference rendition matches itself almost perfectly
+        assertTrue("reference $reference", reference >= 0.9f)
+        // With a sample of another phrase, only that sample is matched
+        val custom = SyntheticPhrase.detector()
+        assertTrue(custom.hasCustomTemplate())
+        assertTrue(best(custom, "mango_ref_1") < 0.5f)
     }
 }
