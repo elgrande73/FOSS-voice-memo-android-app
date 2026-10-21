@@ -1,10 +1,61 @@
 # Changelog
 
-## Unreleased — Voice Memo 1.0 (versionCode 1)
+## 1.0.0 — unreleased (versionCode 10000)
 
-First release under the new name **Voice Memo** and the new application ID `io.github.elgrande73.voicememo`
-(the app was previously published under another name and ID). Android installs it as a separate app; data of the old app is not accessible
-to it (see README, "New application identity").
+First public release of **Voice Memo** (`io.github.elgrande73.voicememo`), intended for F-Droid.
+
+### What Voice Memo does
+- Records voice memos hands-free: say the wake phrase **"Mango Tango"** (or record your own phrase, up to 5 samples)
+  to start a memo, and again to stop it. Alternatively, any sound above a chosen level starts a memo.
+- One-tap recording: Quick Memo button, Quick Settings tile, home-screen widget, "Record memo" launcher shortcut, a
+  Start/Stop button in the monitoring notification (also on the lock screen, can be turned off) and an optional
+  keyboard shortcut.
+- A pre-trigger buffer keeps the first word; memos end after a chosen silence, when the wake phrase is repeated, on
+  Stop, or after 5 minutes.
+- Speech-to-text on the phone with whisper.cpp and the Whisper base model: English by default, 99 languages or
+  automatic detection; edit, retry or delete transcripts; optional automatic transcription.
+- History with search, filters, favourites, playback speed, autoplay through the list, and export as WAV or ZIP.
+- No accounts, ads, analytics or tracking. The only internet use is the speech-model download you start.
+
+### Changes since pre-release v0.0.5
+- Version 1.0.0 (versionCode 10000; the pre-releases used versionCode 1). *Settings → About* shows the installed
+  version, the license, a link to the source code and the open-source licenses (moved there from Speech-to-Text).
+- The setting formerly called *Voice Formant Filter* is now *Ignore while media plays*, which is what it always did:
+  while music, videos or games play, sound and the wake phrase do not start memos. Its description wrongly said it
+  restricted triggers to speech frequencies. The saved value is unchanged.
+- Corrected in-app descriptions: the wake phrase does not need to pass the activation (loudness) threshold (only the
+  optional minimum audio level); the maximum memo length is a fixed 5 minutes; the wake phrase can start memos, or
+  start and stop them (there is no stop-only mode); the dashboard shows the last memo's peak in dBFS.
+- Guide: rewritten to be shorter and match the app; its filter chips now match the sections (the Transcription
+  section had no chip and the Privacy chip showed nothing). It now mentions that Android's app backup can include
+  memos.
+- **Fixed: Bluetooth headset microphones recorded silence.** Voice Memo now activates the headset's voice link
+  (Android 12+: communication device; Android 7–11: Bluetooth SCO) before recording and releases it afterwards. The
+  phone microphone setting now really uses the phone microphone when a headset or USB microphone is plugged in. Only
+  real microphones are listed (headset, USB, Bluetooth headset); a device is found again after it reconnects; the
+  Settings phrase recording uses the selected microphone. If the selected microphone is missing or cannot be
+  activated, the phone microphone is used and the dashboard says why; a silent input is reported. Monitoring switches
+  microphone when one is connected or removed (after the current memo). See `docs/AUDIO_INPUT.md`. Not yet tested
+  with real headsets.
+- History: when a search or filter hides all memos, the empty list says so instead of "No voice memos recorded yet".
+- README rewritten for users; F-Droid notes, metadata draft and store texts updated for 1.0.0.
+
+### Known limitations
+- The built-in "Mango Tango" reference was made from synthetic voices and does not recognise every voice; record
+  the phrase in your own voice for reliable detection. Accuracy figures in the docs come from synthetic test speech.
+- Transcription speed depends on the phone; long memos can take a while on older devices. The speech model needs
+  about 148 MB of storage.
+- Starting the microphone from outside the app (tile, widget, launcher shortcut while monitoring is off) opens the app
+  first; Android does not allow background apps to start the microphone.
+- While Voice Memo listens through a Bluetooth headset, the headset is in call mode (lower audio quality, music
+  sounds like a call, more battery use).
+- Not tested on physical devices as part of this release preparation; see `docs/FDROID.md` and
+  `docs/AUDIO_INPUT.md`.
+
+## Development history before 1.0.0 (pre-releases v0.0.1–v0.0.5)
+
+These notes describe changes between development versions and refer to features as they were at the time; some
+were later changed or removed (for example the volume-button shortcut).
 
 ### Changed (since pre-release v0.0.2)
 - Transcription language: **fixed English by default** (no per-recording language detection), with *Fixed language

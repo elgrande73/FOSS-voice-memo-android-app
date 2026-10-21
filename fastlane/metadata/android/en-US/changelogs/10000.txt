@@ -1,0 +1,7 @@
+First public release.
+- Hands-free memos with the wake phrase "Mango Tango", or your own phrase
+- Quick Memo button, tile, widget, launcher shortcut, notification button, keyboard shortcut
+- Speech-to-text on the phone: English by default, 99 languages or auto-detect
+- Whisper base model (about 148 MB) downloaded only when you tap Download in Settings
+- History with search, filters, autoplay and WAV/ZIP export
+- No accounts, ads or analytics

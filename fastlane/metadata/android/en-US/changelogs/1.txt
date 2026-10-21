@@ -1,8 +1,0 @@
-First release as Voice Memo (new name and application ID).
-- Wake phrase "Mango Tango", or record your own
-- Autoplay or Single playback with chimes
-- History: Manual filter, multi-select delete and export (WAV/ZIP)
-- One "Match confidence threshold" (20–80 %)
-- Lock-screen controls, volume-button and keyboard shortcuts
-- Offline speech-to-text; the Whisper model is downloaded once from Settings
-- Wake-phrase samples kept across updates

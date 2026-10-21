@@ -50,8 +50,9 @@ Saved test WAV (validated)  ───┘   (exact 50 ms frames) └─ WakePhras
 
 * **One front end** (`WakePhraseFrontEnd`) produces the features for enrollment, monitoring and the test.
 * **One matcher and score** (`TemplateKeywordDetector`), fed **every frame in order** in both workflows.
-* **One decision** (`MemoTriggerDetector`): trigger when `score ≥ Match confidence threshold` and the recent audio
-  (last 2.5 s) reached the activation (loudness) threshold. The Settings test (`WakePhraseEvaluator`) runs the same
+* **One decision** (`MemoTriggerDetector`): trigger when `score ≥ Match confidence threshold` and, if the optional
+  *Minimum audio level* is on, the matched phrase reached it (section 14; this replaced an earlier fixed loudness
+  check). The Settings test (`WakePhraseEvaluator`) runs the same
   state machine to decide "would trigger", and scores in a separate pass that never triggers so the reported score does
   not depend on the threshold.
 * **Enrollment endpointing**: only frames ≥ 10 dB above the recording's noise floor (and within 35 dB of its peak) plus

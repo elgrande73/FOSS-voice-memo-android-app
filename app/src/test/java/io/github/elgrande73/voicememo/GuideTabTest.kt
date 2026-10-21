@@ -30,6 +30,6 @@ class GuideTabTest {
         // Verify Guide Tab root and hero header are present
         composeTestRule.onNodeWithTag("guide_tab").assertIsDisplayed()
         composeTestRule.onNodeWithText("Voice Memo Guide").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Automatic Voice-Note Assistant").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Hands-free voice memos").assertIsDisplayed()
     }
 }

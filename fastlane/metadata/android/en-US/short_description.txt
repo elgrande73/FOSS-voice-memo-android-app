@@ -1,1 +1,1 @@
-Hands-free, offline voice memos with the wake phrase "Mango Tango"
+Hands-free voice memos with the wake phrase "Mango Tango" and on-device text

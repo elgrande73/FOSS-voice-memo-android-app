@@ -23,8 +23,11 @@ android {
     applicationId = "io.github.elgrande73.voicememo"
     minSdk = 24
     targetSdk = 35
-    versionCode = 1
-    versionName = "1.0"
+    // versionCode = major × 10000 + minor × 100 + patch (1.0.0 → 10000). It must increase with every release; the
+    // pre-releases v0.0.1–v0.0.5 were built with versionCode 1. Keep fdroid/metadata and the fastlane changelog
+    // file name (changelogs/<versionCode>.txt) in step with these two values.
+    versionCode = 10000
+    versionName = "1.0.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

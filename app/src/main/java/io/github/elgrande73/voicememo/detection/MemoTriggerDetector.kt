@@ -12,8 +12,8 @@ import kotlin.math.log10
  * Detection mode for triggering voice note recordings.
  */
 enum class DetectionMode(val title: String, val description: String) {
-    KEYWORD_ONLY("Wake Phrase Only", "Starts recording only when the wake phrase (recommended: 'Mango Tango') is spoken and exceeds the loudness threshold."),
-    AUTO_SOUND("Loudness Only", "Automatically starts recording whenever speech or sound exceeds the dB threshold.");
+    KEYWORD_ONLY("Wake Phrase Only", "While monitoring, a memo starts only when you say the wake phrase (\"Mango Tango\" or your own)."),
+    AUTO_SOUND("Loudness Only", "While monitoring, any sound or speech louder than the activation threshold starts a memo.");
 
     val displayName: String get() = title
 }
@@ -224,7 +224,7 @@ class MemoTriggerDetector(
      * - Level analysis (VAD), adaptive noise floor and pre-trigger ring buffer on every frame.
      * - Wake Phrase mode: every frame is passed to the wake-phrase matcher, exactly as the Settings phrase test does,
      *   so the matcher always sees contiguous audio. A trigger requires a match (confidence ≥ Match confidence
-     *   threshold) and that the recent audio reached the activation (loudness) threshold.
+     *   threshold) and, if set, the optional wake-phrase minimum level ([wakePhraseMinLevelDb]).
      *   (Earlier versions only passed frames above the loudness threshold; the matcher then saw fragments of the phrase
      *   and its confidence stayed near zero.)
      *
@@ -275,8 +275,8 @@ class MemoTriggerDetector(
 
                         val lateStopWindow = lateStopFramesRemaining > 0
                         if (lateStopWindow) lateStopFramesRemaining--
-                        // Trigger only if the wake phrase matched AND the phrase reached the activation (loudness)
-                        // threshold; during media playback (noise filter on) wake-phrase triggers are suppressed
+                        // Trigger only if the wake phrase matched AND (if set) reached the wake-phrase minimum level;
+                        // during media playback ("Ignore while media plays" on) wake-phrase starts are suppressed
                         if (lateStopWindow && kwResult.matched && phraseLoudEnough(kwResult)) {
                             // The memo already ended on its own: this phrase is the user's stop command, not a start
                             lateStopFramesRemaining = 0

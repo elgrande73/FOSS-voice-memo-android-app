@@ -17,7 +17,6 @@ import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
-import android.media.MediaRecorder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -29,8 +28,12 @@ import io.github.elgrande73.voicememo.MainActivity
 import io.github.elgrande73.voicememo.BuildConfig
 import io.github.elgrande73.voicememo.R
 import io.github.elgrande73.voicememo.audio.AmplitudePoint
-import io.github.elgrande73.voicememo.audio.AudioInputDevice
-import io.github.elgrande73.voicememo.audio.AudioInputManager
+import io.github.elgrande73.voicememo.audio.AndroidInputRouter
+import io.github.elgrande73.voicememo.audio.InputKind
+import io.github.elgrande73.voicememo.audio.InputRouting
+import io.github.elgrande73.voicememo.audio.InputSelection
+import io.github.elgrande73.voicememo.audio.InputSignalCheck
+import io.github.elgrande73.voicememo.audio.OpenedInput
 import io.github.elgrande73.voicememo.audio.FeedbackSoundPlayer
 import io.github.elgrande73.voicememo.audio.LevelMeter
 import io.github.elgrande73.voicememo.audio.MediaPlaybackDetector
@@ -90,8 +93,17 @@ class AudioMonitoringService : Service() {
     private lateinit var database: AppDatabase
     private lateinit var feedbackSoundPlayer: FeedbackSoundPlayer
 
-    private var configuredInputId: Int = -1
-    private var configuredInputName: String = ""
+    /** The microphone chosen in Settings; resolved to a device each time capture starts ([AndroidInputRouter]). */
+    @Volatile
+    private var inputSelection: InputSelection = InputSelection.PHONE
+    private lateinit var inputRouter: AndroidInputRouter
+    /** How the current capture stream was routed; null while no stream is open. */
+    @Volatile
+    private var activeInput: OpenedInput? = null
+    /** Bluetooth device whose voice link could not be activated: not retried on every device event (loops). */
+    @Volatile
+    private var bluetoothFailedForId: Int? = null
+    private val signalCheck = InputSignalCheck()
     private var speechToTextEnabled: Boolean = false
     @Volatile
     private var feedbackSoundsEnabled: Boolean = true
@@ -193,6 +205,13 @@ class AudioMonitoringService : Service() {
         private val _isFallbackActive = MutableStateFlow(false)
         val isFallbackActive = _isFallbackActive.asStateFlow()
 
+        private val _inputProblem = MutableStateFlow<String?>(null)
+        /**
+         * Why the selected microphone is not (or not usefully) recording, for the dashboard: not connected, Bluetooth
+         * link not activated, Android routed elsewhere, or the stream is digitally silent. Null when all is well.
+         */
+        val inputProblem = _inputProblem.asStateFlow()
+
         private val _oneMemoSession = MutableStateFlow(false)
         /**
          * True while monitoring runs only for one memo (started by Quick Memo, tile, widget or launcher shortcut while
@@ -229,6 +248,7 @@ class AudioMonitoringService : Service() {
         mediaPlaybackDetector = MediaPlaybackDetector(this)
         database = AppDatabase.getDatabase(this)
         feedbackSoundPlayer = FeedbackSoundPlayer(this)
+        inputRouter = AndroidInputRouter(this)
 
         createNotificationChannels()
         loadSavedKeywordTemplate()
@@ -300,8 +320,14 @@ class AudioMonitoringService : Service() {
         }
 
         // Parse configurations
-        configuredInputId = intent.getIntExtra("audioInputId", -1)
-        configuredInputName = intent.getStringExtra("audioInputName") ?: ""
+        val inputId = intent.getIntExtra("audioInputId", InputSelection.PHONE_ID)
+        inputSelection = if (inputId == InputSelection.PHONE_ID) InputSelection.PHONE else InputSelection(
+            id = inputId,
+            name = intent.getStringExtra("audioInputName") ?: "",
+            type = intent.getIntExtra("audioInputType", InputSelection.TYPE_UNKNOWN),
+            address = intent.getStringExtra("audioInputAddress") ?: ""
+        )
+        bluetoothFailedForId = null // an explicit (re)start from the app tries the selected microphone again
         speechToTextEnabled = intent.getBooleanExtra("speechToTextEnabled", false)
         feedbackSoundsEnabled = intent.getBooleanExtra("feedbackSoundsEnabled", true)
 
@@ -376,8 +402,11 @@ class AudioMonitoringService : Service() {
     }
 
     private fun startAudioCaptureLoop() {
-        recordingJob?.cancel()
+        val previous = recordingJob
+        previous?.cancel()
         recordingJob = serviceScope.launch(Dispatchers.Default) {
+            // The previous stream must have released its microphone and Bluetooth link before this one opens them
+            previous?.join()
             var consecutiveReadErrors = 0
             memoDetector.reset(startMonitoring = true)
             _currentRecordingState.value = RecordingLifecycleState.MONITORING
@@ -395,34 +424,22 @@ class AudioMonitoringService : Service() {
                 _engineState.value = MonitoringEngineState.STARTING
                 var activeRecord: AudioRecord? = null
                 try {
-                    val record = initializeAudioRecord()
-                    if (record == null) {
+                    val opened = openInput()
+                    if (opened == null) {
                         ErrorLogger.log(this@AudioMonitoringService, "AudioService", "Failed to initialize AudioRecord hardware")
                         microphoneArbiter.release(MicrophoneOwner.MONITORING)
                         _engineState.value = MonitoringEngineState.UNAVAILABLE
                         delay(2000)
                         continue
                     }
+                    val record = opened.record
                     activeRecord = record
                     currentAudioRecord = record
-
+                    signalCheck.reset()
+                    // Android can move the stream later (headset connected/removed, Bluetooth link lost)
                     try {
-                        record.startRecording()
-                    } catch (e: IllegalStateException) {
-                        ErrorLogger.log(this@AudioMonitoringService, "AudioService", "startRecording failed with IllegalStateException", e)
-                        releaseAudioRecord(record)
-                        _engineState.value = MonitoringEngineState.UNAVAILABLE
-                        delay(1500)
-                        continue
-                    }
-
-                    if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                        ErrorLogger.log(this@AudioMonitoringService, "AudioService", "AudioRecord not recording after startRecording()")
-                        releaseAudioRecord(record)
-                        _engineState.value = MonitoringEngineState.UNAVAILABLE
-                        delay(1500)
-                        continue
-                    }
+                        record.addOnRoutingChangedListener({ updateAudioRoutingStatus(it as? AudioRecord) }, mainHandler)
+                    } catch (_: Exception) {}
 
                     _engineState.value = MonitoringEngineState.ACTIVE
                     // A new capture stream: re-learn the background (the input device may have changed)
@@ -463,6 +480,8 @@ class AudioMonitoringService : Service() {
                     // No stale level while the stream is down (restart, microphone handed to Settings, shutdown)
                     _liveLevelDbfs.value = null
                     releaseAudioRecord(activeRecord)
+                    activeInput = null
+                    inputRouter.releaseBluetooth()
                     microphoneArbiter.release(MicrophoneOwner.MONITORING)
                 }
                 // The stream ended (read errors, device lost): a memo must not continue across the gap
@@ -481,6 +500,7 @@ class AudioMonitoringService : Service() {
 
         // Live level from the real microphone input (also while only monitoring), before chime muting
         levelMeter.update(frame)?.let { _liveLevelDbfs.value = it }
+        checkInputSignal(frame)
 
         // Suppress our own feedback chime (plus output latency tail) from the mic stream
         val isFeedbackMuted = System.currentTimeMillis() < feedbackMuteUntilMs
@@ -536,61 +556,79 @@ class AudioMonitoringService : Service() {
         feedbackSoundPlayer.play(cue)
     }
 
-    private fun initializeAudioRecord(): AudioRecord? {
+    /**
+     * Opens the selected microphone through [inputRouter] (Bluetooth voice link, preferred device, routing check) and
+     * publishes which microphone is in use. Null if no microphone could be opened; the capture loop retries.
+     */
+    private suspend fun openInput(): OpenedInput? {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             ErrorLogger.log(this, "AudioService", "RECORD_AUDIO permission not granted")
+            _inputProblem.value = "Microphone permission is missing. Open Voice Memo to allow it."
             return null
         }
         val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat).coerceAtLeast(4096)
-
-        try {
-            val record = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,
-                channelConfig,
-                audioFormat,
-                minBufferSize * 2
-            )
-
-            if (record.state != AudioRecord.STATE_INITIALIZED) {
-                record.release()
-                return null
-            }
-
-            // Route to preferred audio input device if selected
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && configuredInputId != -1) {
-                val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-                val inputDevices = audioManager?.getDevices(AudioManager.GET_DEVICES_INPUTS) ?: emptyArray()
-                val target = inputDevices.find { it.id == configuredInputId }
-                if (target != null) {
-                    try {
-                        record.setPreferredDevice(target)
-                    } catch (_: Exception) {}
-                }
-            }
-
-            // Evaluate routing description
-            updateAudioRoutingStatus(record)
-
-            return record
+        val opened = try {
+            inputRouter.open(inputSelection, sampleRate, minBufferSize * 2)
         } catch (e: SecurityException) {
             ErrorLogger.log(this, "AudioService", "SecurityException initializing AudioRecord", e)
-            return null
+            null
+        } catch (e: IllegalStateException) {
+            ErrorLogger.log(this, "AudioService", "startRecording failed with IllegalStateException", e)
+            null
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             ErrorLogger.log(this, "AudioService", "AudioRecord init exception", e)
-            return null
+            null
+        } ?: return null
+        val selectedBluetooth = InputRouting.find(inputSelection, inputRouter.inputPorts())?.takeIf { it.kind == InputKind.BLUETOOTH }
+        bluetoothFailedForId = if (selectedBluetooth != null && !opened.plan.bluetooth) selectedBluetooth.id else null
+        if (opened.problem != null) ErrorLogger.log(this, "AudioService", "Input: ${opened.problem}")
+        activeInput = opened
+        _activeAudioDeviceName.value = opened.routedName
+        _isFallbackActive.value = opened.plan.selectedUnavailable || opened.problem != null
+        _inputProblem.value = opened.problem
+        return opened
+    }
+
+    /** Once per stream: a stream of pure digital silence means the selected microphone delivers no audio. */
+    private fun checkInputSignal(frame: ShortArray) {
+        if (signalCheck.result != InputSignalCheck.Result.PENDING) return
+        if (signalCheck.push(frame) == InputSignalCheck.Result.SILENT) {
+            val name = activeInput?.routedName ?: _activeAudioDeviceName.value
+            ErrorLogger.log(this, "AudioService", "Input delivers digital silence: $name")
+            _inputProblem.value = "No sound from $name. If it is a Bluetooth headset, check that it is connected for " +
+                "calls, or choose another microphone in Settings."
         }
     }
 
+    /** Updates the dashboard after Android reported a routing or device change for the open stream. */
     private fun updateAudioRoutingStatus(record: AudioRecord?) {
         try {
-            val routedDevice: AudioDeviceInfo? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && record != null) {
-                record.routedDevice
-            } else null
-            val routingEval = AudioInputManager.evaluateAudioRouting(configuredInputId, configuredInputName, routedDevice)
-            _activeAudioDeviceName.value = routingEval.activeDisplayName
-            _isFallbackActive.value = routingEval.isFallback
+            val input = activeInput ?: return
+            val routed: AudioDeviceInfo? = record?.routedDevice
+            if (routed != null) _activeAudioDeviceName.value = AndroidInputRouter.displayName(routed)
+            val asPlanned = InputRouting.routedAsPlanned(input.plan, routed?.id, routed?.type)
+            _isFallbackActive.value = input.plan.selectedUnavailable || !asPlanned
         } catch (_: Exception) {}
+    }
+
+    /**
+     * A microphone was connected or disconnected. If the device monitoring should use now differs from the one it
+     * uses (the selected device came back, or the one in use went away), capture restarts on the new route; during
+     * a memo only after the memo is saved, so it is never cut. Unrelated device changes do nothing.
+     */
+    private fun onInputDevicesChanged() {
+        val input = activeInput ?: return
+        if (!_isServiceRunning.value) return
+        val desired = InputRouting.plan(inputSelection, inputRouter.inputPorts())
+        if (desired.target?.id == input.plan.target?.id && desired.selectedUnavailable == input.plan.selectedUnavailable) return
+        if (desired.bluetooth && desired.target?.id == bluetoothFailedForId) return
+        if (BuildConfig.DEBUG) Log.d("AudioService", "Input devices changed: switching to ${desired.target?.name} (was ${input.plan.target?.name})")
+        if (memoDetector.currentState == RecordingLifecycleState.RECORDING) {
+            captureRestartPending = true
+        } else {
+            mainHandler.post { if (_isServiceRunning.value) startAudioCaptureLoop() }
+        }
     }
 
     /**
@@ -802,10 +840,12 @@ class AudioMonitoringService : Service() {
             val callback = object : AudioDeviceCallback() {
                 override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
                     updateAudioRoutingStatus(currentAudioRecord)
+                    onInputDevicesChanged()
                 }
 
                 override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
                     updateAudioRoutingStatus(currentAudioRecord)
+                    onInputDevicesChanged()
                 }
             }
             audioManager?.registerAudioDeviceCallback(callback, null)
@@ -992,6 +1032,9 @@ class AudioMonitoringService : Service() {
 
         recordingJob?.cancel()
         releaseAudioRecord(currentAudioRecord)
+        activeInput = null
+        inputRouter.releaseBluetooth()
+        _inputProblem.value = null
         _engineState.value = MonitoringEngineState.STOPPED
         feedbackSoundPlayer.release()
 

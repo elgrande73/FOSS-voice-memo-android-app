@@ -13,7 +13,6 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaPlayer
-import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -25,7 +24,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.elgrande73.voicememo.audio.AmplitudePoint
+import io.github.elgrande73.voicememo.audio.AndroidInputRouter
 import io.github.elgrande73.voicememo.audio.AudioInputDevice
+import io.github.elgrande73.voicememo.audio.InputPort
+import io.github.elgrande73.voicememo.audio.InputRouting
+import io.github.elgrande73.voicememo.audio.InputSelection
 import io.github.elgrande73.voicememo.audio.AudioInputManager
 import io.github.elgrande73.voicememo.audio.CaptureOutcome
 import io.github.elgrande73.voicememo.audio.CaptureSession
@@ -173,6 +176,17 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         prefs.getString("selectedAudioInputName", AudioInputDevice.PHONE_MIC.name) ?: AudioInputDevice.PHONE_MIC.name
     )
     val selectedAudioInputName = _selectedAudioInputName.asStateFlow()
+
+    // Type and Bluetooth address of the selected input: find it again after a reconnect gives it a new id
+    private var selectedAudioInputType = prefs.getInt("selectedAudioInputType", InputSelection.TYPE_UNKNOWN)
+    private var selectedAudioInputAddress = prefs.getString("selectedAudioInputAddress", "") ?: ""
+
+    /** The selected microphone as the capture code resolves it ([InputRouting]). */
+    private fun inputSelection(): InputSelection =
+        if (_selectedAudioInputId.value == InputSelection.PHONE_ID) InputSelection.PHONE
+        else InputSelection(_selectedAudioInputId.value, _selectedAudioInputName.value, selectedAudioInputType, selectedAudioInputAddress)
+
+    private val inputRouter = AndroidInputRouter(context)
 
     // Export progress & status state
     private val _exportInProgress = MutableStateFlow(false)
@@ -426,6 +440,8 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
             putExtra(AudioMonitoringService.EXTRA_MONITORING_REQUEST, request.name)
             putExtra("audioInputId", _selectedAudioInputId.value)
             putExtra("audioInputName", _selectedAudioInputName.value)
+            putExtra("audioInputType", selectedAudioInputType)
+            putExtra("audioInputAddress", selectedAudioInputAddress)
             putExtra("detectionMode", _detectionMode.value.name)
             putExtra("thresholdDb", _thresholdDb.value)
             putExtra("minTriggerDurationMs", _minTriggerDurationMs.value)
@@ -1192,12 +1208,12 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 throw SecurityException("RECORD_AUDIO permission not granted")
             }
-            val record = AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, audioFormat, minBuf)
+            // The same microphone and routing as monitoring, so samples match what monitoring will hear
+            val opened = inputRouter.open(inputSelection(), sampleRate, minBuf)
+                ?: throw IllegalStateException("The microphone could not be opened")
+            val record = opened.record
             val frames = mutableListOf<ShortArray>()
             try {
-                check(record.state == AudioRecord.STATE_INITIALIZED) { "The microphone could not be opened" }
-                record.startRecording()
-                check(record.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "The microphone did not start recording" }
                 session.recordingStarted()
 
                 val assembler = PcmFrameAssembler()
@@ -1209,12 +1225,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
                     assembler.push(buffer, read) { frames += it }
                 }
             } finally {
-                try {
-                    if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) record.stop()
-                } catch (e: IllegalStateException) {
-                    Log.w(TAG, "AudioRecord stop failed", e)
-                }
-                record.release()
+                inputRouter.close(opened)
             }
             frames
         }
@@ -1588,9 +1599,13 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     fun setSelectedAudioInput(device: AudioInputDevice) {
         _selectedAudioInputId.value = device.id
         _selectedAudioInputName.value = device.name
+        selectedAudioInputType = device.type
+        selectedAudioInputAddress = device.address
         prefs.edit()
             .putInt("selectedAudioInputId", device.id)
             .putString("selectedAudioInputName", device.name)
+            .putInt("selectedAudioInputType", device.type)
+            .putString("selectedAudioInputAddress", device.address)
             .apply()
         restartServiceIfRunning()
     }
@@ -1628,6 +1643,15 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     fun refreshAvailableInputDevices() {
         val devices = AudioInputManager.getAvailableInputDevices(context)
         _availableInputDevices.value = devices
+        // A reconnected device gets a new id: follow it, so the selection stays checked and the service finds it
+        val selection = inputSelection()
+        if (!selection.isPhone && devices.none { it.id == selection.id }) {
+            val ports = devices.filter { it.id != InputSelection.PHONE_ID }.map { InputPort(it.id, it.type, it.name, it.address) }
+            InputRouting.find(selection, ports)?.let { found ->
+                _selectedAudioInputId.value = found.id
+                prefs.edit().putInt("selectedAudioInputId", found.id).apply()
+            }
+        }
     }
 
     fun clearErrorLogs() {

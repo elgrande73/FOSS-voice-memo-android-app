@@ -1,4 +1,10 @@
-Voice Memo uses the following open-source components for on-device speech-to-text.
+Voice Memo is free software under the Apache License 2.0:
+https://www.apache.org/licenses/LICENSE-2.0
+
+It is built with AndroidX, Jetpack Compose, Kotlin, kotlinx.coroutines, JetBrains annotations, JSpecify and Guava
+listenablefuture, all under the Apache License 2.0 (same link).
+
+It uses the following open-source components for on-device speech-to-text.
 
 whisper.cpp and ggml (speech-recognition engine, built from source)
 https://github.com/ggml-org/whisper.cpp — version 1.9.5

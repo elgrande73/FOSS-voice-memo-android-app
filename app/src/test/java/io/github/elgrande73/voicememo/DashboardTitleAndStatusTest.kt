@@ -63,6 +63,6 @@ class DashboardTitleAndStatusTest {
             "Paused: recording a phrase in Settings",
             monitoringStatusText(false, MonitoringEngineState.STOPPED, PhraseCaptureState.Recording(PhraseCaptureKind.TEST_PHRASE))
         )
-        assertEquals("Recording Voice Note...", monitoringStatusText(true, MonitoringEngineState.ACTIVE, idle))
+        assertEquals("Recording memo…", monitoringStatusText(true, MonitoringEngineState.ACTIVE, idle))
     }
 }
