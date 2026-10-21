@@ -1,17 +1,21 @@
-<p><b>Voice Memo</b> records voice memos automatically and hands-free. All detection and transcription run on your device: no accounts, no cloud, no analytics, no ads. The internet is used only if you download the speech model in Settings.</p>
+<p><b>Voice Memo</b> records voice memos hands-free. Say "Mango Tango" to start a memo and say it again to stop. Memos can be turned into text on your phone. No accounts, no ads, no analytics.</p>
 <p><b>Features</b></p>
 <ul>
-<li>Automatic recording when speech or sound exceeds a configurable activation threshold; stops after a configurable silence timeout</li>
-<li>Wake phrase "Mango Tango" to start (and optionally stop) a memo, with an offline keyword spotter; record it, or your own phrase, in your own voice for a personal template</li>
-<li>One <i>Match confidence threshold</i> (20–80 %) with a live match gauge on the dashboard</li>
-<li>Start and stop memos from the lock screen (notification button and Quick Settings tile), with a large record button on the dashboard</li>
-<li>One-tap recording: Quick Settings tile, home-screen widget and a "Record memo" launcher shortcut; optional key combination on a Bluetooth/USB keyboard</li>
-<li>Speech-to-text on the phone: memos are transcribed with whisper.cpp and the multilingual Whisper base model, which you download once from Settings (about 149 MB); after that, no internet or account is needed; edit or delete transcripts</li>
-<li>Live microphone level and an optional minimum level for the wake phrase</li>
-<li>Rolling pre-trigger buffer, so the first word is never cut off</li>
-<li>Autoplay through the list you are viewing, or single memos, with short beginning and ending chimes</li>
-<li>Built-in, USB and Bluetooth microphones</li>
-<li>WAV files stored locally; search, filters, favorites, playback speed; select several memos to delete or export them (WAV or ZIP with a manifest)</li>
+<li>Wake phrase "Mango Tango", detected on the phone. For reliable detection, record the phrase (or any other phrase) in your own voice; up to 5 samples.</li>
+<li>Or let any sound above a level you choose start a memo (Loudness Only mode).</li>
+<li>One-tap recording: a large Quick Memo button, a Quick Settings tile, a home-screen widget, a "Record memo" launcher shortcut, a button in the monitoring notification and an optional Bluetooth/USB keyboard shortcut.</li>
+<li>A short buffer keeps the first word; memos end after a pause you choose, when you repeat the wake phrase, or when you tap Stop.</li>
+<li>Speech-to-text on the phone with whisper.cpp and the Whisper base model: English by default, 99 languages, or automatic detection. Edit or delete transcripts; optional automatic transcription.</li>
+<li>History with search, filters, favourites, playback speed and autoplay through the list.</li>
+<li>Export one memo as WAV or many as a ZIP with the WAV files and a CSV/JSON list.</li>
+<li>Built-in, USB and Bluetooth headset microphones; live level meter in dBFS.</li>
 </ul>
-<p>Voice Memo replaces an earlier app with a different name and application ID. It is installed as a separate app and cannot access data of the old app.</p>
-<p>Uses whisper.cpp (MIT); the optional OpenAI Whisper "base" model (MIT) is downloaded from the whisper.cpp project only when you ask for it.</p>
+<p><b>Network use</b></p>
+<p>The app does not include a speech model. Transcription needs the OpenAI Whisper "base" model (MIT license, about 148 MB), which the app downloads from the whisper.cpp project's files on Hugging Face only when you tap <i>Download Whisper Base model</i> in Settings. The file is verified against a published checksum. This is the app's only internet use; recording, wake-phrase detection and transcription work offline. You can also import a whisper.cpp model file instead.</p>
+<p><b>Good to know</b></p>
+<ul>
+<li>The built-in wake phrase was made from synthetic voices and does not recognise every voice; recording it in your own voice is recommended.</li>
+<li>While monitoring runs, memos can be started and stopped from the lock screen (notification button and tile). You can turn this off in Settings.</li>
+<li>Transcription speed depends on the phone; long memos can take a while on older devices.</li>
+</ul>
+<p>Voice Memo replaces an earlier app with a different name and application ID. It is installed as a separate app and cannot access the earlier app's data.</p>

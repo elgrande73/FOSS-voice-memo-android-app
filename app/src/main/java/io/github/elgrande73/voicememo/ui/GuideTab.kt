@@ -61,134 +61,105 @@ fun GuideTab() {
     var selectedFilterIndex by remember { mutableStateOf(0) }
     val listState = rememberLazyListState()
 
-    val categories = listOf(
-        "All Sections",
-        "1. Automatic Voice Memos",
-        "2. Wake Phrase",
-        "3. Pre-Trigger Buffering",
-        "4. Mic & Background Setup",
-        "5. Privacy & Offline FOSS"
-    )
-
     val guideSections = remember {
         listOf(
             GuideSection(
                 id = "sec_auto_detect",
-                title = "Automatic Sound & Speech Detection",
-                category = "1. Automatic Voice Memos",
-                summary = "How Voice Memo continuously monitors audio and captures memos without touching the screen.",
+                title = "Recording Memos",
+                category = "Recording",
+                summary = "Three ways to record: Quick Memo, the wake phrase, or loudness.",
                 content = """
-                    Voice Memo operates in the background, listening through your selected microphone for audible speech or relevant sounds.
-                    
-                    When sound volume exceeds your configured Activation Threshold (e.g. 48 dB) for at least 250 milliseconds, Voice Memo automatically starts recording.
-                    
-                    As long as you continue speaking, recording continues. Once you stop speaking and silence persists for the configured Silence Timeout (default 2.0 seconds), the memo is safely saved to local storage.
+                    - Quick Memo: tap the big button at the bottom of the dashboard, or use the tile, widget or launcher shortcut. Tap again to stop.
+                    - Wake phrase (default): turn on monitoring and say "Mango Tango" to start a memo. Say it again to stop.
+                    - Loudness Only: in Settings → Detection Mode. While monitoring, any sound louder than the activation threshold for a quarter of a second starts a memo.
+
+                    A memo also ends after a pause (the silence timeout, 2 seconds by default) and after 5 minutes at most. Memos are saved as WAV files on your phone and appear in History.
+
+                    A short buffer keeps the audio from just before a memo starts, so the first word is not cut off. It is held only in memory and discarded when nothing is recorded.
                 """.trimIndent(),
                 tips = listOf(
-                    "Adjust the Activation Threshold in Settings: Lower dB for whispering/quiet rooms, higher dB for noisy environments.",
-                    "The Silence Timeout prevents premature cuts if you take brief natural pauses between sentences.",
-                    "Maximum memo duration can be set in Settings (default 5 minutes) to prevent accidental infinite recordings."
+                    "If monitoring was off, Quick Memo turns it on only for that memo and off again afterwards.",
+                    "Lengthen the silence timeout in Settings if memos end while you pause to think.",
+                    "Raise the activation threshold if Loudness Only starts memos on background noise."
                 )
             ),
             GuideSection(
                 id = "sec_keyword_spotter",
-                title = "\"Mango Tango\" Wake Phrase Detection",
-                category = "2. Wake Phrase",
-                summary = "Train and use the custom offline wake phrase to initiate or stop memos hands-free.",
+                title = "The \"Mango Tango\" Wake Phrase",
+                category = "Wake phrase",
+                summary = "Start and stop memos hands-free; works offline on your phone.",
                 content = """
-                    In addition to raw sound level detection, Voice Memo features a built-in offline Keyword Spotter. The recommended wake phrase is "Mango Tango": say it to start a memo, and say it again to stop.
-                    
-                    The built-in phrase works without setup, but it was made from synthetic voices and does not recognise every voice. For reliable detection, record the phrase in your own voice in Settings → Wake Phrase (you can also record a different phrase). When monitoring is active, incoming audio is analyzed using local spectral filterbanks and Dynamic Time Warping (DTW) to match your voice.
-                    
-                    You can configure the keyword to Start only, Stop only, or both Start & Stop recording.
+                    While monitoring is on, Voice Memo compares what it hears with the wake phrase. The built-in "Mango Tango" works without setup, but it was made from synthetic voices and does not recognise every voice.
+
+                    For reliable detection, record the phrase in your own voice in Settings → Wake Phrase. You can also record a different phrase. Samples are stored on your phone only, as sound features, not as audio.
+
+                    In Settings you choose whether the phrase only starts memos, or also stops them when you say it again. The phrase that stops a memo is removed from the recording; the phrase that starts it is kept. If a memo has just ended by itself, saying the phrase within 5 seconds counts as "stop" and does not start a new memo.
                 """.trimIndent(),
                 tips = listOf(
-                    "Record \"Mango Tango\" (or your own phrase) in a quiet room at your normal conversational speaking distance.",
-                    "Use the 'Test Phrase' button in Settings to check the match confidence of your voice; the result is saved and is computed exactly as during monitoring.",
-                    "Monitoring pauses automatically while you record or test a phrase in Settings and resumes afterwards.",
-                    "Raise the Match confidence threshold (20%–80%, default 50%) if the phrase triggers too easily, lower it if it is hard to trigger. Below 50% similar-sounding words start memos much more often, and at the lowest values ordinary speech can too. The dashboard shows the same value as the Trigger threshold."
-                )
-            ),
-            GuideSection(
-                id = "sec_pre_trigger",
-                title = "Rolling Pre-Trigger Audio Buffer",
-                category = "3. Pre-Trigger Buffering",
-                summary = "Why Voice Memo never clips the first syllable of your voice memos.",
-                content = """
-                    Traditional voice-activated recorders often miss the first word because recording only starts after a threshold is exceeded.
-                    
-                    Voice Memo solves this with a Rolling Pre-Trigger Ring Buffer. While passively monitoring, it retains the last 500ms to 1200ms of audio in temporary memory.
-                    
-                    When a trigger is detected, the buffered pre-roll audio is immediately prepended to the WAV file. Your initial word ("Remember...", "Idea for...", "Mango Tango...") is captured in full clarity.
-                """.trimIndent(),
-                tips = listOf(
-                    "Configure Pre-Trigger duration in Settings (800ms is optimal for most speech).",
-                    "The pre-trigger buffer is kept strictly in volatile RAM and is continuously discarded when no trigger occurs."
+                    "Record samples at your normal speaking distance and volume; one is enough, up to 5 help.",
+                    "Use Test Phrase in Settings to see how well you are recognised; it works exactly like monitoring.",
+                    "Match confidence threshold (20–80 %, default 50 %): raise it if other words start memos, lower it if the phrase is missed. Below 50 %, similar words and ordinary speech start memos much more often. The dashboard shows the same value as the Trigger threshold.",
+                    "Monitoring pauses while you record or test a phrase in Settings and resumes afterwards."
                 )
             ),
             GuideSection(
                 id = "sec_hardware_mic",
-                title = "Microphone & Background Monitoring",
-                category = "4. Mic & Background Setup",
-                summary = "Selecting audio input sources and keeping monitoring active with screen turned off.",
+                title = "Monitoring, Shortcuts & Microphones",
+                category = "Monitoring",
+                summary = "Keep listening with the screen off, and record without opening the app.",
                 content = """
-                    Voice Memo supports multiple hardware audio input routes:
-                    - Built-in Phone Microphones
-                    - USB Audio Interfaces & Lavalier Microphones
-                    - Bluetooth Headsets & Wireless Earbuds (via Bluetooth SCO)
-                    
-                    Monitoring runs as an Android Foreground Service with a persistent notification. It can run continuously with your screen off, inside your pocket, or placed on a desk.
+                    Monitoring runs in the background with a notification and keeps working with the screen off.
 
-                    While monitoring runs, the notification's Start/Stop memo button and the "Voice memo" Quick Settings tile work from the lock screen without unlocking (Settings → Shortcuts & Lock Screen). The tile, the "Record memo" home-screen widget and the "Record memo" launcher shortcut (long-press the app icon) also work when monitoring is off: they open Voice Memo and start a memo. Optional: a key combination on a Bluetooth/USB keyboard while the app is open.
+                    While monitoring runs, the notification's Start/Stop memo button and the "Voice memo" Quick Settings tile work from the lock screen without unlocking. You can turn this off in Settings → Shortcuts & Lock Screen.
+
+                    The tile, the "Record memo" home-screen widget and the "Record memo" launcher shortcut (long-press the app icon) also work when monitoring is off: they open Voice Memo and start a memo. A key combination on a Bluetooth or USB keyboard can start and stop memos while the app is open.
+
+                    Voice Memo can record from the built-in microphone, USB microphones and Bluetooth headsets (Settings → Microphone). The dashboard shows which microphone is in use.
                 """.trimIndent(),
                 tips = listOf(
-                    "Add the \"Voice memo\" tile: pull down Quick Settings, tap the edit (pencil) button and drag the tile in.",
-                    "Add the \"Record memo\" widget: long-press the home screen, choose Widgets and drag Voice Memo onto it.",
-                    "Exclude Voice Memo from aggressive OS Battery Optimization in Android Settings for uninterrupted overnight listening.",
-                    "If plugging in or disconnecting a headset, the audio pipeline automatically re-routes with zero data loss."
+                    "Add the tile: pull down Quick Settings, tap the edit (pencil) button and drag \"Voice memo\" in.",
+                    "Add the widget: long-press the home screen, choose Widgets and drag Voice Memo onto it.",
+                    "If monitoring stops on its own, exclude Voice Memo from battery optimisation in Android's settings."
                 )
             ),
             GuideSection(
                 id = "sec_transcription",
                 title = "Speech-to-Text on Your Phone",
-                category = "5. Transcription",
+                category = "Transcription",
                 summary = "Turn memos into text on your phone; the speech model is downloaded once.",
                 content = """
-                    Voice Memo transcribes with the speech-recognition model OpenAI Whisper "base" (multilingual), which runs entirely on your phone with whisper.cpp. The model is not part of the app: download it once in Settings → Speech-to-Text (about 149 MB, Wi-Fi recommended); after that, transcription works without an internet connection. Tap Transcribe on a memo in History; you can edit or delete the text afterwards. The recording itself is never changed.
+                    Voice Memo transcribes memos on your phone with whisper.cpp and the OpenAI Whisper "base" speech model. The model is not part of the app: download it once in Settings → Speech-to-Text (about 148 MB, Wi-Fi recommended). After that, transcription works without an internet connection.
 
-                    Transcription only runs when you ask for it, unless you turn on "Transcribe new memos automatically" in Settings. It keeps running in the background with a notification; a long memo can take a while on older phones.
+                    Tap Transcribe on a memo in History. You can edit or delete the text afterwards; the recording itself is never changed. Transcription only runs when you ask for it, unless you turn on "Transcribe new memos automatically". It continues in the background with a notification; long memos can take a while on older phones.
 
-                    Memos are transcribed as English unless you choose another language in Settings → Speech-to-Text → Transcription language (or automatic detection, which is slower and can pick the wrong language for short memos).
+                    Memos are transcribed as English unless you choose another language in Settings → Speech-to-Text. Automatic language detection is also available, but it is slower and can pick the wrong language for short memos.
                 """.trimIndent(),
                 tips = listOf(
-                    "Choose the language in Settings → Speech-to-Text: it is more accurate than automatic detection.",
-                    "\"Fast\" quality (default) is quicker; \"Accurate\" makes fewer mistakes.",
-                    "Optional: import a larger or smaller whisper.cpp model file (ggml .bin) in Settings.",
+                    "\"Fast\" quality (default) is quicker; \"Accurate\" takes about twice as long and can make fewer mistakes.",
+                    "Optional: import another whisper.cpp model file (ggml .bin) in Settings.",
                     "Removing the downloaded model frees space; your transcripts and recordings are kept."
                 )
             ),
             GuideSection(
                 id = "sec_privacy_foss",
-                title = "Offline, Privacy-First & FOSS",
-                category = "6. Privacy & Offline FOSS",
-                summary = "Your voice recordings never leave your device. Zero cloud, zero tracking.",
+                title = "Privacy & Your Data",
+                category = "Privacy",
+                summary = "Recording, detection and transcription happen on your phone.",
                 content = """
-                    Voice Memo is built according to strict Free and Open Source Software (FOSS) principles and privacy standards:
-                    
-                    - All audio processing (levels, noise suppression, wake phrase, speech-to-text) runs locally on your device CPU.
-                    - No audio is ever uploaded to the cloud or third-party servers.
-                    - The only network access is the speech-model download you start in Settings; everything else works offline.
-                    - No telemetry, analytics, or advertising SDKs.
-                    - Standard open formats: Audio is stored as standard 16-bit PCM WAV.
-                    - Export one memo as its original WAV, or several as a ZIP archive with the original WAVs and CSV/JSON metadata, to a file you choose or another app.
+                    - Audio is processed only on your phone: levels, wake phrase and speech-to-text. No audio or text is uploaded.
+                    - The only internet use is the speech-model download you start in Settings.
+                    - No accounts, ads, analytics or tracking. Voice Memo is free and open-source software.
+                    - Memos are standard WAV files in the app's private storage.
+                    - If backup is turned on in Android's settings, memos and settings can be included in your phone's backup.
                 """.trimIndent(),
                 tips = listOf(
-                    "Back up all memos anytime: History → Select → Select entire library → Save to….",
-                    "Files are stored in private app storage and can be shared to any messaging or cloud backup app of your choice."
+                    "Export one memo as a WAV file, or several as a ZIP with the WAV files and a CSV/JSON list: History → Select → Save to… or Share.",
+                    "Back up everything: History → Select → Select entire library → Save to…."
                 )
             )
         )
     }
+    val categories = listOf("All") + guideSections.map { it.category }.distinct()
 
     val filteredSections = if (selectedFilterIndex == 0) {
         guideSections
@@ -239,7 +210,7 @@ fun GuideTab() {
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                             Text(
-                                text = "Automatic Voice-Note Assistant",
+                                text = "Hands-free voice memos",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                             )
@@ -248,7 +219,7 @@ fun GuideTab() {
 
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "Learn how to configure hands-free voice-note capture, train the wake phrase (recommended: \"Mango Tango\"), and manage your offline voice memos.",
+                        text = "How to record memos, set up the wake phrase \"Mango Tango\", and turn memos into text, all on your phone.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
@@ -343,7 +314,7 @@ fun GuideTab() {
                                 ) {
                                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         Text(
-                                            text = "Key Tips & Best Practices:",
+                                            text = "Tips",
                                             style = MaterialTheme.typography.labelMedium,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.primary

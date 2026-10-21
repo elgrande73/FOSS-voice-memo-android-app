@@ -45,7 +45,7 @@ graph TD
 ```
 
 **Context Characteristics:**
-- **No Remote Backend / Cloud**: There is **no cloud server, analytics ingestion endpoint, or remote AI API**.
+- **No Remote Backend / Cloud**: There is **no cloud server, analytics ingestion endpoint, or remote AI API**. The only network connection is the speech-model download the user starts in Settings (HTTPS, `ModelSource.WHISPER_BASE`, checksum-verified; see `docs/TRANSCRIPTION.md`).
 - **No Third-Party Tracker SDKs**: Relies strictly on standard Android Open Source Project (AOSP) APIs and Jetpack libraries.
 - **Privacy-First**: Audio recordings are stored in private internal app storage.
 
@@ -152,13 +152,13 @@ All user data lives in app-private storage (never the cache directory) and survi
 | Wake-phrase test recording | `filesDir/wake_phrase/test_recording.wav` | 16 kHz mono WAV of the last "Test Phrase" run |
 | Wake-phrase test result | `filesDir/wake_phrase/test_result.bin` | Best confidence + timestamp |
 
-`SettingsMigrator` runs before any setting is read. Each step runs once (guarded by the schema version), never replaces a value the user already saved, clamps out-of-range values and replaces corrupt values with defaults without touching other keys. Steps: v1 match confidence threshold; v2 optional minimum wake-phrase level; v3 (superseded by v4, no effect of its own); v4 removes the settings of removed features (choice of built-in phrase, speech-checked detection model and its phrase words) and sets the one-time notice `wakePhraseChangedNotice` for existing installations. Enrolled samples are never touched by settings migrations.
+`SettingsMigrator` runs before any setting is read. Each step runs once (guarded by the schema version), never replaces a value the user already saved, clamps out-of-range values and replaces corrupt values with defaults without touching other keys. Steps: v1 match confidence threshold; v2 optional minimum wake-phrase level; v3 (superseded by v4, no effect of its own); v4 removes the settings of removed features (choice of built-in phrase, speech-checked detection model and its phrase words) and sets the one-time notice `wakePhraseChangedNotice` for existing installations; v5 removes the settings of the removed volume-button shortcut and accessibility service (the keyboard shortcut is kept); v6 turns the single `transcriptionLanguage` value into `transcriptionLanguageMode` (FIXED/AUTO) and `transcriptionFixedLanguage`, keeping a language the user chose. Enrolled samples are never touched by settings migrations.
 
 ---
 
 ## 6. Match Confidence Threshold
 
-`TemplateKeywordDetector` scores each candidate window as `confidence = 1 − normalizedDtwDistance / 0.40` (0.0–1.0). The wake phrase is detected when `confidence ≥ threshold`, where `threshold = percent / 100` and `percent` is the user's **Match confidence threshold** (20 %–80 %, default 50 %). In Wake Phrase mode the audio must additionally exceed the loudness (activation) threshold.
+`TemplateKeywordDetector` scores each candidate window as `confidence = 1 − normalizedDtwDistance / 0.40` (0.0–1.0). The wake phrase is detected when `confidence ≥ threshold`, where `threshold = percent / 100` and `percent` is the user's **Match confidence threshold** (20 %–80 %, default 50 %). The activation (loudness) threshold applies only to Loudness Only mode; in Wake Phrase mode the only level condition is the optional *Minimum audio level* of the matched phrase (`wakePhraseMinLevelDb`), applied identically to start and stop.
 
 The ViewModel holds the persisted value, passes it to `AudioMonitoringService` (applied live through `ACTION_UPDATE_MATCH_CONFIDENCE_THRESHOLD` without resetting the detector), and the dashboard shows the same value as **Trigger threshold**.
 

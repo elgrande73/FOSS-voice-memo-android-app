@@ -452,7 +452,7 @@ fun DashboardScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Voice Memo needs microphone access to listen for voice memos and wake phrases.",
+                            text = "Voice Memo needs microphone access to record memos and listen for the wake phrase.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onErrorContainer
                         )
@@ -731,7 +731,7 @@ fun DashboardScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Duration: ${String.format(Locale.US, "%.1fs", note.durationSeconds)} • Peak: ${note.peakDb.toInt()} dB",
+                            text = "Duration: ${String.format(Locale.US, "%.1f s", note.durationSeconds)} • Peak: ${Math.round(WakePhraseLevel.fromDetectorDb(note.peakDb))} dBFS",
                             style = MaterialTheme.typography.bodySmall
                         )
                         Spacer(modifier = Modifier.height(8.dp))
@@ -786,7 +786,7 @@ fun ShortcutSettingsCard(viewModel: VoiceMemoViewModel) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(text = "Shortcuts & Lock Screen", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(
-                text = "Start and stop a memo without the dashboard button. The same shortcut starts a memo, or stops the one being recorded.",
+                text = "Start a memo, or stop the one being recorded, without the dashboard button.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -845,11 +845,10 @@ fun ShortcutSettingsCard(viewModel: VoiceMemoViewModel) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(text = "Recording controls in the notification and on the lock screen", fontWeight = FontWeight.SemiBold)
                     Text(
-                        text = "On: while monitoring runs, its notification has a Start/Stop memo button that also works " +
-                            "on the lock screen, and the \"Voice memo\" Quick Settings tile works without unlocking. " +
-                            "Off: the notification shows only the status (no button; on the lock screen just the app " +
-                            "name), and the tile asks you to unlock first. The dashboard, tile, widget, keyboard " +
-                            "shortcut and wake phrase keep working. Memos can only be played after unlocking.",
+                        text = "On: while monitoring runs, the notification has a Start/Stop memo button, and it and the " +
+                            "\"Voice memo\" Quick Settings tile work without unlocking, so anyone holding your phone can " +
+                            "start or stop a memo. Off: no button in the notification (on the lock screen only the app " +
+                            "name), and the tile asks you to unlock first. Memos can only be played after unlocking.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1156,7 +1155,6 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
     val modelMessage by viewModel.modelMessage.collectAsState()
     val importing by viewModel.modelImportRunning.collectAsState()
     val downloadState by viewModel.modelDownloadState.collectAsState()
-    var showLicenses by remember { mutableStateOf(false) }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { viewModel.importSpeechModel(it) }
     }
@@ -1168,11 +1166,11 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
         modifier = Modifier.fillMaxWidth().testTag("transcription_settings")
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(text = "Speech-to-Text (on this device)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(text = "Speech-to-Text", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(
-                text = "Memos are transcribed on the phone with the Whisper speech model; no audio or text leaves the device. " +
-                    "The model is not part of the app: download it once below (the only time the app uses the internet). " +
-                    "After that, transcription works offline. Tap Transcribe on a memo in History.",
+                text = "Memos are transcribed on this phone; no audio or text is sent anywhere. The speech model is not " +
+                    "part of the app: download it once below (the only time the app uses the internet). Then tap " +
+                    "Transcribe on a memo in History.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1182,7 +1180,7 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
                 Column(modifier = Modifier.weight(1f)) {
                     Text(text = "Transcribe new memos automatically", fontWeight = FontWeight.SemiBold)
                     Text(
-                        text = "Off: only memos you choose are transcribed. Uses battery while it runs.",
+                        text = "Off: only memos you choose are transcribed. Transcribing uses battery.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1239,20 +1237,69 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
                 modifier = Modifier.testTag("import_speech_model")
             ) { Text(if (importing) "Checking model…" else "Import Model File…") }
             Text(
-                text = "Optional: larger whisper.cpp models (ggml .bin, e.g. \"small\") are more accurate but slower and need " +
-                    "more memory; \"tiny\" is faster. Download one on a computer or in a browser, then import the file here.",
+                text = "Optional: import another whisper.cpp model file (ggml .bin). Larger models such as \"small\" are " +
+                    "more accurate but slower and need more memory; \"tiny\" is faster but less accurate.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             modelMessage?.let {
                 Text(text = it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("speech_model_message"))
             }
-            TextButton(onClick = { showLicenses = true }, modifier = Modifier.testTag("open_source_licenses")) { Text("Open-source licenses") }
+        }
+    }
+}
+
+/** Version name of the installed package (what the user actually runs), or null if it cannot be read. */
+fun installedVersionName(context: Context): String? = try {
+    val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        context.packageManager.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0))
+    } else {
+        @Suppress("DEPRECATION")
+        context.packageManager.getPackageInfo(context.packageName, 0)
+    }
+    info.versionName
+} catch (e: PackageManager.NameNotFoundException) {
+    null
+}
+
+/** Settings > About: installed version, license, source code and the third-party license texts. */
+@Composable
+fun AboutCard() {
+    val context = LocalContext.current
+    val version = remember { installedVersionName(context) }
+    var showLicenses by remember { mutableStateOf(false) }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth().testTag("about_card")
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = "About", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Version: ${version ?: "unknown"}",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.testTag("app_version")
+            )
+            Text(
+                text = "Free and open-source software (Apache License 2.0).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = { showLicenses = true }, modifier = Modifier.testTag("open_source_licenses")) { Text("Open-source licenses") }
+                TextButton(onClick = {
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(SOURCE_CODE_URL)))
+                    } catch (e: android.content.ActivityNotFoundException) {
+                        Toast.makeText(context, SOURCE_CODE_URL, Toast.LENGTH_LONG).show()
+                    }
+                }) { Text("Source code") }
+            }
         }
     }
 
     if (showLicenses) {
-        val context = LocalContext.current
         val notices = remember {
             try {
                 context.assets.open("licenses/THIRD_PARTY_NOTICES.txt").bufferedReader().use { it.readText() }
@@ -1274,6 +1321,9 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
         )
     }
 }
+
+/** Source code and issue tracker (opened in the browser; the app itself does not use the network for this). */
+const val SOURCE_CODE_URL = "https://github.com/elgrande73/FOSS-voice-memo-android-app"
 
 /**
  * Download of the Whisper base model: what it is, its size and storage, progress with Cancel, validation, ready with a
@@ -1403,7 +1453,7 @@ fun monitoringStatusText(
     engineState: MonitoringEngineState,
     phraseCaptureState: PhraseCaptureState
 ): String = when {
-    isRecordingMemo -> "Recording Voice Note..."
+    isRecordingMemo -> "Recording memo…"
     phraseCaptureState is PhraseCaptureState.StoppingMonitoring -> "Stopping monitoring…"
     phraseCaptureState != PhraseCaptureState.Idle -> "Paused: recording a phrase in Settings"
     else -> when (engineState) {
@@ -1714,12 +1764,13 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = if (searchQuery.isNotEmpty()) "No matching memos found" else "No voice memos recorded yet",
+                        text = if (searchQuery.isNotEmpty() || activeFilters.isNotEmpty()) "No matching memos" else "No voice memos yet",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = "Start monitoring or tap Quick Memo on Dashboard",
+                        text = if (searchQuery.isNotEmpty() || activeFilters.isNotEmpty()) "Change the search or filters to see other memos."
+                            else "Tap Quick Memo on the dashboard, or start monitoring.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
                     )
@@ -2273,13 +2324,11 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
 
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = "The recommended wake phrase is \"Mango Tango\": say it to start a memo and again to stop it. " +
-                        "The built-in phrase works without setup but was made from synthetic voices, so it does not recognise every " +
-                        "voice. Recording the phrase in your own voice (a personal, on-device template) makes detection much more " +
-                        "reliable. You can also record any other phrase instead. One sample is enough; up to ${WakePhraseStore.MAX_SAMPLES} " +
-                        "optional samples help when your pace, volume or distance varies. Speak naturally at normal volume — e.g. one " +
-                        "sample a little faster, one from arm's length — rather than exaggerating. If similar-sounding words start memos, " +
-                        "raise the Match confidence threshold. Samples stay on this device. Deleting all samples restores the built-in phrase.",
+                    text = "Say \"Mango Tango\" to start a memo (and again to stop it, if set below). The built-in phrase " +
+                        "works without setup but was made from synthetic voices, so it does not recognise every voice. For " +
+                        "reliable detection, record the phrase in your own voice, or record any other phrase instead. One sample " +
+                        "is enough; up to ${WakePhraseStore.MAX_SAMPLES} help when your pace, volume or distance varies. Speak " +
+                        "naturally. Samples stay on this device; deleting all of them restores the built-in phrase.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2347,7 +2396,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
 
                 if (captureKind != null) {
                     Text(
-                        text = "Automatic monitoring is paused while a phrase is recorded and resumes afterwards.",
+                        text = "Monitoring is paused while a phrase is recorded and resumes afterwards.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2466,8 +2515,8 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                     modifier = Modifier.testTag("match_confidence_threshold_label")
                 )
                 Text(
-                    text = "How closely speech must match the wake phrase before recording starts. " +
-                        "Higher values reduce false triggers; lower values detect the phrase more easily.",
+                    text = "How closely speech must match the wake phrase to start or stop a memo. Higher values " +
+                        "mean fewer false starts; lower values detect the phrase more easily.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2488,10 +2537,9 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                             modifier = Modifier.testTag("wake_phrase_min_level_label")
                         )
                         Text(
-                            text = "Additional condition for starting and stopping with the wake phrase: the spoken phrase must also " +
-                                "reach this microphone level, so distant voices (TV, other rooms) are ignored. It never cuts audio " +
-                                "from a memo. Compare with the live level on the dashboard; lower it if the phrase is missed when " +
-                                "you speak softly or from further away.",
+                            text = "The wake phrase only counts if it is at least this loud, so distant voices (TV, other " +
+                                "rooms) are ignored. Applies to starting and stopping; it never cuts audio from a memo. Compare " +
+                                "with the live level on the dashboard, and lower it if the phrase is missed when you speak softly.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -2522,7 +2570,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
 
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Keyword Action Behavior",
+                    text = "What the wake phrase does",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -2552,7 +2600,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "Audio & Trigger Settings",
+                    text = "Recording",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -2564,8 +2612,9 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = "In Loudness Only mode, recording starts when the microphone level exceeds this. dBFS is the " +
-                        "digital level (0 = loudest possible); the same voice reads differently on different phones.",
+                    text = "In Loudness Only mode, a memo starts when the microphone level stays above this for a quarter " +
+                        "of a second. dBFS is the digital level (0 = loudest possible); the same voice reads differently on " +
+                        "different phones.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2578,12 +2627,12 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
 
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Silence Timeout: ${String.format(Locale.US, "%.1fs", silenceTimeoutMs / 1000.0)}",
+                    text = "Silence timeout: ${String.format(Locale.US, "%.1f s", silenceTimeoutMs / 1000.0)}",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = "Recording stops after this duration of silence.",
+                    text = "A memo ends after this much silence. Memos also end after 5 minutes at most.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2596,12 +2645,12 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
 
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Rolling Pre-Trigger Buffer: ${preTriggerMs} ms",
+                    text = "Pre-trigger buffer: ${preTriggerMs} ms",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = "Preserves audio before trigger so initial words aren't cut off.",
+                    text = "Audio from just before a memo starts is kept, so the first word is not cut off.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2619,9 +2668,10 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(text = "Voice Formant Filter", fontWeight = FontWeight.SemiBold)
+                        Text(text = "Ignore while media plays", fontWeight = FontWeight.SemiBold)
                         Text(
-                            text = "Restricts sound trigger to speech frequencies (300Hz - 3400Hz)",
+                            text = "While music, videos or games play on this phone, sound and the wake phrase do not start " +
+                                "memos. Quick Memo and stopping a memo still work.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -2639,9 +2689,9 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(text = "Recording Sounds", fontWeight = FontWeight.SemiBold)
+                        Text(text = "Recording sounds", fontWeight = FontWeight.SemiBold)
                         Text(
-                            text = "Plays a rising chime when a memo starts and a falling chime when it stops (uses media volume)",
+                            text = "A rising chime when a memo starts and a falling one when it stops (media volume).",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -2669,7 +2719,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "Hardware Audio Input",
+                    text = "Microphone",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -2732,7 +2782,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(text = "Dynamic Material You Colors", fontWeight = FontWeight.SemiBold)
+                        Text(text = "Use wallpaper colors", fontWeight = FontWeight.SemiBold)
                         Switch(
                             checked = dynamicColor,
                             onCheckedChange = { viewModel.setDynamicColor(it) }
@@ -2752,7 +2802,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "Storage & Reset",
+                    text = "Storage",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -2773,7 +2823,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
             AlertDialog(
                 onDismissRequest = { showDeleteAllDialog = false },
                 title = { Text("Delete All Voice Memos") },
-                text = { Text("Are you sure you want to permanently delete all voice memos and audio files? This cannot be undone.") },
+                text = { Text("All memos (recordings, titles and transcripts) are permanently removed from this device. Wake-phrase samples and settings are kept. This cannot be undone.") },
                 confirmButton = {
                     Button(
                         onClick = {
@@ -2793,6 +2843,8 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                 }
             )
         }
+
+        AboutCard()
 
         Spacer(modifier = Modifier.height(24.dp))
     }

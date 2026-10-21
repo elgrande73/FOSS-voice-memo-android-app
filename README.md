@@ -3,116 +3,116 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![API](https://img.shields.io/badge/API-24%2B-brightgreen.svg)](https://developer.android.com/about/versions/nougat)
 
-A privacy-first, open-source Android app for automatic, hands-free voice memos. Detection (voice activity, loudness, wake phrase) runs entirely on the device: no accounts, no cloud services, no analytics, no ads.
+Voice Memo is a free, open-source Android app for hands-free voice memos. Say **"Mango Tango"** and it starts
+recording; say it again and the memo is saved. Memos can be turned into text on your phone. There are no accounts, ads
+or analytics.
 
-The default wake phrase is **"Mango Tango"**; you can also record your own phrase.
+## Features
 
----
+- **Hands-free recording.** Start a memo with the wake phrase "Mango Tango", or record your own phrase. Alternatively,
+  any sound above a level you choose can start a memo.
+- **One-tap recording.** A large Quick Memo button, a Quick Settings tile, a home-screen widget, a launcher shortcut,
+  a button in the notification (also on the lock screen, can be turned off) and an optional keyboard shortcut.
+- **Nothing cut off.** A short buffer keeps the first word; a memo ends after a pause you choose, when you repeat the
+  wake phrase, or when you tap Stop.
+- **Speech-to-text on the phone.** Transcribe memos with whisper.cpp and the Whisper base model (English by default,
+  99 languages, or automatic detection). The model is a one-time download of about 148 MB that you start yourself.
+- **History.** Search, filters, favourites, playback speed, autoplay through the list, and export of one memo (WAV)
+  or many (ZIP with the WAV files and a CSV/JSON list).
+- **Your microphone of choice.** Built-in, USB and Bluetooth headset microphones.
 
-## ✨ Features
+## Install
 
-- **Automatic recording**: starts when speech or sound exceeds the activation threshold and stops after a configurable silence timeout.
-- **Wake phrase**: say **"Mango Tango"** to start (and optionally stop) a memo. An offline keyword spotter (spectral filterbanks + Dynamic Time Warping) is built in; for reliable detection record one to five samples of the phrase — or any other phrase — in your own voice (natural variations help); they are matched on the device and never leave it. When the phrase is repeated to stop a memo, the spoken stop phrase is removed from the recording; a memo ended by the silence timeout keeps its complete ending. Monitoring and the Settings phrase test use the same detection pipeline, and monitoring pauses automatically while a phrase is recorded in Settings.
-- **Adaptive noise handling**: the background noise floor is estimated automatically and conservative spectral noise suppression keeps background sounds from being mistaken for the wake phrase (see [`docs/WAKE_PHRASE_DETECTION.md`](docs/WAKE_PHRASE_DETECTION.md)).
-- **Match confidence threshold**: one setting (20 %–80 %, default 50 %) controls how closely speech must match the wake phrase; the dashboard shows the same value as the *Trigger threshold* next to a live match gauge.
-- **Rolling pre-trigger buffer**: keeps the start of your sentence.
-- **Playback**: *Autoplay* (default) continues with the next memo of the list you are viewing (filters, search and order respected; stops at the end), *Single* stops after each memo; chimes frame every memo, and the list scrolls to keep the playing memo visible in Autoplay.
-- **Recording controls**: a large Quick Memo / Stop Memo button at the bottom of the dashboard; Start/Stop from the lock screen through the monitoring notification and a Quick Settings tile; a home-screen widget and a "Record memo" launcher shortcut; an optional Bluetooth/USB keyboard shortcut (see [`docs/SHORTCUTS_AND_LOCK_SCREEN.md`](docs/SHORTCUTS_AND_LOCK_SCREEN.md) for what Android allows).
-- **On-device speech-to-text**: transcribe memos (English by default; choose any of Whisper's 99 languages, or automatic detection) with the multilingual Whisper base model, which you download once from Settings (about 149 MB; the app itself is about 13 MB); after that it works offline, with no account. Edit, retry or delete transcripts; optional automatic transcription.
-- **Live audio level**: the dashboard shows the real microphone level (dBFS, about 10 updates per second) while monitoring, and an optional *Minimum audio level* can be required for the wake phrase (start and stop alike).
-- **Recording chimes**: optional sounds when a recording starts and stops.
-- **Audio routing**: built-in microphone, USB audio and Bluetooth headsets.
-- **History**: search; filters Today, Favorites, Wake Phrase and Manual (combinable); select several memos (all shown or the entire library) to delete them or export them — one memo as its original WAV, several as a ZIP with the original WAVs and a JSON/CSV manifest — to a file you choose or to another app.
-- **Local storage**: 16-bit PCM WAV files indexed in a local Room database; favorites, playback speed.
-- **Material 3 UI** with light/dark theming.
+- **F-Droid:** Voice Memo is not on F-Droid yet. A submission is being prepared; this README will link to the listing
+  once F-Droid has accepted it.
+- **From source:** see [Building from source](#building-from-source).
 
----
+Requires Android 7.0 (API 24) or newer. The app is about 13 MB; the optional speech model needs about 148 MB more.
 
-## 🆔 New application identity
+## Getting started
 
-This app was previously published under a different name and application ID. It is now **Voice Memo** with the application ID **`io.github.elgrande73.voicememo`**.
+1. Open Voice Memo and allow microphone access (and notifications, so you can see when monitoring runs).
+2. Tap **Quick Memo** to record right away, or **Start Monitoring** and say **"Mango Tango"**.
+3. For reliable wake-phrase detection, record the phrase in your own voice: *Settings → Wake Phrase → Record Phrase*.
+   The built-in phrase was made from synthetic voices and does not recognise every voice.
+4. To get text: *Settings → Speech-to-Text → Download Whisper Base model*, then tap **Transcribe** on a memo in
+   *History*.
 
-> ⚠️ The ID `io.github.elgrande73.voicememo` is derived from the GitHub account hosting the source code (`github.com/elgrande73`). It is **provisional until the maintainer confirms it** before the first release; changing it after a release would again create a separate app.
+The in-app **Guide** tab explains every feature.
 
-Changing the application ID is a deliberate breaking change. Android treats Voice Memo as a **different app**, not as an update of the previous app:
+## Privacy
 
-| Scenario | What happens |
-|---|---|
-| **Fresh installation of Voice Memo** | Starts with no memos, the built-in "Mango Tango" wake phrase and a 50 % match confidence threshold. |
-| **Update from one Voice Memo version to a later one** | Memos, audio files, settings, the threshold, your recorded wake-phrase samples (a single phrase recorded with an earlier version becomes sample 1), the test recording and its result are kept (see [Persistent user data](ARCHITECTURE.md#5-persistent-user-data--stable-identifiers)). |
-| **Voice Memo installed alongside the previous app** | Both apps are installed independently. Voice Memo **cannot read** the previous app's private database, settings, recordings or wake-phrase template (Android app sandbox), and does not claim to have imported them. |
-| **Moving data from the previous app** | There is **no automatic import**. Recordings can be moved manually: in the previous app use *History → Export All (ZIP)* and keep the archive; the WAV files remain playable with any audio player. Voice Memo has no importer, so settings and the wake-phrase template must be configured again (record the phrase once more under *Settings → Wake Phrase*). |
-
----
-
-## 🔒 Privacy & Permissions
-
-- **Network only for the model download you start**: the `INTERNET` permission is used for one thing — downloading the speech model when you tap *Download Whisper Base model* in Settings (HTTPS, from the whisper.cpp project on Hugging Face, verified by checksum). No analytics, trackers, ads or other network access; everything else works offline.
-- **Speech-to-text on the device**: memos are transcribed with whisper.cpp and OpenAI's Whisper "base" model (MIT), on the phone, from the saved recording; nothing is sent anywhere. Transcription runs only when you tap *Transcribe* (or for new memos if you turn on automatic transcription). Further models can be imported from a file. Details and measurements: [`docs/TRANSCRIPTION.md`](docs/TRANSCRIPTION.md).
-- **Lock screen**: while monitoring runs, anyone holding the locked phone can start or stop a memo from the notification or the Quick Settings tile (turn this off under *Settings → Shortcuts & Lock Screen*; the notification then has no button at all). Memos can only be listened to after unlocking.
-- **Backups**: Android's standard app backup is enabled (`allowBackup`), so memos and settings can be included in device backups configured by the user.
+- Recording, wake-phrase detection and transcription run on your phone. No audio or text is uploaded.
+- The only internet access is the speech-model download you start in Settings. It comes from the whisper.cpp
+  project's files on Hugging Face over HTTPS and is checked against a published checksum before use. Everything else
+  works offline.
+- No analytics, crash reporting, ads or trackers.
+- Memos are WAV files in the app's private storage. Android's app backup is enabled, so if you turn on backup in
+  Android's settings, memos and settings can be included in it. The speech model is not backed up.
+- While monitoring runs, anyone holding your locked phone can start or stop a memo from the notification or the tile,
+  unless you turn this off (*Settings → Shortcuts & Lock Screen*). Memos can only be played after unlocking.
 
 | Permission | Why |
 |---|---|
-| `RECORD_AUDIO` | Microphone capture for monitoring, recording and wake-phrase training/testing |
-| `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE` | Continuous background monitoring with a visible notification |
-| `POST_NOTIFICATIONS` | Monitoring status and "memo saved" notifications |
+| `RECORD_AUDIO` | Recording memos and listening for the wake phrase |
+| `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE` | Monitoring in the background, with a visible notification |
+| `FOREGROUND_SERVICE_DATA_SYNC`, `FOREGROUND_SERVICE_MEDIA_PROCESSING` | Finishing a model download or a transcription in the background, with a notification |
+| `POST_NOTIFICATIONS` | Monitoring, download and transcription notifications |
 | `WAKE_LOCK` | Keeps monitoring running with the screen off |
-| `MODIFY_AUDIO_SETTINGS` | Audio routing for external/Bluetooth microphones |
-| `BLUETOOTH` (≤ Android 11), `BLUETOOTH_CONNECT` | Detecting and using Bluetooth headset microphones |
-| `INTERNET` | Only the speech model download you start in Settings |
-| `FOREGROUND_SERVICE_DATA_SYNC`, `FOREGROUND_SERVICE_MEDIA_PROCESSING` | Keeping the model download and transcription running, with a notification, while the app is in the background |
+| `MODIFY_AUDIO_SETTINGS` | Using USB and Bluetooth microphones |
+| `BLUETOOTH` (Android 11 and older), `BLUETOOTH_CONNECT` | Using Bluetooth headset microphones |
+| `INTERNET` | Only the speech-model download you start in Settings |
 
----
+## Coming from the earlier app?
 
-## 🛠️ Tech Stack
+Voice Memo was previously published under a different name and application ID. Android treats it as a separate app:
+it cannot read the earlier app's memos or settings, and there is no importer. Export your recordings from the earlier
+app before uninstalling it; the WAV files play in any audio player. Then record the wake phrase again in Voice Memo.
 
-- **Kotlin** & **Jetpack Compose** (Material 3)
-- **Room** (local database), **Kotlin Coroutines & Flow**
-- **Android AudioRecord / AudioTrack / MediaPlayer** (platform APIs)
-- **whisper.cpp** (MIT, git submodule `third_party/whisper.cpp`, compiled with the NDK) for on-device speech-to-text
+## Documentation
 
-### Building
+- [CHANGELOG.md](CHANGELOG.md): release notes.
+- [docs/TRANSCRIPTION.md](docs/TRANSCRIPTION.md): speech-to-text, the model, languages and measurements.
+- [docs/WAKE_PHRASE_DETECTION.md](docs/WAKE_PHRASE_DETECTION.md): how the wake phrase is detected, and its accuracy
+  on synthetic test speech.
+- [docs/SHORTCUTS_AND_LOCK_SCREEN.md](docs/SHORTCUTS_AND_LOCK_SCREEN.md): tile, widget, shortcuts and what Android
+  allows on the lock screen.
+- [ARCHITECTURE.md](ARCHITECTURE.md): code structure and data-persistence rules.
+- [docs/FDROID.md](docs/FDROID.md): F-Droid readiness and release checklist.
+
+## Bugs and contributions
+
+Report bugs and suggest features in the [issue tracker](https://github.com/elgrande73/FOSS-voice-memo-android-app/issues).
+Pull requests are welcome; please read [ARCHITECTURE.md](ARCHITECTURE.md) and keep changes focused, with tests for
+behaviour changes.
+
+## Building from source
+
+Requirements: JDK 17+, Android SDK 35, NDK 28.2.13676358 (r28c) and CMake 3.31.6. The SDK manager can install the
+last three. No API keys or credentials are needed. The speech engine (whisper.cpp) is compiled from source from a git
+submodule; no prebuilt native libraries or model files are used.
+
 ```bash
 git clone --recurse-submodules https://github.com/elgrande73/FOSS-voice-memo-android-app.git
-# or, in an existing clone: git submodule update --init
-./gradlew assembleRelease   # needs Android SDK 35, NDK 28.2.13676358 and CMake 3.31.6 (installed by Gradle/sdkmanager)
-```
-
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the architecture, data persistence rules, the match-confidence mapping and playback sequencing.
-
----
-
-## 🚀 Building
-
-Requirements: JDK 17+ and the Android SDK (platform 35, build tools 35). No API keys or credentials are needed.
-
-```bash
+# in an existing clone: git submodule update --init
 ./gradlew assembleDebug          # debug APK
-./gradlew assembleRelease        # unsigned release APK (signing: create keystore.properties, see app/build.gradle.kts)
-./gradlew testDebugUnitTest      # unit + Robolectric tests
+./gradlew assembleRelease        # release APK, unsigned unless keystore.properties exists (see app/build.gradle.kts)
+./gradlew testDebugUnitTest      # unit and Robolectric tests
 ./gradlew lintDebug              # Android lint
 ```
 
-F-Droid preparation notes and the maintainer checklist are in [`docs/FDROID.md`](docs/FDROID.md).
+Built with Kotlin, Jetpack Compose (Material 3), Room, coroutines and Android's audio APIs.
 
----
+## License and credits
 
-## 🎨 Artwork & sounds
+Voice Memo is licensed under the [Apache License 2.0](LICENSE).
 
-- The launcher icon is original artwork made for this project; the editable source is [`artwork/icon/voice_memo_icon.svg`](artwork/icon/voice_memo_icon.svg) (see [`artwork/icon/README.md`](artwork/icon/README.md)).
-- All chimes are synthesized in code at runtime (`FeedbackSoundPlayer`); no audio files are bundled or downloaded.
+- [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT), compiled into the app.
+- OpenAI [Whisper](https://github.com/openai/whisper) "base" model weights (MIT), downloaded only on request.
+- The launcher icon is original artwork for this project ([artwork/icon](artwork/icon/README.md)); the chimes are
+  generated in code.
 
-Both are covered by the project license.
-
----
-
-## 📄 License
-
-Licensed under the [Apache License, Version 2.0](LICENSE).
-
----
-
-## 📬 Contact
+Details: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The license texts are also in the app under *Settings →
+About → Open-source licenses*.
 
 Made with love in Estonia 🇪🇪

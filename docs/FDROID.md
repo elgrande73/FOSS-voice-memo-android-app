@@ -1,56 +1,89 @@
-# F-Droid readiness
+# F-Droid readiness (release 1.0.0)
 
-This document records the FOSS/F-Droid review of Voice Memo and what the maintainer still has to do before
-submitting to [fdroiddata](https://gitlab.com/fdroid/fdroiddata). It is a preparation checklist; it does not mean
-the app has been accepted by F-Droid. Inclusion is decided by the F-Droid review and its build server.
+This document records the FOSS/F-Droid review of Voice Memo 1.0.0 and what the maintainer still has to do before
+submitting it to the official F-Droid repository through [fdroiddata](https://gitlab.com/fdroid/fdroiddata). It is a
+preparation checklist. It does not mean the app has been accepted: inclusion is decided by the F-Droid review and its
+build server, and none of F-Droid's own tools (`fdroid lint`, `fdroid build`) have been run on this project yet.
+
+**Distribution route:** the official F-Droid repository. The build recipe lives in fdroiddata, not in this repository;
+`fdroid/metadata/io.github.elgrande73.voicememo.yml` is a draft of that file to copy into a merge request. Store texts,
+the icon and the changelog are read from `fastlane/metadata/android/en-US/` in this repository.
+
+## Release identity
+
+| Item | Value | Where |
+|---|---|---|
+| Application ID | `io.github.elgrande73.voicememo` | `app/build.gradle.kts`, draft metadata file name |
+| versionName | `1.0.0` | `app/build.gradle.kts` (single source; the app reads it from the installed package) |
+| versionCode | `10000` (major × 10000 + minor × 100 + patch) | `app/build.gradle.kts` |
+| Fastlane changelog | `changelogs/10000.txt` | named after the versionCode |
+| Git tag | `v1.0.0` (the repository's existing tags are `v0.0.1`–`v0.0.5`) | to be created by the maintainer |
+
+The GitHub pre-releases v0.0.1–v0.0.5 were all built with versionCode 1 and versionName "1.0". versionCode 10000 is
+higher, so a pre-release installation signed with the same key updates to 1.0.0.
 
 ## Summary of the review
 
 | Area | Finding | Status |
 |---|---|---|
-| License | Apache-2.0 (`LICENSE`, full text). All source files are covered. | ✅ |
-| Runtime dependencies | AndroidX (Compose, Room, Lifecycle, Activity, Core), Kotlin stdlib/coroutines, JetBrains annotations, JSpecify, Guava `listenablefuture` — all Apache-2.0, all from Maven Central / Google Maven. No Google Play Services, Firebase, analytics, crash reporting or ad SDKs. | ✅ |
-| Removed dependencies | Retrofit, OkHttp, Moshi (+ codegen) and the Secrets Gradle plugin were declared but never used (no `INTERNET` permission, no references in the code) and have been removed. `metadata.json` (Google AI Studio project file claiming a server-side Gemini capability that the app never used) was removed. | ✅ |
-| Build plugins | Android Gradle Plugin, Kotlin, Compose compiler, KSP (Room), Roborazzi (tests only), Foojay toolchain resolver (settings plugin; only downloads a JDK if a toolchain is requested, none is). | ✅ (Foojay: see risks) |
-| Build | `./gradlew assembleRelease` from source with the Android SDK, **NDK r28c (28.2.13676358)** and CMake 3.31.6; the git submodule `third_party/whisper.cpp` (MIT, pinned to v1.9.5) must be checked out (`submodules: true`). No credentials, API keys, `.env` files or prebuilt native libraries. Dependency metadata is excluded from the APK/AAB (`dependenciesInfo`). | ✅ (verify on the F-Droid build server) |
-| Native code | whisper.cpp/ggml compiled from source for arm64-v8a, armeabi-v7a and x86_64 (`app/src/main/cpp`). 16 KB page alignment. | ✅ |
-| Speech model | Not in the APK or the repository. The user downloads OpenAI Whisper base (MIT) as whisper.cpp's `ggml-base.bin` (142 MiB) from the whisper.cpp project on Hugging Face with *Settings → Download Whisper Base model*; it is verified against the SHA-1 published in the pinned whisper.cpp submodule before use. | ⚠️ review |
-| Network / tracking | `INTERNET` permission **only** for that model download, which runs only after an explicit user action (HTTPS, no cleartext; no other networking code, no analytics, no ads, no downloads of code). Recording, wake phrase, playback and transcription with an installed model work offline. Extra models can also be imported from a file. | ⚠️ reviewers decide (possible *NonFreeNet* anti-feature because the file is hosted on Hugging Face) |
-| Assets | Launcher icon: original artwork (`artwork/icon`), Apache-2.0. Chimes: synthesized at runtime, no audio files. The previous icon bitmap (`img_app_icon.jpg`, unknown provenance) was removed. | ✅ |
-| Test fixtures | `app/src/test/resources/audio`: synthetic speech generated with eSpeak NG (GPL-3.0-or-later tool, used offline once; not a build dependency and not packaged into the APK). Regeneration script included. | ✅ (reviewers may check) |
-| Audio processing | Noise suppression, noise-floor estimation and wake-phrase detection are implemented in Kotlin on platform APIs. Speech-to-text runs locally with whisper.cpp (see `docs/TRANSCRIPTION.md`). | ✅ |
-| Permissions | Only what the features need; see the table in `README.md`. The tile, widget and launcher shortcut added no permission; the app has no accessibility service. | ✅ |
-| Anti-features | Likely none. The former dependency on the device's (often proprietary/online) system speech-recognition service was removed; transcription is local. | ✅ (reviewers decide) |
-| Store metadata | `fastlane/metadata/android/en-US/` (title, descriptions, changelog, 512 px icon). | ✅ |
-| Build metadata | Draft in `fdroid/metadata/io.github.elgrande73.voicememo.yml`. | ⚠️ maintainer input needed |
+| License | Apache-2.0 (`LICENSE`, full text). Third-party notices: `THIRD_PARTY_NOTICES.md`, and in the app under *Settings → About → Open-source licenses*. | ✅ |
+| Runtime dependencies | AndroidX (Activity, Core, Lifecycle, Room), Jetpack Compose, Kotlin stdlib, kotlinx.coroutines, JetBrains annotations, JSpecify, Guava `listenablefuture`: all Apache-2.0, from Google Maven and Maven Central. No Google Play Services, Firebase, analytics, crash reporting or ad SDKs. | ✅ |
+| Build plugins | Android Gradle Plugin 8.9.1, Kotlin 2.2.10 (Android + Compose compiler), KSP 2.3.5 (Room), Roborazzi (tests only), Foojay toolchain resolver (settings plugin; downloads a JDK only if a toolchain is requested, and none is). | ✅ (Foojay: see risks) |
+| Build | `./gradlew assembleRelease` with JDK 17+, Android SDK 35, **NDK r28c (28.2.13676358)** and **CMake 3.31.6**; the git submodule `third_party/whisper.cpp` (MIT, pinned to v1.9.5) must be checked out (`submodules: true`). No credentials, API keys, `.env` files or prebuilt native libraries. Dependency metadata is excluded from the APK (`dependenciesInfo`). PNG crunching is off. | ✅ (not yet built by F-Droid) |
+| Build-time downloads | Only Gradle dependencies and plugins from Google Maven, Maven Central and the Gradle Plugin Portal. No model, script or binary is downloaded by the build. `scripts/` are optional developer tools that the build never calls. | ✅ |
+| Native code | whisper.cpp/ggml compiled from source for arm64-v8a, armeabi-v7a and x86_64 (`app/src/main/cpp`, build-time patch `whisper_patches.cmake`; the submodule is not modified). Always `-O3`. | ✅ |
+| Committed binaries | `gradle/wrapper/gradle-wrapper.jar` (standard wrapper; F-Droid uses its own Gradle), launcher PNGs and the fastlane icon (rendered from `artwork/icon/voice_memo_icon.svg`), `app/src/main/resources/wakephrase/mango_tango.bin` (wake-phrase features computed from synthetic speech, regenerated by `BuiltInWakePhraseTest`), test fixtures in `app/src/test/resources/audio` (eSpeak NG, regeneration script included; not packaged), and a Roborazzi screenshot used by a test. No executable code. | ✅ (reviewers may check) |
+| Speech model | Not in the APK or the repository. The user downloads OpenAI Whisper base (MIT) as whisper.cpp's `ggml-base.bin` (142 MiB, about 148 MB) from the whisper.cpp project on Hugging Face with *Settings → Speech-to-Text → Download Whisper Base model*. It is checked against the SHA-1 published in the pinned submodule's `models/README.md`, its header is checked, and it is test-loaded before use. Users can import a model file instead. | ⚠️ reviewers decide |
+| Network | `INTERNET` permission only for that download, which runs only after the user taps the button (HTTPS only; `usesCleartextTraffic="false"`). No other networking code, no analytics, ads or downloads of code. Recording, wake phrase, playback and transcription with an installed model work offline. | ⚠️ possible *NonFreeNet* anti-feature: decided by the reviewers |
+| Permissions | Only what the features need; see the table in `README.md`. No accessibility service. | ✅ |
+| Backups | `allowBackup="true"` with Android's default rules: memos, settings and wake-phrase samples can be included in the user's device backup; the speech model (in `noBackupFilesDir`) is not. Disclosed in the README and the in-app Guide. | ✅ (disclosed) |
+| Release build | No debug-only behaviour: diagnostics (`WakePhraseDiag`) run only when `BuildConfig.DEBUG`; the debug-only manifest (`app/src/debug`) adds a test activity that is not in release builds. Not minified (R8 off). Signing only if `keystore.properties` exists; otherwise the release APK is unsigned. | ✅ |
+| Assets | Launcher icon: original artwork (`artwork/icon`), Apache-2.0. Chimes are synthesized at runtime; no audio files are shipped. | ✅ |
+| Anti-features | None known besides the NonFreeNet question above. | reviewers decide |
+| Store metadata | `fastlane/metadata/android/en-US/`: title, short and full description, changelog `10000.txt`, 512 px icon. **No screenshots yet.** | ⚠️ add screenshots |
+| Build metadata | Draft `fdroid/metadata/io.github.elgrande73.voicememo.yml` (version 1.0.0 / 10000). | ⚠️ maintainer input needed |
 
 ## Maintainer checklist (cannot be completed from the repository alone)
 
-1. **Confirm the application ID** `io.github.elgrande73.voicememo`. It is derived from the GitHub account that hosts
-   the source and is provisional until confirmed. It must not change after the first release.
-2. **Tag a release** (e.g. `v1.0` matching `versionName "1.0"` / `versionCode 1` in `app/build.gradle.kts`) and set
-   `commit:` in the F-Droid metadata. No tag or release commit exists yet.
-3. **Signing / reproducible builds**: `AllowedAPKSigningKeys` was carried over from the previous metadata and must
-   match the SHA-256 of the maintainer's release certificate. Remove `Binaries` and `AllowedAPKSigningKeys` if F-Droid
-   should sign the APK itself instead of verifying a reproducible build.
-4. **Screenshots**: add phone screenshots to `fastlane/metadata/android/en-US/images/phoneScreenshots/`.
-5. **Submit** the metadata as a merge request to fdroiddata and run `fdroid lint` / `fdroid build` there (or with
-   `fdroidserver` locally). These checks were not run in this repository.
-6. **Old app**: decide what happens to the listing of the previously published app (other name and ID), e.g. mark it as superseded.
-   Users must install Voice Memo separately; their old data does not migrate automatically (see README).
+1. **Confirm the application ID** `io.github.elgrande73.voicememo`. It cannot change after the first F-Droid release.
+2. **Screenshots**: add phone screenshots of the current app (dashboard, History, Settings) to
+   `fastlane/metadata/android/en-US/images/phoneScreenshots/`. None exist in the repository.
+3. **Test on a phone**: none of the 1.0.0 changes, or earlier device-only behaviour (tile, widget, lock screen,
+   transcription speed), were checked on a device in this repository's automated checks.
+4. **Merge** the release changes to `main`, then **tag** `v1.0.0` on that commit and publish the GitHub release.
+5. **Decide on signing**:
+   - *F-Droid signs the APK* (simplest): remove `Binaries` and `AllowedAPKSigningKeys` from the draft metadata.
+     F-Droid-signed and developer-signed APKs cannot update each other.
+   - *Reproducible build with the developer's signature*: keep both, attach the signed `app-release.apk` to the GitHub
+     release `v1.0.0`, and set `AllowedAPKSigningKeys` to the SHA-256 of your release certificate (the current value
+     was carried over from older metadata and must be checked). See the risk on native reproducibility below.
+6. **Fill in the draft metadata**: `commit:` = the full commit hash of `v1.0.0`. If the build server lacks
+   CMake 3.31.6, install it in the recipe (for example with `sdkmanager "cmake;3.31.6"` in a `prebuild` or `sudo`
+   step, as other fdroiddata recipes do).
+7. **Run F-Droid's tools**: in a fork of fdroiddata, add the metadata file and run `fdroid readmeta`,
+   `fdroid lint io.github.elgrande73.voicememo` and `fdroid build -v -l io.github.elgrande73.voicememo` (or let the
+   merge request's CI do it). Fix what they report.
+8. **Open the merge request** to fdroiddata and answer the reviewers (model download, NonFreeNet).
+9. **The earlier app**: if the earlier app (other name and ID) is listed anywhere, decide what to tell its users.
+   There is no data import.
 
 ## Remaining risks
 
-- **Foojay resolver plugin** in `settings.gradle.kts`: harmless while no Java toolchain is configured, but some F-Droid
-  reviewers prefer it removed because it can download JDKs. It was kept to avoid changing the build setup without
-  the maintainer's agreement.
-- **Gradle wrapper**: `gradle/wrapper/gradle-wrapper.jar` is a binary; F-Droid's `gradle: yes` uses its own Gradle and
-  ignores it. The wrapper download is pinned with `distributionSha256Sum`.
-- **Model download host**: Hugging Face (whisper.cpp's official files). F-Droid may prefer a different host or flag the
-  download; the source URL and checksum are constants in `ModelDownloader.kt` (`ModelSource.WHISPER_BASE`). The git
-  history still contains the formerly bundled 55 MB model file.
-- **APK size**: 12.8 MB (release, unsigned, all three ABIs), measured; the model download adds 142 MiB of app storage.
-- **Default wake phrase quality**: the built-in "Mango Tango" reference is made from synthetic speech (eSpeak NG
-  features, no audio) and recognises only some voices. Recording the phrase in one's own voice (Settings → Wake Phrase)
-  is recommended. Detection accuracy
-  and its limitations are documented in `docs/WAKE_PHRASE_DETECTION.md`.
+- **Native reproducibility** (only matters for the reproducible-build route): the native libraries are compiled with
+  `-g` and stripped when packaged. Build paths in the debug information can change the linker's build ID, so an
+  F-Droid build in a different directory may not be byte-identical to the developer's APK. If `fdroid build` reports a
+  mismatch, adding `-ffile-prefix-map` (or `-Wl,--build-id=none`) in `app/src/main/cpp/CMakeLists.txt` is the usual fix.
+  Not tested.
+- **CMake version**: the build pins CMake 3.31.6; the F-Droid build server may need to install it (checklist item 6).
+- **Foojay resolver plugin** in `settings.gradle.kts`: harmless while no Java toolchain is configured, but some
+  reviewers prefer it removed because it can download JDKs. Kept to avoid changing the build setup.
+- **Model host**: Hugging Face (the whisper.cpp project's official files). F-Droid may flag the download; the URL and
+  checksum are constants in `ModelDownloader.kt` (`ModelSource.WHISPER_BASE`). The git history still contains a
+  formerly bundled 55 MB model file.
+- **Model license**: OpenAI states that Whisper's code and model weights are released under the MIT license; the ggml
+  conversion is published by the whisper.cpp project (MIT). The license text is shipped in the app.
+- **Wake-phrase quality**: the built-in "Mango Tango" reference is made from synthetic speech and recognises only some
+  voices. Recording the phrase in one's own voice is recommended; accuracy figures in `docs/WAKE_PHRASE_DETECTION.md`
+  come from synthetic fixtures, not real users.
+- **APK size**: 13.3 MB (1.0.0 release build, unsigned, universal APK with arm64-v8a, armeabi-v7a and x86_64;
+  measured on the build host); the model download adds about 148 MB of app storage.

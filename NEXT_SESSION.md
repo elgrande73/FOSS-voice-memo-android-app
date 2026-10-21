@@ -5,6 +5,9 @@
 
 ## State at the end of the last session
 
+- Release 1.0.0 prepared (versionCode 10000); remaining maintainer steps are in `docs/FDROID.md` (screenshots,
+  device test, tag `v1.0.0`, signing route, fdroiddata merge request).
+
 - The requested fixes are done (see `IMPROVEMENT_LOG.md`, top entry):
   - shortcuts removed;
   - recording-controls setting fixed;

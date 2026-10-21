@@ -2,6 +2,15 @@
 
 Newest first. Numbers come from synthetic fixtures unless stated otherwise.
 
+## 2026-10-21 — Release preparation 1.0.0
+
+- Version 1.0.0 / versionCode 10000 (scheme major×10000 + minor×100 + patch; pre-releases used 1); *Settings → About*
+  shows the installed version (`AppVersionTest` also checks the F-Droid draft and the fastlane changelog).
+- Text audit: fixed descriptions that contradicted the code (media-playback setting described as a frequency filter,
+  wake phrase described as needing the loudness threshold, configurable maximum length, stop-only mode, Guide chips).
+- README rewritten for users; `docs/FDROID.md` turned into the 1.0.0 readiness checklist; release notes in CHANGELOG.
+- Not done: screenshots, device testing, F-Droid tools (`fdroid lint`/`build`), tag and signing decisions (maintainer).
+
 ## 2026-10-21 — Requested fixes: controls, one-tap recording, parity, robustness, transcription speed
 
 - **Transcription root cause:** debug builds compiled ggml/whisper.cpp at -O0 (AGP Debug). Host, same 4 s memo: -O0

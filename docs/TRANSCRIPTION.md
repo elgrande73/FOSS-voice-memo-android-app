@@ -340,7 +340,7 @@ is free (MIT). See `docs/FDROID.md`.
 `scripts/whisper-model/build-bundled-model.sh` rebuilds a q5_0 version of the same weights from public sources (GitHub
 release asset of the sherpa-onnx export, PyPI) and checks every intermediate SHA-256 (output
 `1dfdc5f732fa9be0107f46803c6b25c02b625c80b72a89541f23568bec00bea5`); it is used by the host tests and can be imported.
-Licence texts are shipped in the app (Settings → Open-source licenses) and listed in `THIRD_PARTY_NOTICES.md`.
+Licence texts are shipped in the app (Settings → About → Open-source licenses) and listed in `THIRD_PARTY_NOTICES.md`.
 
 ## 5. Not verified (device work required)
 - Transcription speed, memory, battery and heat on low-end, mid-range and recent phones (targets: faster than real

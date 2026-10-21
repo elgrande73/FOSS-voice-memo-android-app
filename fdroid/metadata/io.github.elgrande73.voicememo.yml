@@ -19,20 +19,23 @@ Repo: https://github.com/elgrande73/FOSS-voice-memo-android-app.git
 Binaries: https://github.com/elgrande73/FOSS-voice-memo-android-app/releases/download/v%v/app-release.apk
 
 Builds:
-  - versionName: '1.0'
-    versionCode: 1
-    # MAINTAINER: set to the release tag or full commit hash once the release is tagged (none exists yet).
+  - versionName: 1.0.0
+    versionCode: 10000
+    # MAINTAINER: set to the full commit hash of the 1.0.0 release (tag v1.0.0 by the repository's v-prefixed tag
+    # convention) once it exists; no 1.0.0 tag or release commit exists yet.
     commit:
     subdir: app
     submodules: true
     gradle:
       - yes
     ndk: r28c
+    # MAINTAINER: the native build needs CMake 3.31.6 (app/build.gradle.kts). If the build server does not provide it,
+    # install it in a prebuild/sudo step as other fdroiddata recipes do (see docs/FDROID.md); not verified here.
 
 # MAINTAINER: SHA-256 of the maintainer's release signing certificate (kept from the previous metadata; verify).
 AllowedAPKSigningKeys: 134e479ce6977d81363dd3696fb1ae4dd714c35792045154b235a3a9ebc77da7
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags
-CurrentVersion: '1.0'
-CurrentVersionCode: 1
+CurrentVersion: 1.0.0
+CurrentVersionCode: 10000
