@@ -215,7 +215,7 @@ class SettingsMigratorTest {
             .putInt(PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT, 63)
             .putBoolean(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_ENABLED, false)
             .putString(PreferenceKeys.HISTORY_PLAYBACK_MODE, "single")
-            .putString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, "it")
+            .putString("transcriptionLanguage", "it")
             .commit()
         repeat(2) { SettingsMigrator.migrate(prefs) }
         assertFalse(prefs.contains("wakeWordModel"))
@@ -225,7 +225,9 @@ class SettingsMigratorTest {
         assertEquals(63, threshold())
         assertFalse(minLevelEnabled())
         assertEquals("single", prefs.getString(PreferenceKeys.HISTORY_PLAYBACK_MODE, null))
-        assertEquals("it", prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, null))
+        // Moved to the v6 keys: the saved language becomes the fixed language
+        assertEquals("FIXED", prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE_MODE, null))
+        assertEquals("it", prefs.getString(PreferenceKeys.TRANSCRIPTION_FIXED_LANGUAGE, null))
     }
 
     @Test
@@ -246,6 +248,53 @@ class SettingsMigratorTest {
         assertEquals(140, prefs.getInt(PreferenceKeys.KEYBOARD_SHORTCUT_KEY_CODE, 0))
         assertFalse(prefs.getBoolean(PreferenceKeys.LOCK_SCREEN_CONTROLS_ENABLED, true))
         assertEquals(55, threshold())
-        assertEquals(5, prefs.getInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 0))
+        assertEquals(SettingsMigrator.CURRENT_VERSION, prefs.getInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 0))
+    }
+
+    // --- v6: transcription language mode ---
+
+    private fun mode() = prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE_MODE, null)
+    private fun fixed() = prefs.getString(PreferenceKeys.TRANSCRIPTION_FIXED_LANGUAGE, null)
+
+    @Test
+    fun newInstallationsTranscribeFixedEnglish() {
+        SettingsMigrator.migrate(prefs)
+        assertEquals("FIXED", mode())
+        assertEquals("en", fixed())
+    }
+
+    @Test
+    fun existingInstallationWithoutASavedLanguageGetsFixedEnglish() {
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 5).putInt(PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT, 60).commit()
+        SettingsMigrator.migrate(prefs)
+        assertEquals("FIXED", mode())
+        assertEquals("en", fixed())
+        assertEquals(60, threshold())
+    }
+
+    @Test
+    fun aSavedLanguageIsKeptAsTheFixedLanguage() {
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 5).putString("transcriptionLanguage", "hy").commit()
+        repeat(2) { SettingsMigrator.migrate(prefs) }
+        assertEquals("FIXED", mode())
+        assertEquals("hy", fixed())
+        assertFalse(prefs.contains("transcriptionLanguage"))
+    }
+
+    @Test
+    fun aSavedAutomaticChoiceKeepsAutomaticDetection() {
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 5).putString("transcriptionLanguage", "auto").commit()
+        SettingsMigrator.migrate(prefs)
+        assertEquals("AUTO", mode())
+        assertEquals("en", fixed())
+    }
+
+    @Test
+    fun v6NeverOverwritesTheNewKeys() {
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 5)
+            .putString(PreferenceKeys.TRANSCRIPTION_LANGUAGE_MODE, "AUTO").putString(PreferenceKeys.TRANSCRIPTION_FIXED_LANGUAGE, "de").commit()
+        SettingsMigrator.migrate(prefs)
+        assertEquals("AUTO", mode())
+        assertEquals("de", fixed())
     }
 }

@@ -130,6 +130,28 @@ class WhisperNativeHostTest {
         bad.delete()
     }
 
+    @Test
+    fun languageTableComesFromTheEngineAndFixedLanguagesAreHonoured() {
+        assumeTrue("host library not built", handle != 0L)
+        val flat = WhisperNative.languageTable()
+        val native = List(flat.size / 2) { flat[2 * it] to flat[2 * it + 1] }
+        assertEquals(100, native.size)
+        assertEquals("the built-in copy equals the engine's table", native.map { it.first }, io.github.elgrande73.voicememo.transcription.WhisperLanguages.all().map { it.code })
+        assertTrue(native.contains("hy" to "armenian"))
+        // A fixed language is used as given (no detection); English and a non-English language
+        val en = WhisperNative.transcribe(handle, samples("neg_speech_5"), "en", 4, 1)!!
+        assertEquals("en", en[0])
+        val de = WhisperNative.transcribe(handle, samples("test_conv_6"), "de", 4, 1)!!
+        assertEquals("de", de[0])
+        println("MEASURE fixed languages: en '${en[1].trim()}', de '${de[1].trim()}'")
+        assertTrue(words(de[1]).isNotEmpty())
+        // Unknown codes and languages beyond the model's vocabulary are refused, never turned into a wrong token
+        assertNull(WhisperNative.transcribe(handle, samples("neg_speech_5"), "xx", 4, 1))
+        assertNull("Cantonese is large-v3 only", WhisperNative.transcribe(handle, samples("neg_speech_5"), "yue", 4, 1))
+        // Automatic detection still works
+        assertEquals("en", WhisperNative.transcribe(handle, samples("neg_speech_5"), "auto", 4, 1)!![0])
+    }
+
     private fun editDistance(a: List<String>, b: List<String>): Int {
         val d = Array(a.size + 1) { IntArray(b.size + 1) }
         for (i in 0..a.size) d[i][0] = i

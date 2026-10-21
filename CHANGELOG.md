@@ -7,6 +7,12 @@ First release under the new name **Voice Memo** and the new application ID `io.g
 to it (see README, "New application identity").
 
 ### Changed (since pre-release v0.0.2)
+- Transcription language: **fixed English by default** (no per-recording language detection), with *Fixed language
+  (faster, recommended)* or *Detect language automatically* in Settings, a selector with every language the model
+  supports (99 for Whisper base, e.g. English, German, Spanish, French, Finnish, Estonian, Armenian, Russian) and an
+  *Effective configuration* summary. A saved language choice is kept (settings migration v6). Unsupported language
+  codes are refused with a message instead of being passed to the engine. Build host, same audio: fixed language
+  1.7–1.9 s vs 1.9–2.2 s per short memo, WER 0.28–0.30 vs 0.33–0.34.
 - Quick Memo no longer leaves monitoring on: if monitoring was off, it runs only for the quick memo and stops once the
   memo is saved (also when started from the tile, widget or launcher shortcut). If monitoring was already on, it stays
   on. During such a memo the dashboard offers *Keep Monitoring On*. Settings changed during a memo no longer restart

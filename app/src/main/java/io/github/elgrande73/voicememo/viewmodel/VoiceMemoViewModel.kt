@@ -58,7 +58,13 @@ import io.github.elgrande73.voicememo.playback.MemoPlaybackSequencer
 import io.github.elgrande73.voicememo.playback.PlaybackMode
 import io.github.elgrande73.voicememo.playback.PlaybackCue
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
+import io.github.elgrande73.voicememo.transcription.EffectiveTranscriptionConfig
+import io.github.elgrande73.voicememo.transcription.LanguageMode
 import io.github.elgrande73.voicememo.transcription.ModelDownloadState
+import io.github.elgrande73.voicememo.transcription.SpeechModel
+import io.github.elgrande73.voicememo.transcription.TranscriptionLanguage
+import io.github.elgrande73.voicememo.transcription.WhisperLanguages
+import io.github.elgrande73.voicememo.transcription.WhisperNative
 import io.github.elgrande73.voicememo.transcription.ModelDownloads
 import io.github.elgrande73.voicememo.transcription.ModelSource
 import io.github.elgrande73.voicememo.transcription.SpeechModelStore
@@ -1385,10 +1391,30 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     /** Queue/progress state per memo id (memos not listed are idle). */
     val transcriptionJobs: StateFlow<Map<Int, TranscriptionJobState>> get() = transcriptionManager.jobs
 
-    private val _transcriptionLanguage = MutableStateFlow<String>(
-        prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, null) ?: TranscriptionSettings.AUTO_LANGUAGE
-    )
-    val transcriptionLanguage: StateFlow<String> = _transcriptionLanguage.asStateFlow()
+    private val _transcriptionLanguageMode = MutableStateFlow(Transcription.languageMode(prefs))
+    /** Fixed language (default) or automatic detection. */
+    val transcriptionLanguageMode: StateFlow<LanguageMode> = _transcriptionLanguageMode.asStateFlow()
+
+    private val _transcriptionFixedLanguage = MutableStateFlow(Transcription.fixedLanguage(prefs))
+    /** Language code used in fixed mode; kept while automatic detection is selected. */
+    val transcriptionFixedLanguage: StateFlow<String> = _transcriptionFixedLanguage.asStateFlow()
+
+    // The model transcription will use (null until refreshed, or if none is installed)
+    private val _activeSpeechModel = MutableStateFlow<SpeechModel?>(null)
+
+    /** Languages the selected model can transcribe (whisper.cpp's list, limited to the model's vocabulary). */
+    val transcriptionLanguages: StateFlow<List<TranscriptionLanguage>> = _activeSpeechModel
+        .map { WhisperLanguages.supported(it?.info) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, WhisperLanguages.supported(null))
+
+    /** What the engine will actually use for the next memo (Settings → Effective configuration). */
+    val effectiveTranscriptionConfig: StateFlow<EffectiveTranscriptionConfig> =
+        combine(_activeSpeechModel, _transcriptionLanguageMode, _transcriptionFixedLanguage) { model, mode, fixed ->
+            EffectiveTranscriptionConfig.of(model, TranscriptionSettings(languageMode = mode, fixedLanguage = fixed))
+        }.stateIn(
+            viewModelScope, SharingStarted.Eagerly,
+            EffectiveTranscriptionConfig.of(null, TranscriptionSettings(languageMode = _transcriptionLanguageMode.value, fixedLanguage = _transcriptionFixedLanguage.value))
+        )
 
     private val _transcriptionQuality = MutableStateFlow<TranscriptionQuality>(Transcription.settings(context).quality)
     val transcriptionQuality: StateFlow<TranscriptionQuality> = _transcriptionQuality.asStateFlow()
@@ -1431,9 +1457,20 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun setTranscriptionLanguage(code: String) {
-        _transcriptionLanguage.value = code
-        prefs.edit().putString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, code).apply()
+    /**
+     * Switches between a fixed language and automatic detection. The fixed language is kept, so switching back
+     * restores it. Applies from the next memo; a running transcription is not interrupted.
+     */
+    fun setTranscriptionLanguageMode(mode: LanguageMode) {
+        _transcriptionLanguageMode.value = mode
+        prefs.edit().putString(PreferenceKeys.TRANSCRIPTION_LANGUAGE_MODE, mode.name).apply()
+    }
+
+    /** Selects the fixed language (a whisper.cpp language code; unknown codes are ignored). */
+    fun setTranscriptionFixedLanguage(code: String) {
+        if (WhisperLanguages.find(code) == null) return
+        _transcriptionFixedLanguage.value = code
+        prefs.edit().putString(PreferenceKeys.TRANSCRIPTION_FIXED_LANGUAGE, code).apply()
     }
 
     fun setTranscriptionQuality(quality: TranscriptionQuality) {
@@ -1486,9 +1523,13 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun refreshSpeechModels() {
         viewModelScope.launch(Dispatchers.IO) {
+            // The language list comes from the speech engine itself when its library is available
+            WhisperNative.load(context)
             val list = modelStore.installedModels().map { SpeechModelSummary(it.id, it.displayName, it.description, downloaded = it.downloaded) }
             _speechModels.value = list
-            _activeSpeechModelId.value = modelStore.activeModelOrNull()?.id ?: ModelSource.WHISPER_BASE.id
+            val active = modelStore.activeModelOrNull()
+            _activeSpeechModel.value = active
+            _activeSpeechModelId.value = active?.id ?: ModelSource.WHISPER_BASE.id
         }
     }
 
@@ -1496,6 +1537,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         modelStore.activeModelId = id
         _activeSpeechModelId.value = id
         transcriptionManager.releaseModel()
+        refreshSpeechModels()
     }
 
     fun deleteSpeechModel(id: String) {

@@ -69,11 +69,29 @@ object Transcription {
         val quality = prefs.getString(PreferenceKeys.TRANSCRIPTION_QUALITY, null)
             ?.let { name -> TranscriptionQuality.entries.firstOrNull { it.name == name } } ?: TranscriptionQuality.DEFAULT
         return TranscriptionSettings(
-            language = prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, null) ?: TranscriptionSettings.AUTO_LANGUAGE,
+            languageMode = languageMode(prefs),
+            fixedLanguage = fixedLanguage(prefs),
             quality = quality,
             threads = threadCount(monitoring = AudioMonitoringService.isServiceRunning.value)
         )
     }
+
+    /** Saved language mode; fixed (the default) if absent or unreadable. */
+    fun languageMode(prefs: SharedPreferences): LanguageMode = try {
+        prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE_MODE, null)
+    } catch (_: ClassCastException) {
+        null
+    }?.let { name -> LanguageMode.entries.firstOrNull { it.name == name } } ?: LanguageMode.FIXED
+
+    /**
+     * Saved fixed language; English if absent or not a whisper.cpp language code at all (a corrupt value, never a
+     * user's choice). A valid code the current model lacks is kept and reported (see [WhisperLanguages.resolve]).
+     */
+    fun fixedLanguage(prefs: SharedPreferences): String = try {
+        prefs.getString(PreferenceKeys.TRANSCRIPTION_FIXED_LANGUAGE, null)
+    } catch (_: ClassCastException) {
+        null
+    }?.takeIf { WhisperLanguages.find(it) != null } ?: WhisperLanguages.ENGLISH
 
     /**
      * Decoding threads (at most 4): one core stays free for the app, and while monitoring runs a second one for audio

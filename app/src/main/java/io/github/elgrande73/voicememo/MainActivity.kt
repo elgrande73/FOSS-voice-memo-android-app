@@ -50,6 +50,7 @@ import io.github.elgrande73.voicememo.ui.PlayingMemoAutoScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -146,7 +147,9 @@ import io.github.elgrande73.voicememo.viewmodel.VoiceMemoViewModel
 import io.github.elgrande73.voicememo.memo.VoiceNoteFilter
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import io.github.elgrande73.voicememo.settings.WakePhraseLevel
+import io.github.elgrande73.voicememo.transcription.LanguageMode
 import io.github.elgrande73.voicememo.transcription.TranscriptionJobState
+import io.github.elgrande73.voicememo.transcription.WhisperLanguages
 import io.github.elgrande73.voicememo.transcription.TranscriptionQuality
 import io.github.elgrande73.voicememo.transcription.TranscriptionSettings
 import io.github.elgrande73.voicememo.transcription.TranscriptionStatus
@@ -1063,25 +1066,96 @@ fun TranscriptSection(
     }
 }
 
-/** Languages offered in Settings (Whisper supports more; "auto" detects the language per memo). */
-private val TRANSCRIPTION_LANGUAGES = listOf(
-    TranscriptionSettings.AUTO_LANGUAGE to "Automatic", "it" to "Italiano", "en" to "English", "de" to "Deutsch",
-    "fr" to "Français", "es" to "Español", "pt" to "Português", "nl" to "Nederlands", "pl" to "Polski",
-    "cs" to "Čeština", "sv" to "Svenska", "da" to "Dansk", "no" to "Norsk", "fi" to "Suomi", "ro" to "Română",
-    "hu" to "Magyar", "el" to "Ελληνικά", "tr" to "Türkçe", "ru" to "Русский", "uk" to "Українська"
-)
+/**
+ * Settings → Transcription language: a fixed language (default, faster) or automatic detection, the language selector
+ * (every language the selected model supports) and the read-only effective configuration.
+ */
+@Composable
+fun TranscriptionLanguageSettings(viewModel: VoiceMemoViewModel) {
+    val mode by viewModel.transcriptionLanguageMode.collectAsState()
+    val fixed by viewModel.transcriptionFixedLanguage.collectAsState()
+    val languages by viewModel.transcriptionLanguages.collectAsState()
+    val effective by viewModel.effectiveTranscriptionConfig.collectAsState()
+    var languageMenu by remember { mutableStateOf(false) }
+
+    Column(modifier = Modifier.selectableGroup()) {
+        Text(text = "Transcription language", fontWeight = FontWeight.SemiBold)
+        listOf(
+            LanguageMode.FIXED to "Fixed language (faster, recommended)",
+            LanguageMode.AUTO to "Detect language automatically"
+        ).forEach { (option, label) ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectable(selected = mode == option, role = Role.RadioButton) { viewModel.setTranscriptionLanguageMode(option) }
+                    .testTag("transcription_language_mode_${option.name}")
+            ) {
+                RadioButton(selected = mode == option, onClick = null)
+                Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 8.dp))
+            }
+        }
+        if (mode == LanguageMode.FIXED) {
+            Text(
+                text = "Always use the selected language instead of detecting it for each recording.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("transcription_fixed_language_help")
+            )
+            Box {
+                OutlinedButton(
+                    onClick = { languageMenu = true },
+                    modifier = Modifier
+                        .testTag("transcription_language")
+                        .semantics { contentDescription = "Transcription language: ${WhisperLanguages.find(fixed)?.label ?: fixed}. Change" }
+                ) {
+                    Text(WhisperLanguages.find(fixed)?.label ?: fixed)
+                }
+                DropdownMenu(expanded = languageMenu, onDismissRequest = { languageMenu = false }) {
+                    languages.forEach { language ->
+                        DropdownMenuItem(
+                            text = { Text(language.label) },
+                            onClick = { viewModel.setTranscriptionFixedLanguage(language.code); languageMenu = false },
+                            modifier = Modifier.testTag("transcription_language_${language.code}")
+                        )
+                    }
+                }
+            }
+        } else {
+            Text(
+                text = "Detects the language of each recording. Slower, and short memos may be detected as the wrong language.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Surface(
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth().testTag("effective_transcription_config")
+        ) {
+            Column(modifier = Modifier.padding(8.dp)) {
+                Text("Effective configuration", style = MaterialTheme.typography.labelLarge)
+                Text("Model: ${effective.model}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("effective_model"))
+                Text("Language: ${effective.language}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("effective_language"))
+                effective.problem?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("effective_problem"))
+                }
+            }
+        }
+    }
+}
 
 /** Settings > Speech-to-Text: automatic transcription, language, quality and the speech model. */
 @Composable
 fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boolean) {
-    val language by viewModel.transcriptionLanguage.collectAsState()
     val quality by viewModel.transcriptionQuality.collectAsState()
     val models by viewModel.speechModels.collectAsState()
     val activeModel by viewModel.activeSpeechModelId.collectAsState()
     val modelMessage by viewModel.modelMessage.collectAsState()
     val importing by viewModel.modelImportRunning.collectAsState()
     val downloadState by viewModel.modelDownloadState.collectAsState()
-    var languageMenu by remember { mutableStateOf(false) }
     var showLicenses by remember { mutableStateOf(false) }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { viewModel.importSpeechModel(it) }
@@ -1121,22 +1195,7 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
             }
 
             Spacer(modifier = Modifier.height(8.dp))
-            Text(text = "Language", fontWeight = FontWeight.SemiBold)
-            Box {
-                OutlinedButton(onClick = { languageMenu = true }, modifier = Modifier.testTag("transcription_language")) {
-                    Text(TRANSCRIPTION_LANGUAGES.firstOrNull { it.first == language }?.second ?: language)
-                }
-                DropdownMenu(expanded = languageMenu, onDismissRequest = { languageMenu = false }) {
-                    TRANSCRIPTION_LANGUAGES.forEach { (code, label) ->
-                        DropdownMenuItem(text = { Text(label) }, onClick = { viewModel.setTranscriptionLanguage(code); languageMenu = false })
-                    }
-                }
-            }
-            Text(
-                text = "Choosing the language is more accurate than automatic detection.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            TranscriptionLanguageSettings(viewModel)
 
             Spacer(modifier = Modifier.height(8.dp))
             Text(text = "Quality", fontWeight = FontWeight.SemiBold)

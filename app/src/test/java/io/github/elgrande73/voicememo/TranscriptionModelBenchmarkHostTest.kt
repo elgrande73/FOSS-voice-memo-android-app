@@ -67,7 +67,7 @@ class TranscriptionModelBenchmarkHostTest {
                     decodeMs += ms; perMemo += ms; audioS += audio.size / 16000.0
                     if (result[0] == case.language) langOk++
                     if (System.getenv("WHISPER_BENCH_VERBOSE") == "1") {
-                        println("MEASURE text model=${model.name} ${if (noisy) "noise" else "clean"} ${if (auto) "auto" else "given"} ${case.clip} [${result[0]}] ${result[1].trim()}")
+                        println("MEASURE text model=${model.name} ${if (noisy) "noise" else "clean"} ${if (auto) "auto" else "given"} ${case.clip} lang=${case.language} ms=%.0f [${result[0]}] ${result[1].trim()}".format(ms))
                     }
                     errors += editDistance(words(case.text), words(result[1])); total += words(case.text).size
                 }

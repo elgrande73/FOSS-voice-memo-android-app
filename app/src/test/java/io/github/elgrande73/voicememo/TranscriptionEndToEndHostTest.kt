@@ -99,7 +99,7 @@ class TranscriptionEndToEndHostTest {
         val executor = Executors.newSingleThreadExecutor()
         val manager = TranscriptionManager(
             dao = db.voiceNoteDao(), transcriberFactory = { engine },
-            settings = { TranscriptionSettings(language = "en", quality = TranscriptionQuality.FAST, threads = 4) },
+            settings = { TranscriptionSettings(fixedLanguage = "en", quality = TranscriptionQuality.FAST, threads = 4) },
             scope = CoroutineScope(SupervisorJob()), worker = executor.asCoroutineDispatcher()
         )
         val start = System.nanoTime()

@@ -26,11 +26,15 @@ enum class TranscriptionQuality(val title: String, val beamSize: Int) {
 }
 
 data class TranscriptionSettings(
-    /** ISO 639-1 code, or [AUTO_LANGUAGE] for automatic detection. */
-    val language: String = AUTO_LANGUAGE,
+    val languageMode: LanguageMode = LanguageMode.FIXED,
+    /** Language code used in [LanguageMode.FIXED] (kept while automatic detection is chosen). */
+    val fixedLanguage: String = WhisperLanguages.ENGLISH,
     val quality: TranscriptionQuality = TranscriptionQuality.DEFAULT,
     val threads: Int = 4
 ) {
+    /** The language passed to whisper.cpp for a model described by [info] (see [WhisperLanguages.resolve]). */
+    fun effectiveLanguage(info: GgmlModelInfo?): EffectiveLanguage = WhisperLanguages.resolve(languageMode, fixedLanguage, info)
+
     companion object {
         const val AUTO_LANGUAGE = "auto"
     }
@@ -146,11 +150,19 @@ class WhisperTranscriber(
     @Synchronized
     override fun transcribe(samples: FloatArray, settings: TranscriptionSettings, cancel: CancelToken): TranscriptResult {
         val model = loadModel()
+        val language = settings.effectiveLanguage(model.info)
+        if (language is EffectiveLanguage.Unsupported) {
+            // Never substitute another language: say what is wrong and how to fix it
+            throw TranscriptionException(
+                TranscriptionException.Kind.FAILED,
+                "The speech model does not support the language \"${language.code}\". Choose another language in Settings."
+            )
+        }
         val current = handle
         val start = System.nanoTime()
         cancel.setOnCancel { WhisperNative.requestAbort(current) }
         try {
-            val result = WhisperNative.transcribe(current, samples, settings.language, settings.threads, settings.quality.beamSize)
+            val result = WhisperNative.transcribe(current, samples, language.engineCode, settings.threads, settings.quality.beamSize)
             if (cancel.isCancelled) throw TranscriptionException(TranscriptionException.Kind.CANCELLED, "Cancelled.")
             result ?: throw TranscriptionException(TranscriptionException.Kind.FAILED, "Transcription failed.")
             return TranscriptResult(result[1].trim(), result[0], model.id, (System.nanoTime() - start) / 1_000_000)

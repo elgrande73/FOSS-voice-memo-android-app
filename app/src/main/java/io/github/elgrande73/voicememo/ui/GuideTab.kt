@@ -157,6 +157,8 @@ fun GuideTab() {
                     Voice Memo transcribes with the speech-recognition model OpenAI Whisper "base" (multilingual), which runs entirely on your phone with whisper.cpp. The model is not part of the app: download it once in Settings → Speech-to-Text (about 149 MB, Wi-Fi recommended); after that, transcription works without an internet connection. Tap Transcribe on a memo in History; you can edit or delete the text afterwards. The recording itself is never changed.
 
                     Transcription only runs when you ask for it, unless you turn on "Transcribe new memos automatically" in Settings. It keeps running in the background with a notification; a long memo can take a while on older phones.
+
+                    Memos are transcribed as English unless you choose another language in Settings → Speech-to-Text → Transcription language (or automatic detection, which is slower and can pick the wrong language for short memos).
                 """.trimIndent(),
                 tips = listOf(
                     "Choose the language in Settings → Speech-to-Text: it is more accurate than automatic detection.",
