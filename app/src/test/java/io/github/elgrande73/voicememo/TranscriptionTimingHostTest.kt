@@ -77,7 +77,7 @@ class TranscriptionTimingHostTest {
             val executor = Executors.newSingleThreadExecutor()
             val manager = TranscriptionManager(
                 dao = db.voiceNoteDao(), transcriberFactory = { engine },
-                settings = { TranscriptionSettings(language = "en", quality = TranscriptionQuality.FAST, threads = threads) },
+                settings = { TranscriptionSettings(fixedLanguage = "en", quality = TranscriptionQuality.FAST, threads = threads) },
                 scope = CoroutineScope(SupervisorJob()), worker = executor.asCoroutineDispatcher()
             )
             // Cold: the first memo loads the model; then each memo again warm

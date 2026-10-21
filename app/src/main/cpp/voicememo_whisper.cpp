@@ -63,6 +63,25 @@ Java_io_github_elgrande73_voicememo_transcription_WhisperNative_loadBackends(JNI
     ggml_backend_load_all_from_path(to_string(env, libDir).c_str());
 }
 
+/** whisper.cpp's language table: code and English name of every language id, alternating (id = index / 2). */
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_elgrande73_voicememo_transcription_WhisperNative_languageTable(JNIEnv *env, jobject) {
+    const int count = whisper_lang_max_id() + 1;
+    jobjectArray out = env->NewObjectArray(2 * count, env->FindClass("java/lang/String"), nullptr);
+    for (int id = 0; id < count; ++id) {
+        const char *code = whisper_lang_str(id);
+        const char *name = whisper_lang_str_full(id);
+        jstring jcode = env->NewStringUTF(code != nullptr ? code : "");
+        jstring jname = env->NewStringUTF(name != nullptr ? name : "");
+        env->SetObjectArrayElement(out, 2 * id, jcode);
+        env->SetObjectArrayElement(out, 2 * id + 1, jname);
+        // 200 strings: release the local references as we go
+        env->DeleteLocalRef(jcode);
+        env->DeleteLocalRef(jname);
+    }
+    return out;
+}
+
 JNIEXPORT jstring JNICALL
 Java_io_github_elgrande73_voicememo_transcription_WhisperNative_systemInfo(JNIEnv *env, jobject) {
     return env->NewStringUTF(whisper_print_system_info());
@@ -108,13 +127,27 @@ Java_io_github_elgrande73_voicememo_transcription_WhisperNative_transcribe(
     const jsize count = env->GetArrayLength(samples);
     std::vector<float> pcm(count);
     env->GetFloatArrayRegion(samples, 0, count, pcm.data());
+    // Kept alive until whisper_full returns (params.language points into it)
     const std::string lang = to_string(env, language);
+    const bool detect = lang.empty() || lang == "auto";
+    if (!detect && whisper_is_multilingual(session->ctx)) {
+        // An unknown code would silently become a wrong prompt token in whisper_full (whisper_lang_id returns -1);
+        // a code beyond the model's language tokens (e.g. Cantonese with base) as well. Refuse instead.
+        const int id = whisper_lang_id(lang.c_str());
+        const int languages = whisper_model_n_vocab(session->ctx) - 51765 - 1;
+        if (id < 0 || id >= languages) {
+            LOGW("language '%s' is not supported by this model", lang.c_str());
+            return nullptr;
+        }
+    }
 
     whisper_full_params params = whisper_full_default_params(
             beamSize > 1 ? WHISPER_SAMPLING_BEAM_SEARCH : WHISPER_SAMPLING_GREEDY);
     if (beamSize > 1) params.beam_search.beam_size = beamSize;
     params.n_threads = threads;
-    params.language = lang.empty() ? "auto" : lang.c_str();
+    // A language code skips whisper.cpp's language identification (it runs only for "auto"); detect_language=true
+    // would only detect and return without transcribing. English-only models ignore the language.
+    params.language = detect ? "auto" : lang.c_str();
     params.detect_language = false;
     params.translate = false;
     params.no_timestamps = true;

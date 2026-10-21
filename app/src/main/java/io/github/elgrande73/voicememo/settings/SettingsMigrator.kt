@@ -25,7 +25,9 @@ object PreferenceKeys {
     const val ACTIVATION_THRESHOLD_DB = "thresholdDb"
 
     /** On-device transcription (see transcription.Transcription). */
-    const val TRANSCRIPTION_LANGUAGE = "transcriptionLanguage"
+    /** Transcription language: [transcription.LanguageMode] name and the code used in fixed mode (settings v6). */
+    const val TRANSCRIPTION_LANGUAGE_MODE = "transcriptionLanguageMode"
+    const val TRANSCRIPTION_FIXED_LANGUAGE = "transcriptionFixedLanguage"
     const val TRANSCRIPTION_QUALITY = "transcriptionQuality"
     /** Automatic transcription of new memos (key predates the versioned settings). */
     const val SPEECH_TO_TEXT_ENABLED = "speechToTextEnabled"
@@ -46,7 +48,7 @@ object PreferenceKeys {
  * saved are never replaced by defaults, and unrelated keys are never touched.
  */
 object SettingsMigrator {
-    const val CURRENT_VERSION = 5
+    const val CURRENT_VERSION = 6
 
     private const val TAG = "SettingsMigrator"
 
@@ -80,6 +82,9 @@ object SettingsMigrator {
         }
         if (version < 5) {
             migrateToV5(editor)
+        }
+        if (version < 6) {
+            migrateToV6(prefs, editor)
         }
 
         // Always validate the authoritative threshold, so a corrupt or out-of-range value can never reach the detector
@@ -163,6 +168,33 @@ object SettingsMigrator {
         editor.remove(REMOVED_HARDWARE_SHORTCUT_GESTURE)
     }
 
+    /**
+     * v6: the transcription language becomes a mode (fixed language or automatic detection) plus the fixed language.
+     * An explicitly saved choice is kept: a language → fixed mode with that language; "auto" → automatic detection
+     * (fixed language English, used if the user switches to fixed). Without a saved choice (new installations and
+     * users who never changed it): fixed English, which skips the per-recording language detection.
+     */
+    private fun migrateToV6(prefs: SharedPreferences, editor: SharedPreferences.Editor) {
+        if (prefs.contains(PreferenceKeys.TRANSCRIPTION_LANGUAGE_MODE)) return
+        val saved = readString(prefs, V5_TRANSCRIPTION_LANGUAGE)
+        when {
+            saved == "auto" -> {
+                editor.putString(PreferenceKeys.TRANSCRIPTION_LANGUAGE_MODE, "AUTO")
+                editor.putString(PreferenceKeys.TRANSCRIPTION_FIXED_LANGUAGE, "en")
+            }
+            !saved.isNullOrBlank() -> {
+                editor.putString(PreferenceKeys.TRANSCRIPTION_LANGUAGE_MODE, "FIXED")
+                editor.putString(PreferenceKeys.TRANSCRIPTION_FIXED_LANGUAGE, saved)
+            }
+            else -> {
+                editor.putString(PreferenceKeys.TRANSCRIPTION_LANGUAGE_MODE, "FIXED")
+                editor.putString(PreferenceKeys.TRANSCRIPTION_FIXED_LANGUAGE, "en")
+            }
+        }
+        // The value now lives in the two new keys
+        editor.remove(V5_TRANSCRIPTION_LANGUAGE)
+    }
+
     /** Whether the one-time notice about the changed built-in wake phrase is still to be shown. */
     fun wakePhraseChangedNotice(prefs: SharedPreferences): Boolean = try {
         prefs.getBoolean(PreferenceKeys.WAKE_PHRASE_CHANGED_NOTICE, false)
@@ -175,6 +207,8 @@ object SettingsMigrator {
     private const val V3_MANGO_TANGO_ID = "mango_tango"
     private const val REMOVED_WAKE_WORD_MODEL = "wakeWordModel"
     private const val REMOVED_RECORDED_WAKE_PHRASE_TEXT = "recordedWakePhraseText"
+    // Single transcription language ("auto" or a code) before v6
+    private const val V5_TRANSCRIPTION_LANGUAGE = "transcriptionLanguage"
     // Keys of settings removed by v5
     private const val REMOVED_HARDWARE_SHORTCUT_ENABLED = "hardwareShortcutEnabled"
     private const val REMOVED_HARDWARE_SHORTCUT_GESTURE = "hardwareShortcutGesture"

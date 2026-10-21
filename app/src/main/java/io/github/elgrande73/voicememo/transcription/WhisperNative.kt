@@ -20,6 +20,7 @@ object WhisperNative {
         val ok = try {
             System.loadLibrary("vmwhisper")
             loadBackends(context.applicationInfo.nativeLibraryDir)
+            useLanguageTable()
             true
         } catch (e: UnsatisfiedLinkError) {
             Log.w(TAG, "Speech-to-text library not available", e)
@@ -36,12 +37,27 @@ object WhisperNative {
         if (state == true) return true
         System.load(libraryPath)
         loadBackends(backendDirectory)
+        useLanguageTable()
         state = true
         return true
     }
 
+    /** The language list comes from the loaded whisper.cpp (see [WhisperLanguages]). */
+    private fun useLanguageTable() {
+        try {
+            val flat = languageTable()
+            // Ids are positions: use the table only if every id has a code
+            val entries = List(flat.size / 2) { flat[2 * it] to flat[2 * it + 1] }
+            if (entries.none { it.first.isEmpty() }) WhisperLanguages.useNativeTable(entries)
+        } catch (e: UnsatisfiedLinkError) {
+            Log.w(TAG, "Language table not available; using the built-in copy", e)
+        }
+    }
+
     external fun loadBackends(libDir: String)
     external fun systemInfo(): String
+    /** whisper.cpp's language table: code and English name per language id, alternating. */
+    external fun languageTable(): Array<String>
     /** Returns a handle, or 0 if the model could not be loaded (invalid file, not enough memory). */
     external fun init(modelPath: String): Long
     external fun free(handle: Long)

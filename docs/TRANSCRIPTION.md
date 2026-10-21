@@ -124,7 +124,8 @@ including model loading (host).
   this was **not measured** (no real recordings were available). English synthetic speech is close to correct.
 - Reducing whisper's 30 s audio context for short memos saved little time and increased errors (base: 0.395 → 0.484 with
   +3 s context) and is not used.
-- Choosing the language beats automatic detection, hence the language setting (default: automatic).
+- Choosing the language beats automatic detection, hence the language setting (default since settings v6: fixed
+  English, section "Transcription language").
 - Quality setting: *Accurate* = beam search 5 (default), *Fast* = greedy (~30 % faster, more errors).
 
 ### Memory (host, base q5_0)
@@ -165,7 +166,7 @@ A phone several times slower than the host therefore needed over a minute per sh
 `app/src/main/cpp/CMakeLists.txt` compiles the native code with `-O3 -DNDEBUG` in every build type (debug info `-g`
 is kept; packaged libraries are stripped). Verified in the generated arm64 build files.
 
-**2. The first 30 s window was encoded twice with automatic language detection** (the app's default language setting).
+**2. The first 30 s window was encoded twice with automatic language detection** (then the default language setting).
 `whisper_full()` encodes window 0 to detect the language and then encodes the identical window again to transcribe it;
 for a short memo that is most of the work. `app/src/main/cpp/whisper_patches.cmake` patches a copy of the pinned
 whisper.cpp at build time (the submodule stays unmodified) to reuse that encoding when audio, offset and audio context
@@ -210,6 +211,64 @@ language given unless noted; models built with `scripts/whisper-model/` steps fr
 - **Shorter encoder context (`audio_ctx`)** for short memos: WER 0.32 → 0.79–1.0 and slower; not adopted.
 - Automatic language detection misidentified 4–5 of 21 synthetic sentences (WER 0.33 vs 0.30 with the language given);
   choosing the language in Settings remains slightly more accurate.
+
+### Transcription language: fixed by default (settings v6)
+
+**Flow.** Settings stores a mode and a fixed language (`transcriptionLanguageMode` = `FIXED`/`AUTO`,
+`transcriptionFixedLanguage` = whisper.cpp code). `Transcription.settings` reads them; `WhisperTranscriber` resolves
+the effective language for the loaded model with `WhisperLanguages.resolve` (the same function produces the
+"Effective configuration" in Settings) and passes it to the JNI bridge, which sets `whisper_full_params.language` and
+calls `whisper_full`.
+
+**What whisper.cpp v1.9.5 does** (checked in `third_party/whisper.cpp/src/whisper.cpp`):
+- `whisper_full_default_params()` sets `language = "en"` and `detect_language = false`.
+- Language identification runs only if `language` is null, empty or `"auto"`, or `detect_language` is true
+  (`whisper_full_with_state`); `detect_language = true` would *only* detect and return without transcribing. So a
+  language code alone skips identification; no further flag is needed, and the bridge keeps `detect_language = false`.
+- For a multilingual model the code is turned into the prompt token with `whisper_lang_id()`. An unknown code returns
+  −1 and would silently become a wrong token, and ids beyond the model's language tokens (`n_vocab − 51765 − 1`, i.e.
+  99 languages for base; Cantonese `yue`, id 99, exists only in large-v3) are invalid too. The bridge refuses both
+  (`transcribe` returns null) and the app reports "The speech model does not support the language …" instead of
+  substituting another language.
+- English-only models (`whisper_is_multilingual() == 0`) add no language token; the app always passes `"en"` for them
+  (automatic detection would be meaningless).
+- The language list in Settings is whisper.cpp's own table (`whisper_lang_max_id`, `whisper_lang_str`,
+  `whisper_lang_str_full`, read through JNI once the library is loaded), limited to the languages of the selected model;
+  a built-in copy of the v1.9.5 table is used before the library is loaded and is checked against the submodule source
+  and the native library in tests. Armenian (`hy`, id 53) is in the table and within base's 99 languages; a real
+  transcription with a fixed language returns that language (tested with English and German on the host).
+
+**Defaults and upgrades** (settings migration v6): new installations and users who never chose a language get **fixed
+English**; a saved language becomes the fixed language; a saved "Automatic" keeps automatic detection. Switching to
+automatic detection keeps the fixed language, so switching back restores it. Changes apply from the next memo; a
+running transcription is not interrupted.
+
+**Measured** (`TranscriptionModelBenchmarkHostTest`, host, Whisper base multilingual f16, the 21 synthetic sentences
+— 12 English, 9 in Italian, French, Spanish, German, Polish — clean and with pink noise, two runs, single-encode patch
+in place):
+
+| | Automatic detection | Fixed language |
+|---|---|---|
+| Mean decode per memo, all (clean / noise) | 2.15 / 2.05 s; 2.02 / 1.92 s | 1.89 / 1.95 s; 1.78 / 1.74 s |
+| English memos, mean (clean / noise) | 1.69 / 1.65 s | 1.70 / 1.67 s |
+| Other languages, mean (clean / noise) | 2.62 / 2.43 s | 2.02 / 2.08 s |
+| WER (clean / noise) | 0.333 / 0.338 | 0.303 / 0.282 |
+| Language correct | 16–17 of 21 | 21 of 21 (given) |
+
+With the encoder pass already shared (patch above), identification itself costs about one decoder step: English memos
+take the same time. The gain of a fixed language comes from avoiding misdetections (for example Italian taken as Thai),
+which produce wrong and longer output. Without the patch (stock whisper.cpp), identification added a whole encoder pass
+(3.40 s vs 1.67 s mean, section above).
+
+**Whisper base.en (English-only), investigated, not offered.** Built from the same public export route (147 MB, same
+architecture and size as base). On the same 12 English sentences with the language fixed to English (two runs): mean
+1.55 vs 1.67 s clean but 1.61 vs 1.54 s with noise (no consistent speed difference), and less accurate on this synthetic
+speech (WER 0.115 vs 0.066 clean, 0.148 vs 0.090 noisy). No memory or download advantage. Base Multilingual stays the
+only offered model; a base.en file can still be imported (Settings shows "Base English" and English only).
+
+**Other pipeline checks:** the WAV is read and resampled once (1–4 ms per memo, stage timings below); the model stays
+loaded between memos (released 60 s after the queue is empty); the JNI bridge copies the samples once
+(about 60,000 floats for a 4 s memo); greedy decoding is the default; no audio is processed twice.
 
 ### Stage timings, cold vs warm (host)
 
