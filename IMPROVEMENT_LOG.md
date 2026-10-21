@@ -2,6 +2,30 @@
 
 Newest first. Numbers come from synthetic fixtures unless stated otherwise.
 
+## 2026-10-21 — Requested fixes: controls, one-tap recording, parity, robustness, transcription speed
+
+- **Transcription root cause:** debug builds compiled ggml/whisper.cpp at -O0 (AGP Debug). Host, same 4 s memo: -O0
+  34.0 s, -O2 2.2 s, -O3 1.5 s. Now -O3 in every build type. Patch: one encoder pass with automatic language detection
+  (3.40 → 1.93 s mean, identical transcripts on 42 memos).
+- **Not adopted:**
+  - flash attention: 15 % faster, but WER 0.303 → 0.323;
+  - tiny: about 2× faster, WER 0.33–0.36 vs 0.28–0.30;
+  - q8_0 (14 % faster, same WER): no pinned checksum to download it; follow-up.
+- **Shortcuts:** the volume-button shortcut and the accessibility service were removed (migration v5).
+- **Recording-controls setting:** the channel-level lock-screen visibility overrode the setting. Fixed: new channel, and
+  no button at all when the setting is off.
+- **New:** home-screen widget, launcher shortcut, and the tile now works with monitoring off (it opens the app).
+- **Parity:**
+  - Start and stop are identical in code. Measured with random frame phase: 57 vs 52–53 of 192.
+  - Real asymmetry: a stop phrase said after a silence-timeout end started a new memo (31/36). Late-stop window of 5 s
+    added.
+- **Robustness:**
+  - Recorded samples are now matched in a 20 dB range.
+  - Held-out: 1 sample F1 0.519 → 0.780, 5 samples F1 0.677 → 0.862.
+  - Cost: stopping 0.2 s after speech is harder (65 vs 77/108); the variation set lost 4 of 184.
+  - The half-frame stream was rejected.
+- **Restart:** a sticky restart without an intent now stops the service.
+
 ## 2026-10-21 — Wake phrase: window length and flux gate (not adopted)
 
 - **Hypothesis:** different candidate window lengths, or a different stationary-sound (spectral-flux) gate, recover

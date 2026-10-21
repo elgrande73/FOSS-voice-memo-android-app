@@ -202,17 +202,18 @@ The former "keyword sensitivity" (0.10–0.95) required `distance ≤ 0.28 + (s 
 
 ## 9. Recording Controls & Lock Screen
 
-Dashboard button, notification action, Quick Settings tile (`RecordingTileService`), hardware and keyboard shortcuts
-(`RecordingShortcutHandler`, a pure state machine, hosted by `MainActivity` and the optional
-`RecordingShortcutAccessibilityService`) all send start/stop/toggle requests to `AudioMonitoringService`. A start
-while recording is ignored; toggles are debounced. Background controls work only while monitoring runs (Android's
-while-in-use microphone rule). Platform limits and the device test plan: [`docs/SHORTCUTS_AND_LOCK_SCREEN.md`](docs/SHORTCUTS_AND_LOCK_SCREEN.md).
+Dashboard button, notification action, Quick Settings tile (`RecordingTileService`), home-screen widget
+(`RecordingWidgetProvider`), launcher shortcut (`res/xml/shortcuts.xml`) and the keyboard shortcut
+(`RecordingShortcutHandler`, hosted by `MainActivity`) all send start/stop/toggle requests to `AudioMonitoringService`.
+A start while recording is ignored; toggles are debounced. While monitoring runs, tile, widget and notification toggle
+through the service; otherwise tile, widget and launcher shortcut open the app with `ACTION_RECORD_MEMO`
+(`RecordingEntryPoints`), which starts the memo like Quick Memo (Android's while-in-use microphone rule). Every state
+change refreshes the tile and widgets (`RecordingEntryPoints.onStateChanged`). Platform limits and the device test plan: [`docs/SHORTCUTS_AND_LOCK_SCREEN.md`](docs/SHORTCUTS_AND_LOCK_SCREEN.md).
 
 | Setting | Key | Default |
 |---|---|---|
-| Volume-button shortcut | `hardwareShortcutEnabled`, `hardwareShortcutGesture` (enum name) | off, `HOLD_BOTH_VOLUME` |
 | Keyboard shortcut | `keyboardShortcutEnabled`, `keyboardShortcutKeyCode`, `keyboardShortcutModifiers` | off, not set |
-| Lock-screen controls | `lockScreenControlsEnabled` | on |
+| Recording controls in the notification and on the lock screen | `lockScreenControlsEnabled` | on |
 
 ---
 

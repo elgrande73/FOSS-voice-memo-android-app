@@ -7,6 +7,26 @@ First release under the new name **Voice Memo** and the new application ID `io.g
 to it (see README, "New application identity").
 
 ### Changed (since pre-release v0.0.2)
+- **Much faster transcription.** Debug builds compiled the speech engine without optimisation (over a minute for a
+  4 s memo on a phone); the native code is now always built with `-O3` (build host: 34.0 s → 1.5 s for the same 4 s
+  memo; release builds −O2 → −O3: 2.2 s → 1.5 s). With automatic language detection the first audio window is no
+  longer encoded twice (identical transcripts; build host: 3.4 s → 1.9 s per short memo). Phone timings still need a
+  device.
+- **Removed:** the volume-button shortcut and the accessibility service for shortcuts outside the app ("Use shortcuts
+  outside the app"), which did not work reliably. Their settings are removed (settings migration v5); the keyboard
+  shortcut is unchanged. The app no longer declares an accessibility service.
+- **Fixed:** *Recording controls on the lock screen* had no effect (the notification channel overrode the setting, and
+  *Start memo* stayed available). The setting is now *Recording controls in the notification and on the lock screen*:
+  off removes the Start/Stop button from the notification entirely; changes apply at once.
+- **New:** one-tap recording from a home-screen widget and a "Record memo" launcher shortcut; the Quick Settings tile
+  now also works when monitoring is off (it opens the app and records). All show the real recording state.
+- **Wake phrase:** saying the stop phrase after the memo had already ended by the silence timeout started a new memo;
+  within 5 s it is now recognised as the stop command (stop chime, no new memo). Starting and stopping use identical
+  detection (measured parity). Recorded samples are matched on the strongest 20 dB of the spectrum, which makes them
+  more robust to background noise (synthetic held-out set, 1 sample: recall 0.39 → 0.64 with no false triggers; near
+  misses 180 → 36 per hour of stream); the built-in reference is unchanged.
+- If Android restarts the monitoring service after the app was killed, it now stops instead of showing a monitoring
+  notification without listening; start monitoring again from the app.
 - Transcription shows what it is doing: preparing audio, loading the speech model (only when needed), transcribing,
   saving, with elapsed time and memo length; then how long it took, or that it was cancelled or failed. A percentage
   appears only for memos over 30 s, where whisper.cpp's progress is meaningful.

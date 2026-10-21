@@ -5,7 +5,7 @@
 <li>Wake phrase "Mango Tango" to start (and optionally stop) a memo, with an offline keyword spotter; record it, or your own phrase, in your own voice for a personal template</li>
 <li>One <i>Match confidence threshold</i> (20–80 %) with a live match gauge on the dashboard</li>
 <li>Start and stop memos from the lock screen (notification button and Quick Settings tile), with a large record button on the dashboard</li>
-<li>Optional shortcuts: hold the volume buttons, or a key combination on a Bluetooth/USB keyboard (an optional accessibility service, which only checks key presses, extends them to other apps)</li>
+<li>One-tap recording: Quick Settings tile, home-screen widget and a "Record memo" launcher shortcut; optional key combination on a Bluetooth/USB keyboard</li>
 <li>Speech-to-text on the phone: memos are transcribed with whisper.cpp and the multilingual Whisper base model, which you download once from Settings (about 149 MB); after that, no internet or account is needed; edit or delete transcripts</li>
 <li>Live microphone level and an optional minimum level for the wake phrase</li>
 <li>Rolling pre-trigger buffer, so the first word is never cut off</li>

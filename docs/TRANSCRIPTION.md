@@ -6,7 +6,7 @@ transcription → Download Whisper Base model* (section 3). That download is the
 `INTERNET` permission exists for it); transcription itself runs offline, and no audio or text leaves the device. Wake-phrase detection stays a separate, lightweight detector
 (see `WAKE_PHRASE_DETECTION.md`); the transcription model is loaded only when a memo is transcribed.
 
-All numbers below are **measured on the build machine** (x86-64 Intel Xeon, 4 cores, AVX-512) with **synthetic
+All numbers below are **measured on the build machine** (x86-64 Intel Xeon, 4 cores) with **synthetic
 speech** (eSpeak NG), unless stated otherwise. They show relative differences, not phone performance or real-world
 accuracy. No phone or emulator was available for this work.
 
@@ -144,6 +144,72 @@ app path on the host: the model is "downloaded" with the app's `ModelDownloader`
 header check, test load: 0.4 s for 55 MB), registered, and three memos are transcribed by `TranscriptionManager` into a
 Room database (1.9–2.2 s: "Can you send me the file later?"; a damaged WAV fails with an explanation; a silent one gets
 an empty transcript); the results are still there after reopening the database.
+
+### Performance: why a 4 s memo took over a minute, and what changed
+
+Measured on the build host with the app's JNI bridge and whisper.cpp (Whisper base, greedy "Fast" decoding, 4 threads).
+The host library is built without CPU-specific variants (`GGML_NATIVE=OFF`, generic x86-64 SIMD), so absolute times
+are only indicative; phones were not available. All runs in this section use identical audio.
+
+**1. Unoptimised native code in debug builds (main cause).** The Android Gradle plugin builds the C/C++ code of debug
+variants with `CMAKE_BUILD_TYPE=Debug`, i.e. with no `-O` flag (`-O0`), and release variants with `RelWithDebInfo`
+(`-O2`). whisper.cpp/ggml at `-O0` is extremely slow:
+
+| Native build of the same engine | 4 s memo, warm (decode) | Model load |
+|---|---|---|
+| Debug (`-O0`, what debug APKs contained) | 34.0 s | 0.84 s |
+| RelWithDebInfo (`-O2`, release APKs) | 2.2 s | 0.54 s |
+| Release (`-O3`) | 1.5 s | 0.63 s |
+
+A phone several times slower than the host therefore needed over a minute per short memo with a debug APK. Fix:
+`app/src/main/cpp/CMakeLists.txt` compiles the native code with `-O3 -DNDEBUG` in every build type (debug info `-g`
+is kept; packaged libraries are stripped). Verified in the generated arm64 build files.
+
+**2. The first 30 s window was encoded twice with automatic language detection** (the app's default language setting).
+`whisper_full()` encodes window 0 to detect the language and then encodes the identical window again to transcribe it;
+for a short memo that is most of the work. `app/src/main/cpp/whisper_patches.cmake` patches a copy of the pinned
+whisper.cpp at build time (the submodule stays unmodified) to reuse that encoding when audio, offset and audio context
+are unchanged; configuration fails if the source no longer matches, so a submodule update cannot silently drop it.
+
+| 21 memos, 2–5 s each (mean 3.7 s), language "Automatic" | Mean decode | Median | Transcripts |
+|---|---|---|---|
+| Before (two encoder passes) | 3.40 s | 3.11 s | — |
+| After (one encoder pass) | 1.93 s | 1.58 s | identical, word for word (42 memos, clean and noisy) |
+| For comparison: language given | 1.67 s | 1.51 s | — |
+
+**3. More decoding threads while monitoring runs** (earlier change, see the architecture section): 4 instead of 2
+threads decode about 1.8× faster.
+
+**Expected effect on a phone** (not measured, no device): a debug build was about 22× too slow from point 1 alone;
+release builds gain about 1.45× from `-O3`; memos with automatic language detection need about 1.75× less time; all
+multiply. The target of 2–5 s for a 4 s memo on a mid-range phone after the model is loaded is plausible but must be
+confirmed on a device (`TranscriptionManager` logs the stage durations of every run).
+
+**Model and runtime:** unchanged — whisper.cpp v1.9.5 (MIT, pinned submodule), CPU backend chosen at run time, Whisper
+base multilingual f16 (`ggml-base.bin`, MIT, downloaded on request). No new library, no GPU/NNAPI code, no new download.
+
+**Alternatives measured and not adopted** (`TranscriptionModelBenchmarkHostTest`, set `WHISPER_BENCH_DIR` to a folder
+of model files; 21 synthetic sentences in 5 languages with known text, 2–5 s, clean and with pink noise at −45 dBFS;
+language given unless noted; models built with `scripts/whisper-model/` steps from the public sherpa-onnx exports):
+
+| Model file | Size | Load | Mean decode | WER clean | WER noisy |
+|---|---|---|---|---|---|
+| base f16 (the app's model) | 147 MB | 0.17–1.0 s | 1.65 s | 0.303 | 0.282 |
+| base q8_0 | 81 MB | 0.13 s | 1.41 s | 0.287 | 0.287 |
+| base q5_0 | 55 MB | 0.60 s | 1.75 s | 0.297 | 0.308 |
+| tiny f16 | 77 MB | 0.10 s | 0.78 s | 0.344 | 0.344 |
+| tiny q8_0 | 43 MB | 0.09 s | 0.66 s | 0.333 | 0.338 |
+| tiny q5_0 | 29 MB | 0.06 s | 0.77 s | 0.364 | 0.333 |
+
+- **Whisper tiny:** about 2× faster but clearly less accurate (WER 0.33–0.36 vs 0.28–0.30); with the fixes above base
+  is expected to be fast enough, so base stays the only offered model.
+- **base q8_0:** 14 % faster on the host with equal accuracy and half the memory. whisper.cpp publishes no checksum for
+  quantised files (the download must stay pinned to the published SHA-1), so it would need on-device quantisation;
+  left as a measured follow-up (users can already import a quantised file in Settings).
+- **Flash attention:** 15 % faster on the host but WER 0.303 → 0.323 with changed transcripts; not adopted.
+- **Shorter encoder context (`audio_ctx`)** for short memos: WER 0.32 → 0.79–1.0 and slower; not adopted.
+- Automatic language detection misidentified 4–5 of 21 synthetic sentences (WER 0.33 vs 0.30 with the language given);
+  choosing the language in Settings remains slightly more accurate.
 
 ### Stage timings, cold vs warm (host)
 

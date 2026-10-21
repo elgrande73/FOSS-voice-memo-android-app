@@ -19,8 +19,7 @@ the app has been accepted by F-Droid. Inclusion is decided by the F-Droid review
 | Assets | Launcher icon: original artwork (`artwork/icon`), Apache-2.0. Chimes: synthesized at runtime, no audio files. The previous icon bitmap (`img_app_icon.jpg`, unknown provenance) was removed. | ✅ |
 | Test fixtures | `app/src/test/resources/audio`: synthetic speech generated with eSpeak NG (GPL-3.0-or-later tool, used offline once; not a build dependency and not packaged into the APK). Regeneration script included. | ✅ (reviewers may check) |
 | Audio processing | Noise suppression, noise-floor estimation and wake-phrase detection are implemented in Kotlin on platform APIs. Speech-to-text runs locally with whisper.cpp (see `docs/TRANSCRIPTION.md`). | ✅ |
-| Permissions | Only what the features need; see the table in `README.md`. The shortcut features added no permission. | ✅ |
-| Accessibility service | Optional `RecordingShortcutAccessibilityService` (off until the user enables it): key-event filtering only, no accessibility events, no window content. Used for shortcuts outside the app. Reviewers may check its description string. | ✅ (reviewers may check) |
+| Permissions | Only what the features need; see the table in `README.md`. The tile, widget and launcher shortcut added no permission; the app has no accessibility service. | ✅ |
 | Anti-features | Likely none. The former dependency on the device's (often proprietary/online) system speech-recognition service was removed; transcription is local. | ✅ (reviewers decide) |
 | Store metadata | `fastlane/metadata/android/en-US/` (title, descriptions, changelog, 512 px icon). | ✅ |
 | Build metadata | Draft in `fdroid/metadata/io.github.elgrande73.voicememo.yml`. | ⚠️ maintainer input needed |
