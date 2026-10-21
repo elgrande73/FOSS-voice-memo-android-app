@@ -14,9 +14,11 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaPlayer
 import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.DocumentsContract
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
@@ -44,7 +46,14 @@ import io.github.elgrande73.voicememo.memo.VoiceNoteRepository
 import io.github.elgrande73.voicememo.monitoring.AudioMonitoringService
 import io.github.elgrande73.voicememo.playback.ChimePlayer
 import io.github.elgrande73.voicememo.playback.MemoAudioOutput
+import io.github.elgrande73.voicememo.memo.DeleteReport
+import io.github.elgrande73.voicememo.memo.MemoArchive
+import io.github.elgrande73.voicememo.memo.MemoDeleter
+import io.github.elgrande73.voicememo.memo.MemoFilter
+import io.github.elgrande73.voicememo.memo.VoiceNoteDao
+import io.github.elgrande73.voicememo.memo.VoiceNoteFilter
 import io.github.elgrande73.voicememo.playback.MemoPlaybackSequencer
+import io.github.elgrande73.voicememo.playback.PlaybackMode
 import io.github.elgrande73.voicememo.playback.PlaybackCue
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import io.github.elgrande73.voicememo.transcription.SpeechModelStore
@@ -72,6 +81,7 @@ import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseTestResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -85,16 +95,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Calendar
-
-/**
- * Filter categories for voice note listings.
- */
-enum class VoiceNoteFilter(val label: String) {
-    ALL("All Memos"),
-    TODAY("Today"),
-    FAVORITES("Favorites"),
-    KEYWORD("Wake Phrase")
-}
 
 /**
  * ViewModel for Voice Memo - Automatic Voice-Note App.
@@ -127,8 +127,9 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
 
-    private val _activeFilter = MutableStateFlow(VoiceNoteFilter.ALL)
-    val activeFilter = _activeFilter.asStateFlow()
+    // Active filter chips (empty = all memos); combined as described in MemoFilter
+    private val _activeFilters = MutableStateFlow<Set<VoiceNoteFilter>>(emptySet())
+    val activeFilters: StateFlow<Set<VoiceNoteFilter>> = _activeFilters.asStateFlow()
 
     // Filtered Voice Notes
     val filteredVoiceNotes: StateFlow<List<VoiceNote>>
@@ -353,30 +354,14 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         )
 
         // Filtered notes stream
-        filteredVoiceNotes = combine(allVoiceNotes, _searchQuery, _activeFilter) { notes, query, filter ->
+        filteredVoiceNotes = combine(allVoiceNotes, _searchQuery, _activeFilters) { notes, query, filters ->
             val calendar = Calendar.getInstance().apply {
                 set(Calendar.HOUR_OF_DAY, 0)
                 set(Calendar.MINUTE, 0)
                 set(Calendar.SECOND, 0)
                 set(Calendar.MILLISECOND, 0)
             }
-            val startOfToday = calendar.timeInMillis
-
-            notes.filter { note ->
-                val matchesQuery = if (query.isBlank()) true else {
-                    note.title.contains(query, ignoreCase = true) ||
-                            (note.transcriptionText?.contains(query, ignoreCase = true) == true)
-                }
-
-                val matchesFilter = when (filter) {
-                    VoiceNoteFilter.ALL -> true
-                    VoiceNoteFilter.TODAY -> note.timestamp >= startOfToday
-                    VoiceNoteFilter.FAVORITES -> note.isFavorite
-                    VoiceNoteFilter.KEYWORD -> note.triggerType.contains("KEYWORD", ignoreCase = true)
-                }
-
-                matchesQuery && matchesFilter
-            }
+            MemoFilter.apply(notes, query, filters, calendar.timeInMillis)
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
         timelineDisplayState = AudioMonitoringService.currentSessionData.stateIn(
@@ -565,8 +550,9 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         _searchQuery.value = query
     }
 
-    fun setFilter(filter: VoiceNoteFilter) {
-        _activeFilter.value = filter
+    /** Toggles a filter chip; [VoiceNoteFilter.ALL] clears all filters. */
+    fun toggleFilter(filter: VoiceNoteFilter) {
+        _activeFilters.value = MemoFilter.toggle(_activeFilters.value, filter)
     }
 
     fun renameVoiceNote(id: Int, newTitle: String) {
@@ -582,26 +568,98 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun deleteVoiceNote(note: VoiceNote) {
-        if (playbackSequencer.currentNoteId == note.id) {
-            stopPlayback()
-        }
+    fun deleteVoiceNote(note: VoiceNote) = deleteMemos(setOf(note.id))
+
+    /** Settings → "Delete All Voice Memos": every memo in the database, through the same safe path. */
+    fun deleteAllVoiceNotes() {
         viewModelScope.launch {
-            voiceNoteRepository.deleteVoiceNote(note)
+            val ids = withContext(Dispatchers.IO) { database.voiceNoteDao().getAllNoteIds() }.toSet()
+            deleteMemos(ids)
         }
     }
 
-    fun deleteAllVoiceNotes() {
-        stopPlayback()
+    // --- SELECTION (multi-select delete / export) ---
+
+    private val memoDeleter = MemoDeleter(database.voiceNoteDao(), File(context.filesDir, "memos"))
+
+    private val _selectionMode = MutableStateFlow(false)
+    val selectionMode: StateFlow<Boolean> = _selectionMode.asStateFlow()
+
+    private val _selectedIds = MutableStateFlow<Set<Int>>(emptySet())
+    /** Selected memo ids; may include memos hidden by the current filter (see [selectWholeLibrary]). */
+    val selectedIds: StateFlow<Set<Int>> = _selectedIds.asStateFlow()
+
+    private val _deleteInProgress = MutableStateFlow(false)
+    val deleteInProgress: StateFlow<Boolean> = _deleteInProgress.asStateFlow()
+
+    /** One-off result messages of bulk operations (shown once by the UI, then cleared with [consumeHistoryMessage]). */
+    private val _historyMessage = MutableStateFlow<String?>(null)
+    val historyMessage: StateFlow<String?> = _historyMessage.asStateFlow()
+
+    fun consumeHistoryMessage() {
+        _historyMessage.value = null
+    }
+
+    fun startSelection(initialId: Int? = null) {
+        _selectionMode.value = true
+        _selectedIds.value = setOfNotNull(initialId)
+    }
+
+    fun exitSelection() {
+        _selectionMode.value = false
+        _selectedIds.value = emptySet()
+    }
+
+    fun toggleSelected(id: Int) {
+        val current = _selectedIds.value
+        _selectedIds.value = if (id in current) current - id else current + id
+    }
+
+    /** Selects every memo currently shown (filters and search applied); others stay as they are. */
+    fun selectAllShown() {
+        _selectedIds.value = _selectedIds.value + filteredVoiceNotes.value.map { it.id }
+    }
+
+    /** Selects every memo in the library, including those hidden by filters or search. */
+    fun selectWholeLibrary() {
         viewModelScope.launch {
-            val all = allVoiceNotes.value
-            for (note in all) {
-                try {
-                    File(note.audioFilePath).delete()
-                } catch (_: Exception) {}
-            }
-            voiceNoteRepository.deleteAll()
+            _selectedIds.value = withContext(Dispatchers.IO) { database.voiceNoteDao().getAllNoteIds() }.toSet()
         }
+    }
+
+    fun clearSelection() {
+        _selectedIds.value = emptySet()
+    }
+
+    /**
+     * Deletes exactly [ids] (a snapshot taken when the user confirmed, so later selection changes cannot widen it):
+     * audio file and database entry of each memo, nothing else. Playback of a deleted memo is stopped first and its
+     * transcription is cancelled. The result (including partial failures) is reported via [historyMessage].
+     */
+    fun deleteMemos(ids: Set<Int>, onDone: ((DeleteReport) -> Unit)? = null) {
+        if (ids.isEmpty() || _deleteInProgress.value) return
+        if (playbackSequencer.currentNoteId in ids) stopPlayback()
+        _deleteInProgress.value = true
+        viewModelScope.launch {
+            ids.forEach { transcriptionManager.cancel(it) }
+            val report = try {
+                memoDeleter.delete(ids)
+            } catch (e: Exception) {
+                Log.e(TAG, "Deleting memos failed", e)
+                DeleteReport(emptySet(), emptySet(), ids)
+            }
+            _selectedIds.value = _selectedIds.value - report.deleted - report.alreadyGone
+            if (_selectedIds.value.isEmpty()) _selectionMode.value = false
+            _deleteInProgress.value = false
+            _historyMessage.value = describe(report)
+            onDone?.invoke(report)
+        }
+    }
+
+    private fun describe(report: DeleteReport): String = buildString {
+        append(if (report.deleted.size == 1) "1 memo deleted." else "${report.deleted.size} memos deleted.")
+        if (report.alreadyGone.isNotEmpty()) append(" ${report.alreadyGone.size} had already been deleted.")
+        if (report.failed.isNotEmpty()) append(" ${report.failed.size} could not be deleted and were kept unchanged.")
     }
 
     // --- PLAYBACK: displayed-list queue framed by beginning/ending chimes ---
@@ -613,6 +671,20 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     private var startWhenPrepared = true
     // Last note explicitly requested, so a memo shown outside the history list (dashboard) can be resolved
     private var requestedNote: VoiceNote? = null
+
+    private val _playbackMode = MutableStateFlow<PlaybackMode>(
+        PlaybackMode.fromId(try { prefs.getString(PreferenceKeys.HISTORY_PLAYBACK_MODE, null) } catch (_: ClassCastException) { null })
+    )
+    /** Autoplay or Single; persisted. */
+    val playbackMode: StateFlow<PlaybackMode> = _playbackMode.asStateFlow()
+
+    /** Changes the playback mode without touching the memo that is playing (it applies when that memo ends). */
+    fun setPlaybackMode(mode: PlaybackMode) {
+        if (mode == _playbackMode.value) return
+        _playbackMode.value = mode
+        playbackSequencer.autoAdvance = mode == PlaybackMode.AUTOPLAY
+        prefs.edit().putString(PreferenceKeys.HISTORY_PLAYBACK_MODE, mode.id).apply()
+    }
 
     private val playbackSequencer = MemoPlaybackSequencer(
         chimes = object : ChimePlayer {
@@ -630,6 +702,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         },
         isPlayable = { noteId -> findNote(noteId)?.let { File(it.audioFilePath).isFile } == true }
     ).apply {
+        autoAdvance = _playbackMode.value == PlaybackMode.AUTOPLAY
         onStateChanged = { state -> onPlaybackStateChanged(state) }
         onUnplayable = { noteId -> Log.w(TAG, "Voice memo $noteId is not playable") }
     }
@@ -867,6 +940,84 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     suspend fun prepareSingleNoteShare(note: VoiceNote): Intent? = withContext(Dispatchers.IO) {
         val exportResult = exportManager.prepareSingleNoteForSharing(note) ?: return@withContext null
         exportManager.createShareIntent(exportResult, "Share Memo: ${note.title}")
+    }
+
+    private var exportJob: Job? = null
+
+    /**
+     * Exports [ids] (one memo: its original WAV; several: a ZIP with the original WAVs and a manifest) to [destination],
+     * a document the user created with the system file picker (Storage Access Framework; no storage permission).
+     * Source files are only read. Cancel with [cancelExport]; a partial file is then removed.
+     */
+    fun exportMemosTo(ids: Set<Int>, destination: Uri) {
+        if (_exportInProgress.value) return
+        _exportInProgress.value = true
+        exportJob = viewModelScope.launch {
+            val message = try {
+                val notes = orderedNotes(ids)
+                withContext(Dispatchers.IO) {
+                    val job = coroutineContext[Job]
+                    val out = requireNotNull(context.contentResolver.openOutputStream(destination, "w")) { "Cannot open the destination" }
+                    try {
+                        if (notes.size == 1) {
+                            if (MemoArchive.writeWav(notes[0], out) { job?.isActive == false }) "Memo exported."
+                            else throw java.io.IOException("The memo's audio file is missing")
+                        } else {
+                            val report = out.use { MemoArchive.writeZip(notes, it, { job?.isActive == false }) }
+                            if (report.missing.isEmpty()) "${report.exported} memos exported."
+                            else "${report.exported} memos exported; ${report.missing.size} without audio (listed in the manifest)."
+                        }
+                    } catch (e: Throwable) {
+                        // Never leave a truncated export behind
+                        try { DocumentsContract.deleteDocument(context.contentResolver, destination) } catch (_: Exception) {}
+                        throw e
+                    }
+                }
+            } catch (e: CancellationException) {
+                "Export cancelled. Nothing was changed."
+            } catch (e: Exception) {
+                Log.e(TAG, "Export failed", e)
+                "Export failed: ${e.message ?: e.javaClass.simpleName}. Your memos were not changed."
+            }
+            _exportInProgress.value = false
+            _historyMessage.value = message
+        }
+    }
+
+    /** Shares [ids] with another app (one memo: WAV; several: ZIP as in [exportMemosTo]). */
+    fun shareMemos(ids: Set<Int>, onResult: (Intent?) -> Unit) {
+        if (_exportInProgress.value) return
+        _exportInProgress.value = true
+        exportJob = viewModelScope.launch {
+            try {
+                val notes = orderedNotes(ids)
+                val result = if (notes.size == 1) exportManager.prepareSingleNoteForSharing(notes[0]) else exportManager.exportNotesAsZip(notes)
+                onResult(result?.let { exportManager.createShareIntent(it) })
+            } catch (e: CancellationException) {
+                _historyMessage.value = "Export cancelled. Nothing was changed."
+            } catch (e: Exception) {
+                Log.e(TAG, "Share failed", e)
+                onResult(null)
+            } finally {
+                _exportInProgress.value = false
+            }
+        }
+    }
+
+    fun cancelExport() {
+        exportJob?.cancel()
+    }
+
+    /** Suggested file name and MIME type for exporting [ids]. */
+    fun exportTarget(ids: Set<Int>): Pair<String, String> {
+        val single = if (ids.size == 1) allVoiceNotes.value.firstOrNull { it.id in ids } else null
+        return if (single != null) MemoArchive.baseName(single) + ".wav" to "audio/wav"
+        else MemoArchive.zipName(ids.size) to "application/zip"
+    }
+
+    /** Current database rows of [ids], newest first (the library order); memos deleted meanwhile are skipped. */
+    private suspend fun orderedNotes(ids: Set<Int>): List<VoiceNote> = withContext(Dispatchers.IO) {
+        ids.toList().chunked(VoiceNoteDao.SQL_CHUNK).flatMap { database.voiceNoteDao().getNotesByIds(it) }.sortedByDescending { it.timestamp }
     }
 
     fun exportAllNotesAsZip(onResult: (Intent?) -> Unit) {

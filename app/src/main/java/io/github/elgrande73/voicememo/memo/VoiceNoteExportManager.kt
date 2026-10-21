@@ -8,13 +8,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedOutputStream
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 
 /**
  * Result data class returned by export operations.
@@ -106,45 +103,22 @@ class VoiceNoteExportManager(private val context: Context) {
     }
 
     /**
-     * Batch exports a collection of Voice Notes into a single ZIP archive containing audio and metadata.
+     * Batch exports voice notes into one ZIP in the app's cache for sharing: original WAVs (stored, not recompressed)
+     * and a manifest, see [MemoArchive]. A partial file is removed if writing fails or is cancelled.
      */
     suspend fun exportNotesAsZip(notes: List<VoiceNote>): ExportResult? = withContext(Dispatchers.IO) {
         if (notes.isEmpty()) return@withContext null
-
         val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
-        val timestampStr = dateFormatter.format(Date())
-        val zipFile = File(exportDir, "VoiceMemo_VoiceNotes_$timestampStr.zip")
-
-        ZipOutputStream(BufferedOutputStream(FileOutputStream(zipFile))).use { zos ->
-            // 1. Write CSV Metadata
-            val csvEntry = ZipEntry("notes_metadata.csv")
-            zos.putNextEntry(csvEntry)
-            zos.write(generateCsvContent(notes).toByteArray(Charsets.UTF_8))
-            zos.closeEntry()
-
-            // 2. Write JSON Metadata
-            val jsonEntry = ZipEntry("notes_metadata.json")
-            zos.putNextEntry(jsonEntry)
-            zos.write(generateJsonContent(notes).toByteArray(Charsets.UTF_8))
-            zos.closeEntry()
-
-            // 3. Write individual WAV audio files
-            val buffer = ByteArray(8192)
-            for (note in notes) {
-                val audioFile = File(note.audioFilePath)
-                if (audioFile.exists() && audioFile.length() > 0) {
-                    val safeName = "audio/${dateFormatter.format(Date(note.timestamp))}_note_${note.id}.wav"
-                    val audioEntry = ZipEntry(safeName)
-                    zos.putNextEntry(audioEntry)
-                    FileInputStream(audioFile).use { fis ->
-                        var read: Int
-                        while (fis.read(buffer).also { read = it } != -1) {
-                            zos.write(buffer, 0, read)
-                        }
-                    }
-                    zos.closeEntry()
-                }
-            }
+        // Earlier exports in the cache are temporary share copies; remove those old enough not to be in use any more
+        val cutoff = System.currentTimeMillis() - 60 * 60 * 1000L
+        exportDir.listFiles()?.filter { it.name.endsWith(".zip") && it.lastModified() < cutoff }?.forEach { it.delete() }
+        val zipFile = File(exportDir, MemoArchive.zipName(notes.size))
+        val job = coroutineContext[kotlinx.coroutines.Job]
+        try {
+            BufferedOutputStream(FileOutputStream(zipFile)).use { MemoArchive.writeZip(notes, it, { job?.isActive == false }) }
+        } catch (e: Throwable) {
+            zipFile.delete()
+            throw e
         }
 
         val uri = FileProvider.getUriForFile(

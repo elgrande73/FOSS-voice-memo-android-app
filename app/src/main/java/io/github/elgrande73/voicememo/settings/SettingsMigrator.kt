@@ -18,6 +18,8 @@ object PreferenceKeys {
     /** Optional minimum audio level of the wake phrase (see WakePhraseLevel). */
     const val WAKE_PHRASE_MIN_LEVEL_ENABLED = "wakePhraseMinLevelEnabled"
     const val WAKE_PHRASE_MIN_LEVEL_DBFS = "wakePhraseMinLevelDbfs"
+    /** History playback mode (PlaybackMode.id); absent means the default. */
+    const val HISTORY_PLAYBACK_MODE = "historyPlaybackMode"
     /** Built-in wake phrase used while no sample is enrolled (BuiltInWakePhrase.id). */
     const val BUILT_IN_WAKE_PHRASE = "builtInWakePhrase"
     /** Loudness-only activation threshold, VAD dB scale (dBFS + 90). Key predates the versioned settings. */

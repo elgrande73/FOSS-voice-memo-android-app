@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
@@ -52,4 +53,22 @@ interface VoiceNoteDao {
 
     @Query("DELETE FROM voice_notes")
     suspend fun deleteAll()
+
+    @Query("SELECT * FROM voice_notes WHERE id IN (:ids)")
+    suspend fun getNotesByIds(ids: List<Int>): List<VoiceNote>
+
+    @Query("SELECT id FROM voice_notes ORDER BY timestamp DESC")
+    suspend fun getAllNoteIds(): List<Int>
+
+    @Query("DELETE FROM voice_notes WHERE id IN (:ids)")
+    suspend fun deleteByIdsChunk(ids: List<Int>): Int
+
+    /** Deletes the rows of [ids] in one transaction (all or none); returns the number of rows removed. */
+    @Transaction
+    suspend fun deleteByIds(ids: List<Int>): Int = ids.chunked(SQL_CHUNK).sumOf { deleteByIdsChunk(it) }
+
+    companion object {
+        /** Stays below SQLite's limit of bound variables per statement on old Android versions (999). */
+        const val SQL_CHUNK = 500
+    }
 }

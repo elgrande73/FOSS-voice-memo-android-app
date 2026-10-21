@@ -268,4 +268,61 @@ class MemoPlaybackSequencerTest {
         assertEquals(listOf(1), reportedUnplayable)
         assertNull(sequencer.currentNoteId)
     }
+
+    @Test
+    fun singleModeEndsAfterTheEndChime() {
+        sequencer.autoAdvance = false
+        playFromList(1)
+        startAudio()
+        completeMemo(1)
+        assertEquals(State.EndChime(1), sequencer.state)
+        finishChime()
+        assertEquals(State.Idle, sequencer.state)
+        assertEquals(listOf("chime:MEMO_BEGIN", "memo:1", "chime:MEMO_END"), log)
+        assertTrue(pendingChimes.isEmpty())
+    }
+
+    @Test
+    fun switchingModeDuringPlaybackNeitherInterruptsNorRestartsTheMemo() {
+        playFromList(1)
+        startAudio()
+        sequencer.autoAdvance = false // user switches to Single while memo 1 plays
+        assertEquals(State.PlayingMemo(1), sequencer.state)
+        sequencer.autoAdvance = true // and back to Autoplay
+        sequencer.autoAdvance = false
+        assertEquals(listOf("chime:MEMO_BEGIN", "memo:1"), log)
+        completeMemo(1)
+        finishChime()
+        assertEquals(State.Idle, sequencer.state)
+        assertEquals(listOf("chime:MEMO_BEGIN", "memo:1", "chime:MEMO_END"), log)
+    }
+
+    @Test
+    fun switchingToAutoplayDuringTheLastMemoOfSingleModeContinuesWithTheNext() {
+        sequencer.autoAdvance = false
+        playFromList(1)
+        startAudio()
+        sequencer.autoAdvance = true
+        completeMemo(1)
+        finishChime()
+        finishChime()
+        assertEquals(State.PlayingMemo(2), sequencer.state)
+        assertEquals(1, log.count { it.startsWith("memo:1") })
+    }
+
+    @Test
+    fun autoplayNeverPlaysAMemoThatIsFilteredOutAndStopsAtTheEndOfTheList() {
+        displayedList = listOf(1, 2, 3, 4)
+        playFromList(1)
+        startAudio()
+        displayedList = listOf(1, 3) // a filter now hides 2 and 4
+        completeMemo(1)
+        finishChime()
+        finishChime()
+        assertEquals(State.PlayingMemo(3), sequencer.state)
+        completeMemo(3)
+        finishChime()
+        assertEquals(State.Idle, sequencer.state)
+        assertTrue(log.none { it == "memo:2" || it == "memo:4" })
+    }
 }

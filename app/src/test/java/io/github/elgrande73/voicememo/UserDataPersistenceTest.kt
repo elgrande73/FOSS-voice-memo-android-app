@@ -11,6 +11,7 @@ import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.ui.theme.MyApplicationTheme
 import io.github.elgrande73.voicememo.viewmodel.VoiceMemoViewModel
+import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseTestResult
@@ -64,7 +65,8 @@ class UserDataPersistenceTest {
         val viewModel = VoiceMemoViewModel(app)
 
         assertEquals(MatchConfidenceThreshold.DEFAULT_PERCENT, viewModel.matchConfidenceThresholdPercent.value)
-        assertFalse("No enrolled phrase: the built-in 'Ciao Linda' default is used", viewModel.hasKeywordTemplate.value)
+        assertFalse("No enrolled phrase: the built-in phrase is used", viewModel.hasKeywordTemplate.value)
+        assertEquals(BuiltInWakePhrase.MANGO_TANGO, viewModel.builtInWakePhrase.value)
         assertTrue(TemplateKeywordDetector().hasTemplate())
         assertNull(viewModel.keywordTestResult.value)
     }

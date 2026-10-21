@@ -33,6 +33,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.Checkbox
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import io.github.elgrande73.voicememo.memo.MemoSource
+import io.github.elgrande73.voicememo.playback.PlaybackMode
+import io.github.elgrande73.voicememo.ui.PlayingMemoAutoScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -127,7 +139,7 @@ import io.github.elgrande73.voicememo.ui.GuideTab
 import io.github.elgrande73.voicememo.ui.theme.MyApplicationTheme
 import io.github.elgrande73.voicememo.ui.theme.ThemeMode
 import io.github.elgrande73.voicememo.viewmodel.VoiceMemoViewModel
-import io.github.elgrande73.voicememo.viewmodel.VoiceNoteFilter
+import io.github.elgrande73.voicememo.memo.VoiceNoteFilter
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import io.github.elgrande73.voicememo.settings.WakePhraseLevel
 import io.github.elgrande73.voicememo.transcription.TranscriptionJobState
@@ -1336,13 +1348,19 @@ fun WakePhraseConfidenceGauge(
 // -------------------------------------------------------------
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 fun HistoryScreen(viewModel: VoiceMemoViewModel) {
     val transcriptionJobs by viewModel.transcriptionJobs.collectAsState()
     var noteToEditTranscript by remember { mutableStateOf<VoiceNote?>(null) }
     var transcriptDraft by remember { mutableStateOf("") }
     val notes by viewModel.filteredVoiceNotes.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
-    val activeFilter by viewModel.activeFilter.collectAsState()
+    val activeFilters by viewModel.activeFilters.collectAsState()
+    val playbackMode by viewModel.playbackMode.collectAsState()
+    val selectionMode by viewModel.selectionMode.collectAsState()
+    val selectedIds by viewModel.selectedIds.collectAsState()
+    val deleteInProgress by viewModel.deleteInProgress.collectAsState()
+    val historyMessage by viewModel.historyMessage.collectAsState()
     val playingNoteId by viewModel.playingNoteId.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
     val playbackPos by viewModel.playbackPositionMs.collectAsState()
@@ -1354,6 +1372,45 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
     var noteToRename by remember { mutableStateOf<VoiceNote?>(null) }
     var renameText by remember { mutableStateOf("") }
     var noteToDelete by remember { mutableStateOf<VoiceNote?>(null) }
+    // Memos to delete, captured when the user asked: confirming deletes exactly these, whatever changes meanwhile
+    var pendingDeleteIds by remember { mutableStateOf<Set<Int>?>(null) }
+    var exportIds by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    val zipExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) viewModel.exportMemosTo(exportIds, uri)
+    }
+    val wavExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/wav")) { uri ->
+        if (uri != null) viewModel.exportMemosTo(exportIds, uri)
+    }
+    fun exportTo(ids: Set<Int>) {
+        if (ids.isEmpty()) return
+        exportIds = ids
+        val (name, mime) = viewModel.exportTarget(ids)
+        try {
+            if (mime == "audio/wav") wavExportLauncher.launch(name) else zipExportLauncher.launch(name)
+        } catch (e: android.content.ActivityNotFoundException) {
+            Toast.makeText(context, "No file picker available. Use Share instead.", Toast.LENGTH_LONG).show()
+        }
+    }
+    fun share(ids: Set<Int>) {
+        viewModel.shareMemos(ids) { intent ->
+            if (intent != null) context.startActivity(Intent.createChooser(intent, "Share voice memos"))
+            else Toast.makeText(context, "Export failed", Toast.LENGTH_SHORT).show()
+        }
+    }
+    LaunchedEffect(historyMessage) {
+        historyMessage?.let {
+            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+            viewModel.consumeHistoryMessage()
+        }
+    }
+    val listState = rememberLazyListState()
+    PlayingMemoAutoScroll(
+        listState = listState,
+        playingKey = playingNoteId,
+        playingIndex = notes.indexOfFirst { it.id == playingNoteId },
+        enabled = playbackMode == PlaybackMode.AUTOPLAY,
+        marginPx = with(LocalDensity.current) { 8.dp.roundToPx() }
+    )
 
     Column(
         modifier = Modifier
@@ -1386,58 +1443,101 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Filter Category Chips
+        // Filter chips (scrollable on narrow screens). Today/Favorites narrow the list; Wake Phrase and Manual can be
+        // combined (memos started either way); "All Memos" clears every filter. See MemoFilter.
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
         ) {
-            VoiceNoteFilter.values().forEach { filter ->
+            VoiceNoteFilter.entries.forEach { filter ->
                 FilterChip(
-                    selected = activeFilter == filter,
-                    onClick = { viewModel.setFilter(filter) },
+                    selected = if (filter == VoiceNoteFilter.ALL) activeFilters.isEmpty() else filter in activeFilters,
+                    onClick = { viewModel.toggleFilter(filter) },
                     label = { Text(filter.label) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = MaterialTheme.colorScheme.primary,
                         selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                    )
+                    ),
+                    modifier = Modifier.testTag("filter_${filter.name.lowercase()}")
                 )
             }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Header Count & Batch Export Action
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(
-                text = "${notes.size} Voice Memos",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
+        if (selectionMode) {
+            HistorySelectionBar(
+                selectedCount = selectedIds.size,
+                hiddenSelectedCount = (selectedIds - notes.map { it.id }.toSet()).size,
+                shownCount = notes.size,
+                busy = exportInProgress || deleteInProgress,
+                exportInProgress = exportInProgress,
+                onSelectAllShown = { viewModel.selectAllShown() },
+                onSelectLibrary = { viewModel.selectWholeLibrary() },
+                onClear = { viewModel.clearSelection() },
+                onExit = { viewModel.exitSelection() },
+                onExport = { exportTo(selectedIds) },
+                onShare = { share(selectedIds) },
+                onCancelExport = { viewModel.cancelExport() },
+                onDelete = { pendingDeleteIds = selectedIds }
             )
+        } else {
+            // Header: count, selection and batch export
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "${notes.size} Voice Memos",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
 
-            if (notes.isNotEmpty()) {
-                TextButton(
-                    onClick = {
-                        viewModel.exportAllNotesAsZip { shareIntent ->
-                            if (shareIntent != null) {
-                                context.startActivity(shareIntent)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (notes.isNotEmpty()) {
+                        TextButton(onClick = { viewModel.startSelection() }, modifier = Modifier.testTag("start_selection")) {
+                            Text("Select")
+                        }
+                        TextButton(
+                            onClick = { share(notes.map { it.id }.toSet()) },
+                            enabled = !exportInProgress
+                        ) {
+                            if (exportInProgress) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp))
                             } else {
-                                Toast.makeText(context, "Export failed", Toast.LENGTH_SHORT).show()
+                                Icon(imageVector = Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Share shown")
                             }
                         }
-                    },
-                    enabled = !exportInProgress
-                ) {
-                    if (exportInProgress) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp))
-                    } else {
-                        Icon(imageVector = Icons.Default.Share, contentDescription = "Export All", modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Export All (ZIP)")
                     }
+                }
+            }
+
+            // Playback mode: what happens when a memo ends (persisted)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectableGroup()
+            ) {
+                Text("Playback:", style = MaterialTheme.typography.labelLarge)
+                PlaybackMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = playbackMode == mode,
+                        onClick = { viewModel.setPlaybackMode(mode) },
+                        label = { Text(mode.label) },
+                        modifier = Modifier
+                            .semantics {
+                                role = Role.RadioButton
+                                stateDescription = mode.description
+                            }
+                            .testTag("playback_mode_${mode.id}")
+                    )
                 }
             }
         }
@@ -1473,19 +1573,30 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
             }
         } else {
             LazyColumn(
+                state = listState,
                 verticalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("history_list")
             ) {
                 items(notes, key = { it.id }) { note ->
                     val isCurrentPlaying = playingNoteId == note.id
+                    val isSelected = note.id in selectedIds
 
                     Card(
                         colors = CardDefaults.cardColors(
                             containerColor = if (isCurrentPlaying) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
                         ),
                         shape = RoundedCornerShape(16.dp),
+                        border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
                         modifier = Modifier
                             .fillMaxWidth()
+                            .combinedClickable(
+                                onClick = { if (selectionMode) viewModel.toggleSelected(note.id) },
+                                onClickLabel = if (selectionMode) (if (isSelected) "Deselect" else "Select") else null,
+                                onLongClick = { if (selectionMode) viewModel.toggleSelected(note.id) else viewModel.startSelection(note.id) },
+                                onLongClickLabel = "Select memos"
+                            )
                             .testTag("voice_note_card_${note.id}")
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
@@ -1494,6 +1605,13 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
+                                if (selectionMode) {
+                                    Checkbox(
+                                        checked = isSelected,
+                                        onCheckedChange = { viewModel.toggleSelected(note.id) },
+                                        modifier = Modifier.testTag("select_memo_${note.id}")
+                                    )
+                                }
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = note.title,
@@ -1553,10 +1671,11 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
                                     shape = RoundedCornerShape(8.dp)
                                 ) {
                                     Text(
-                                        text = when (note.triggerType) {
-                                            "KEYWORD_CIAO_LINDA" -> "🎙️ Wake Phrase"
-                                            "MANUAL" -> "👆 Manual"
-                                            else -> "🤖 Auto Sound"
+                                        text = when (MemoSource.of(note.triggerType)) {
+                                            MemoSource.WAKE_PHRASE -> "🎙️ Wake Phrase"
+                                            MemoSource.MANUAL -> "👆 Manual"
+                                            MemoSource.SOUND -> "🤖 Auto Sound"
+                                            MemoSource.UNKNOWN -> "Other"
                                         },
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -1593,10 +1712,13 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
                                 Button(
                                     onClick = { viewModel.playVoiceNote(note, fromDisplayedList = true) },
                                     shape = CircleShape,
+                                    contentPadding = PaddingValues(0.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = if (isCurrentPlaying && isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
                                     ),
-                                    modifier = Modifier.size(44.dp)
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("play_memo_${note.id}")
                                 ) {
                                     Icon(
                                         imageVector = if (isCurrentPlaying && isPlaying) Icons.Default.Check else Icons.Default.PlayArrow,
@@ -1716,12 +1838,48 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
         )
     }
 
+    // Bulk delete confirmation: deletes exactly the snapshot taken when Delete was pressed
+    pendingDeleteIds?.let { ids ->
+        val hidden = (ids - notes.map { it.id }.toSet()).size
+        AlertDialog(
+            onDismissRequest = { pendingDeleteIds = null },
+            title = { Text(if (ids.size == 1) "Delete 1 memo?" else "Delete ${ids.size} memos?") },
+            text = {
+                Text(
+                    "The recordings (audio files), titles and transcripts of the ${ids.size} selected " +
+                        (if (ids.size == 1) "memo are" else "memos are") + " permanently removed from this device." +
+                        (if (hidden > 0) " $hidden of them are not shown by the current filter." else "") +
+                        " Other memos, wake-phrase samples and settings are not affected. This cannot be undone.",
+                    modifier = Modifier.testTag("bulk_delete_message")
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteMemos(ids)
+                        pendingDeleteIds = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    modifier = Modifier.testTag("confirm_bulk_delete")
+                ) {
+                    Text(if (ids.size == 1) "Delete 1 memo" else "Delete ${ids.size} memos")
+                }
+            },
+            dismissButton = { TextButton(onClick = { pendingDeleteIds = null }) { Text("Cancel") } }
+        )
+    }
+
     // Delete Confirmation Dialog
     noteToDelete?.let { note ->
         AlertDialog(
             onDismissRequest = { noteToDelete = null },
             title = { Text("Delete Voice Memo") },
-            text = { Text("Are you sure you want to delete \"${note.title}\"? This cannot be undone.") },
+            text = {
+                Text(
+                    "Delete \"${note.title}\"? Its recording (audio file), title and transcript are permanently removed from " +
+                        "this device. Other memos, wake-phrase samples and settings are not affected. This cannot be undone."
+                )
+            },
             confirmButton = {
                 Button(
                     onClick = {
@@ -1739,6 +1897,67 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun HistorySelectionBar(
+    selectedCount: Int,
+    hiddenSelectedCount: Int,
+    shownCount: Int,
+    busy: Boolean,
+    exportInProgress: Boolean,
+    onSelectAllShown: () -> Unit,
+    onSelectLibrary: () -> Unit,
+    onClear: () -> Unit,
+    onExit: () -> Unit,
+    onExport: () -> Unit,
+    onShare: () -> Unit,
+    onCancelExport: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth().testTag("selection_bar")) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            IconButton(onClick = onExit) { Icon(Icons.Default.Clear, contentDescription = "Leave selection") }
+            Text(
+                text = "$selectedCount selected" + if (hiddenSelectedCount > 0) " ($hiddenSelectedCount not shown by the current filter)" else "",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { liveRegion = LiveRegionMode.Polite }
+                    .testTag("selection_count")
+            )
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+        ) {
+            TextButton(onClick = onSelectAllShown, enabled = shownCount > 0, modifier = Modifier.testTag("select_all_shown")) {
+                Text("Select all shown ($shownCount)")
+            }
+            TextButton(onClick = onSelectLibrary, modifier = Modifier.testTag("select_library")) { Text("Select entire library") }
+            TextButton(onClick = onClear, enabled = selectedCount > 0) { Text("Clear") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            if (exportInProgress) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                Text("Exporting…", modifier = Modifier.weight(1f))
+                OutlinedButton(onClick = onCancelExport, modifier = Modifier.testTag("cancel_export")) { Text("Cancel") }
+            } else {
+                Button(onClick = onExport, enabled = selectedCount > 0 && !busy, modifier = Modifier.testTag("export_selected")) { Text("Save to…") }
+                OutlinedButton(onClick = onShare, enabled = selectedCount > 0 && !busy) { Text("Share") }
+                Spacer(modifier = Modifier.weight(1f))
+                Button(
+                    onClick = onDelete,
+                    enabled = selectedCount > 0 && !busy,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    modifier = Modifier.testTag("delete_selected")
+                ) { Text("Delete") }
+            }
+        }
     }
 }
 
