@@ -24,6 +24,9 @@ import kotlin.math.abs
  * noise-floor state (monitoring has listened to 3 s of background before the phrase, the test primes the estimator
  * with the recording itself). Measured differences on these fixtures are ≤ 0.002, so 0.05 (5 percentage points)
  * leaves room for other noise conditions without hiding a real pipeline mismatch (which showed differences of 0.3–0.6).
+ * With mean-normalised matching, speech without the phrase can differ by up to ~0.07 far below every configurable
+ * threshold (e.g. 0.08 vs 0.14: the best window then includes background frames, whose features depend on the
+ * noise-floor state); scores below the lowest configurable threshold (20 %) therefore only have to stay below it.
  *
  * Monitoring stops scoring when it triggers, so raw scores are compared with a monitoring run whose threshold is never
  * reached ([NO_TRIGGER]); trigger decisions are compared at the real thresholds.
@@ -31,6 +34,13 @@ import kotlin.math.abs
 class WakePhrasePipelineTest {
 
     private val tolerance = 0.05f
+    private val lowestThreshold = MatchConfidenceThreshold.MIN_PERCENT / 100f
+
+    /** Scores agree within [tolerance], or both are below every configurable threshold. */
+    private fun assertEquivalent(message: String, expected: Float, actual: Float) {
+        if (maxOf(expected, actual) < lowestThreshold) return
+        assertEquals(message, expected, actual, tolerance)
+    }
     private val NO_TRIGGER = 1.0f
     private val defaultThreshold = MatchConfidenceThreshold.toDetectorConfidence(MatchConfidenceThreshold.DEFAULT_PERCENT)
 
@@ -81,7 +91,7 @@ class WakePhrasePipelineTest {
         assertTrue("Settings test must recognise the enrolled phrase", test.bestConfidence >= defaultThreshold)
         assertTrue("Monitoring must reach the same score", liveScore >= defaultThreshold)
         assertTrue(live.triggered && test.wouldTrigger)
-        assertEquals(test.bestConfidence, liveScore, tolerance)
+        assertEquivalent("score", test.bestConfidence, liveScore)
     }
 
     @Test
@@ -96,7 +106,7 @@ class WakePhrasePipelineTest {
                     val live = monitor(frames, template, noiseDbfs = noiseDbfs, noise = noise)
                     println("MEASURE equivalence noise=%s/%.0f %s peak=%.0f test=%.3f monitoring=%.3f".format(
                         noise, noiseDbfs, name, peak, test.bestConfidence, liveScore))
-                    assertEquals("$name @ $noise $noiseDbfs / $peak", test.bestConfidence, liveScore, tolerance)
+                    assertEquivalent("$name @ $noise $noiseDbfs / $peak", test.bestConfidence, liveScore)
                     if (abs(test.bestConfidence - defaultThreshold) > tolerance) {
                         assertEquals("decision for $name", test.wouldTrigger, live.triggered)
                     }
@@ -192,7 +202,7 @@ class WakePhrasePipelineTest {
                 val test = WakePhraseEvaluator.evaluate(frames, template, threshold, 48f)
                 val live = monitor(frames, template, threshold)
                 // The score does not depend on the threshold; the decision is exactly "score ≥ configured threshold"
-                assertEquals(score, test.bestConfidence, tolerance)
+                assertEquivalent("score", score, test.bestConfidence)
                 if (abs(score - threshold) > tolerance) {
                     assertEquals("test $name @ $percent%", score >= threshold, test.wouldTrigger)
                     assertEquals("monitoring $name @ $percent%", score >= threshold, live.triggered)

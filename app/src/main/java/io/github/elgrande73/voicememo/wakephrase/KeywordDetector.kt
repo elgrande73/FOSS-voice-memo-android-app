@@ -85,11 +85,22 @@ class TemplateKeywordDetector(
      */
     private val localMismatchWeight: Float = DEFAULT_LOCAL_MISMATCH_WEIGHT,
     /** Distance that maps to a score of 0 (score = 1 − distance / distanceScale). */
-    private val distanceScale: Float = DEFAULT_DISTANCE_SCALE
+    private val distanceScale: Float = DEFAULT_DISTANCE_SCALE,
+    /** References used without enrolled samples; replaced only by evaluation tests. */
+    private val builtInPhrase: () -> List<List<FloatArray>> = { BuiltInWakePhrase.referenceFeatures },
+    /**
+     * Compare spectral shape relative to each sequence's own average (per-band mean subtracted from the reference and
+     * from each candidate window before alignment), which removes a speaker's or microphone's constant spectral
+     * colouring. Evaluated in docs/WAKE_PHRASE_DETECTION.md (section "Mean-normalised matching"); false only to
+     * reproduce the earlier matcher in evaluation tests.
+     */
+    private val meanNormalization: Boolean = DEFAULT_MEAN_NORMALIZATION
 ) : KeywordDetector {
 
-    /** One enrolled sample (or built-in reference): its feature sequence. */
-    private class Reference(val features: List<FloatArray>)
+    /** One enrolled sample (or built-in reference): its feature sequence, and the sequence used for alignment. */
+    private inner class Reference(val features: List<FloatArray>) {
+        val aligned: List<FloatArray> = if (meanNormalization) meanNormalized(features) else features
+    }
 
     private data class ReferenceMatch(val confidence: Float, val distance: Float, val windowFrames: Int)
 
@@ -112,7 +123,7 @@ class TemplateKeywordDetector(
     val noiseFloorDbfs: Float? get() = frontEnd.noiseFloorDbfs
 
     private val builtInReferences: List<Reference> by lazy {
-        BuiltInWakePhrase.referenceFeatures.map { Reference(it) }
+        builtInPhrase().map { Reference(it) }
     }
 
     /** Number of enrolled samples in use (0 = built-in default wake phrase). */
@@ -253,7 +264,7 @@ class TemplateKeywordDetector(
 
     /** Best match of [reference] against windows ending at the newest frame, or null if none qualifies. */
     private fun matchReference(reference: Reference, window: List<FloatArray>): ReferenceMatch? {
-        val template = reference.features
+        val template = reference.aligned
         val minLen = (template.size * 0.70).toInt().coerceAtLeast(6)
         if (window.size < minLen) return null
 
@@ -273,7 +284,7 @@ class TemplateKeywordDetector(
             }
             val avgFlux = fluxSum / (testSlice.size - 1).coerceAtLeast(1)
             if (avgFlux >= 0.040f) { // otherwise: reject stationary sound/noise
-                val (cost, stepCount) = computeDtwDistance(template, testSlice)
+                val (cost, stepCount) = computeDtwDistance(template, if (meanNormalization) meanNormalized(testSlice) else testSlice)
                 if (cost < Float.MAX_VALUE / 4f) {
                     val normalizedDist = cost / stepCount
                     // Confidence scale used by the user-facing match confidence threshold (percent / 100)
@@ -285,7 +296,8 @@ class TemplateKeywordDetector(
         }
         if (best != null && localMismatchWeight > 0f) {
             // Penalise a locally bad alignment (e.g. one different syllable) that the mean distance dilutes
-            val path = dtwPathCosts(template, window.subList(window.size - best.windowFrames, window.size))
+            val slice = window.subList(window.size - best.windowFrames, window.size)
+            val path = dtwPathCosts(template, if (meanNormalization) meanNormalized(slice) else slice)
             if (path != null && path.size >= LOCAL_SEGMENT_STEPS) {
                 var worst = 0f
                 for (i in 0..path.size - LOCAL_SEGMENT_STEPS) {
@@ -298,6 +310,14 @@ class TemplateKeywordDetector(
             }
         }
         return best
+    }
+
+    /** [seq] with the mean of each of the first [numBands] (spectral shape) values subtracted; other values unchanged. */
+    private fun meanNormalized(seq: List<FloatArray>): List<FloatArray> {
+        val mean = FloatArray(numBands)
+        for (v in seq) for (b in 0 until min(numBands, v.size)) mean[b] += v[b]
+        for (b in 0 until numBands) mean[b] /= seq.size
+        return seq.map { v -> FloatArray(v.size) { b -> if (b < numBands) v[b] - mean[b] else v[b] } }
     }
 
     private fun computeDtwDistance(template: List<FloatArray>, input: List<FloatArray>): Pair<Float, Int> =
@@ -403,6 +423,7 @@ class TemplateKeywordDetector(
 
         /** Maximum number of enrolled samples (references) of the wake phrase. */
         const val MAX_REFERENCES = 5
+        const val DEFAULT_MEAN_NORMALIZATION = true
         val DEFAULT_AGGREGATION = ReferenceAggregation.MAX
 
         fun serialize(features: List<FloatArray>): ByteArray {

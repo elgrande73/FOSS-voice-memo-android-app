@@ -67,11 +67,13 @@ Saved test WAV (validated)  ───┘   (exact 50 ms frames) └─ WakePhras
 ### Score semantics
 
 For each candidate window the DTW path cost between template and recent frames is divided by the path length (mean
-Euclidean distance between L2-normalised feature vectors, 0…√2) and mapped to
+Euclidean distance between feature vectors) and mapped to
 `score = clamp(1 − distance / 0.40, 0, 1)`. This is a **heuristic similarity score, not a calibrated probability**; the
 UI shows it as "match" percentage. The user's *Match confidence threshold* (20–80 %) is compared with it directly
 (`percent / 100`), and the dashboard shows the same value as *Trigger threshold*. The mapping constant 0.40 was not
-changed. The dashboard gauge shows the latest score with a short peak-hold (×0.92 per frame) so brief matches stay
+changed. Since this version the 16 spectral-shape values of the reference and of each candidate window are compared
+relative to that sequence's own average (per-band mean subtracted before the alignment, section 17); stored templates
+are unchanged. The dashboard gauge shows the latest score with a short peak-hold (×0.92 per frame) so brief matches stay
 visible; the trigger decision always uses the raw, undecayed score of the current frame.
 
 ## 3. Noise floor estimation and noise suppression
@@ -227,36 +229,41 @@ Natural variation in pace, pitch, volume or distance is deliberately accepted.
 - Held-out backgrounds: white −60, pink −55, pink −42 dBFS; speech peaks −16 and −26 dBFS. Used only to confirm decisions.
 - **False activations per hour:** 10 minutes of continuous monitoring with the negative clips in random order, random gaps and levels, and pink background at −55 dBFS. Starts and stop events are counted.
 
-**Measured, threshold 50 % (default)** — current front end and the default minimum audio level (−50 dBFS):
+**Measured, threshold 50 % (default)** — current front end, mean-normalised matching (section 17) and the default
+minimum audio level (−50 dBFS); the earlier matcher in brackets:
 
-| Set | Samples | TP | FN | FP | TN | Precision | Recall | Specificity | FPR | FNR | F1 |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| Tuning | 1 | 21 | 15 | 17 | 79 | 0.553 | 0.583 | 0.823 | 0.177 | 0.417 | 0.568 |
-| Tuning | 5 | 24 | 12 | 19 | 77 | 0.558 | 0.667 | 0.802 | 0.198 | 0.333 | 0.608 |
-| Held-out | 1 | 18 | 18 | 8 | 88 | 0.692 | 0.500 | 0.917 | 0.083 | 0.500 | 0.581 |
-| Held-out | 5 | 25 | 11 | 9 | 87 | 0.735 | 0.694 | 0.906 | 0.094 | 0.306 | 0.714 |
+| Set | Samples | TP | FN | FP | TN | Precision | Recall | Specificity | FPR | FNR | F1 | AUC |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Tuning | 1 | 18 (21) | 18 (15) | 7 (17) | 89 (79) | 0.720 (0.553) | 0.500 (0.583) | 0.927 (0.823) | 0.073 (0.177) | 0.500 (0.417) | 0.590 (0.568) | 0.915 (0.842) |
+| Tuning | 5 | 26 (24) | 10 (12) | 8 (19) | 88 (77) | 0.765 (0.558) | 0.722 (0.667) | 0.917 (0.802) | 0.083 (0.198) | 0.278 (0.333) | 0.743 (0.608) | 0.940 (0.864) |
+| Held-out | 1 | 14 (18) | 22 (18) | 4 (8) | 92 (88) | 0.778 (0.692) | 0.389 (0.500) | 0.958 (0.917) | 0.042 (0.083) | 0.611 (0.500) | 0.519 (0.581) | 0.903 (0.834) |
+| Held-out | 5 | 21 (25) | 15 (11) | 5 (9) | 91 (87) | 0.808 (0.735) | 0.583 (0.694) | 0.948 (0.906) | 0.052 (0.094) | 0.417 (0.306) | 0.677 (0.714) | 0.914 (0.874) |
 
 All false positives are near misses. Ordinary conversation produced no activation at 50 % or higher: FPR 0, and 0
 activations in 10 minutes at 50 % and 70 %. "Mango Tango" has close neighbours ("Tango Mango", "Manga Tanga" differ by
-a swapped word or two vowels), so near misses are frequent at the default threshold; 65–70 % rejects almost all of them.
+a swapped word or two vowels); at 60 % or higher no near miss of this set triggered.
 
 **Threshold sweep** (tuning set; recall on target clips, FPR on near misses and on conversation):
 
 | Threshold | Recall (1) | Near-miss FPR (1) | Conversation FPR (1) | Recall (5) | Near-miss FPR (5) | Conversation FPR (5) |
 |---|---|---|---|---|---|---|
-| 20 % | 0.944 | 0.815 | 0.095 | 1.000 | 0.833 | 0.310 |
-| 25 % | 0.889 | 0.741 | 0 | 0.944 | 0.741 | 0.024 |
-| 30 % | 0.833 | 0.630 | 0 | 0.861 | 0.648 | 0 |
-| 35 % | 0.833 | 0.574 | 0 | 0.833 | 0.593 | 0 |
-| 40 % | 0.806 | 0.500 | 0 | 0.833 | 0.500 | 0 |
-| 45 % | 0.778 | 0.389 | 0 | 0.833 | 0.426 | 0 |
-| **50 %** | 0.556 | 0.278 | 0 | 0.667 | 0.370 | 0 |
-| 55 % | 0.500 | 0.241 | 0 | 0.528 | 0.241 | 0 |
-| 60 % | 0.444 | 0.185 | 0 | 0.528 | 0.185 | 0 |
-| 65 % | 0.361 | 0.074 | 0 | 0.444 | 0.074 | 0 |
-| 70 % | 0.250 | 0.019 | 0 | 0.306 | 0.019 | 0 |
-| 75 % | 0.222 | 0 | 0 | 0.250 | 0 | 0 |
-| 80 % | 0.111 | 0 | 0 | 0.111 | 0 | 0 |
+| 20 % | 1.000 | 0.648 | 0 | 1.000 | 0.870 | 0.143 |
+| 25 % | 1.000 | 0.574 | 0 | 1.000 | 0.704 | 0.024 |
+| 30 % | 0.972 | 0.463 | 0 | 1.000 | 0.611 | 0 |
+| 35 % | 0.833 | 0.315 | 0 | 0.972 | 0.500 | 0 |
+| 40 % | 0.778 | 0.259 | 0 | 0.917 | 0.315 | 0 |
+| 45 % | 0.694 | 0.185 | 0 | 0.833 | 0.241 | 0 |
+| **50 %** | 0.500 | 0.111 | 0 | 0.694 | 0.130 | 0 |
+| 55 % | 0.444 | 0.056 | 0 | 0.500 | 0.056 | 0 |
+| 60 % | 0.306 | 0 | 0 | 0.472 | 0 | 0 |
+| 65 % | 0.250 | 0 | 0 | 0.361 | 0 | 0 |
+| 70 % | 0.194 | 0 | 0 | 0.250 | 0 | 0 |
+| 75 % | 0.056 | 0 | 0 | 0.111 | 0 | 0 |
+| 80 % | 0.056 | 0 | 0 | 0.056 | 0 | 0 |
+
+At equal recall the mean-normalised matcher accepts far fewer near misses than the earlier one (earlier matcher, 1
+sample: recall 0.778 at 45 % with near-miss FPR 0.389; now 0.778 at 40 % with 0.259; 5 samples: 0.833 with 0.426 before,
+0.241 now).
 
 Below 50 % similar-sounding phrases trigger much more often, and at 20–30 % ordinary conversation starts activating the
 detector too. Low values are offered for voices or microphones where the phrase is otherwise not detected; Settings
@@ -267,21 +274,24 @@ rate):
 
 | Threshold | Conversation, 1 sample | Conversation, 5 samples | Near misses, 1 sample | Near misses, 5 samples |
 |---|---|---|---|---|
-| 30 % | 0 | 66/h | 1224/h | 1386/h |
-| 40 % | 0 | 0 | 1026/h | 1062/h |
-| 50 % | 0 | 0 | 600/h | 690/h |
+| 30 % | 0 | 0 | 804/h | 1026/h |
+| 40 % | 0 | 0 | 486/h | 720/h |
+| 50 % | 0 (0) | 0 (0) | 180/h (600/h) | 246/h (690/h) |
 | 70 % | 0 | 0 | 0 | 0 |
 
-**Known regression (measured):** several references raise false activations on similar-sounding phrases (tuning set:
-19 vs 17 of 96 with 5 vs 1 sample; near misses at 50 %: 690/h vs 600/h). In exchange, recall improves: for example,
-a slow "Mango, Tango" with a pause scored 0.627 with one sample and 0.755 with five.
+(Earlier matcher in brackets. The rate is per hour of the 10-minute stream, which is near misses with short gaps; per
+hour of actual speech it is higher, see section 17.)
+
+**Known regression (measured):** several references raise false activations on similar-sounding phrases slightly
+(tuning set: 8 vs 7 of 96 with 5 vs 1 sample; near misses at 50 %: 246/h vs 180/h). In exchange, recall improves.
 
 **Recommendation:**
 - The default stays 50 %, and users' configured thresholds are never changed.
-- Users who get false starts from similar words should raise the threshold to 65–70 %.
+- Users who get false starts from similar words should raise the threshold to 55–60 %; users whose phrase is often
+  missed can lower it to 40–45 %, which with the current matcher accepts fewer near misses than 50 % did before.
 
-**Processing time** (JVM on the build host, not a phone): 0.036 ms per 50 ms frame with 1 sample, 0.070 ms with 5.
-Not measured on a device.
+**Processing time** (JVM on the build host, not a phone): 0.034 ms per 50 ms frame with 1 sample, 0.078 ms with 5
+(earlier matcher 0.036 / 0.070); the built-in reference (5 references) 0.10 ms. Not measured on a device.
 
 ## 11. Experiments that were not adopted (earlier set)
 
@@ -395,21 +405,21 @@ fixtures and fails if it differs (provenance: `app/src/test/resources/audio/READ
 
 | Setup @ 50 % | Wake phrase detected | Near misses | Conversation |
 |---|---|---|---|
-| Built-in reference, 10 held-out voices/accents | 16/60 | 4/54 | 0/42 |
-| Built-in reference, the target speaker | 13/36 | | |
-| Built-in reference @ 40 % (held-out voices) | 30/60 | 11/54 | 0/42 |
-| Built-in reference @ 60 % (held-out voices) | 5/60 | 0/54 | 0/42 |
-| 1 recorded sample (own voice) | 22/36 | 17/54 | 0/42 |
-| 3 recorded samples (own voice) | 25/36 | 18/54 | 0/42 |
+| Built-in reference, 10 held-out voices/accents | 16/60 (16/60) | 1/54 (4/54) | 0/42 |
+| Built-in reference, the target speaker | 15/36 (13/36) | | |
+| Built-in reference @ 40 % (held-out voices) | 35/60 (30/60) | 8/54 (11/54) | 1/42 (0/42) |
+| Built-in reference @ 60 % (held-out voices) | 2/60 (5/60) | 0/54 | 0/42 |
+| 1 recorded sample (own voice) | 17/36 (22/36) | 8/54 (17/54) | 0/42 |
+| 3 recorded samples (own voice) | 22/36 (25/36) | 8/54 (18/54) | 0/42 |
 | Custom phrase "Open sesame", 3 samples | 20/24 "Open sesame"; 0/96 "Mango Tango" | — | 0/42 |
 
-Start and stop with the same phrase (memo speech in between, 1 s pause, 3 backgrounds): 6/18 memos were started and
-ended by the phrase with the built-in reference, 10/18 with 3 recorded samples; every stop kept the whole memo speech and
-removed only the stop phrase and the pause after it.
+(Earlier matcher in brackets.) Start and stop with the same phrase (memo speech in between, 1 s pause, 3
+backgrounds): 8/18 (6/18) memos were started and ended by the phrase with the built-in reference, 12/18 (10/18) with 3
+recorded samples; every stop kept the whole memo speech and removed only the stop phrase and the pause after it.
 
 **Interpretation.** Without samples the built-in phrase recognises some voices but far from all; recording the phrase
 (or another phrase) in one's own voice is the recommended setup, and the UI says so. Recorded samples raise recall but
-also accept more near misses at 50 %; 65–70 % avoids them. Real voices differ from eSpeak NG; these numbers show relative
+also accept some near misses at 50 %; 60 % avoided all of this set. Real voices differ from eSpeak NG; these numbers show relative
 behaviour, not real-world accuracy, and device tests with real speakers are still required.
 
 ## 16. Detector choice
@@ -430,3 +440,64 @@ Engines considered and not adopted:
 | openWakeWord | code Apache-2.0, pre-trained models CC BY-NC-SA 4.0 | Non-commercial model license is not FOSS-compatible; custom phrases need training |
 | Porcupine (Picovoice) | proprietary, needs an access key | Not FOSS |
 | microWakeWord / Mycroft Precise | Apache-2.0 | Need a model trained per phrase (TensorFlow); no way to support recorded custom phrases on the device |
+
+## 17. Utterance-level corpus with a development / test split, and mean-normalised matching
+
+**Corpus** (`WakePhraseCorpus`, `WakePhraseCorpusTest`; fixtures `dev_*`, `test_*`, generated by
+`app/src/test/resources/audio/generate_fixtures.sh`, synthetic eSpeak NG speech). Split **by speaker**: no voice of the
+development split occurs in the test split, the built-in reference or the enrollment samples.
+
+| Split | Positives ("Mango Tango") | Near misses | Conversation |
+|---|---|---|---|
+| Development | 12 voices (`dev_pos_*`) | 8 phrases × 4 voices (`dev_near_*`) | 6 sentences (`dev_conv_*`) |
+| Test | 20 voices (`test_pos_*`, `mango_eval_*`) | 8 phrases × 4 other voices (`test_near_*`) | 6 sentences (`test_conv_*`) |
+
+Near-miss phrases: "Tango Mango", "Manga Tanga", "Bingo Tango", "Mango tea", "Banjo Django", "Mango", "Tango",
+"Fandango". Conversation sentences contain look-alikes ("mango juice", "tango", "tangled", "many tanks").
+
+**Unit of evaluation: one utterance** in one condition (3 backgrounds × 2 speech levels, as in section 10), decided
+once by the monitoring state machine; never individual frames. Metrics: confusion matrix, precision, recall,
+specificity, FPR, FNR (miss rate), F1, AUC of the best scores (threshold-independent), latency from the phrase start to
+the end of the frame that starts the memo (median, p90), and false activations of continuous monitoring over each
+negative clip 4 times (random order, gaps 0.3–3 s, levels −25…−10 dBFS, pink −55 dBFS background), reported **per
+hour of negative speech** (gaps excluded) and per hour of audio. Development data decides; the test split only
+confirms.
+
+**Change adopted: mean-normalised matching.** The features describe spectral shape in coarse 500 Hz bands; a voice or
+microphone adds a constant colouring that DTW counts as distance on every frame. The per-band mean of the reference and
+of each candidate window is now subtracted before the alignment (`TemplateKeywordDetector`, `meanNormalization`).
+Nothing stored changes (templates, the built-in reference and the score formula stay the same); the change applies
+to monitoring and the Settings test alike.
+
+| Built-in reference @ 50 % | Earlier matcher | Mean-normalised |
+|---|---|---|
+| Dev: TP / FN / FP / TN | 21 / 51 / 8 / 220 | 23 / 49 / 0 / 228 |
+| Dev: precision / recall / F1 / AUC | 0.724 / 0.292 / 0.416 / 0.746 | 1.000 / 0.319 / 0.484 / 0.900 |
+| Test: TP / FN / FP / TN | 43 / 77 / 19 / 209 | 35 / 85 / 5 / 223 |
+| Test: precision / recall / F1 / AUC | 0.694 / 0.358 / 0.473 / 0.698 | 0.875 / 0.292 / 0.438 / 0.836 |
+| Test: near-miss FP / conversation FP | 18/192 / 1/36 | 5/192 / 0/36 |
+| Test: false activations, continuous (3.2 min of speech) | 14 (266/h of speech, 117/h of audio) | 6 (114/h of speech, 50/h of audio) |
+| Test: latency from phrase start, median / p90 | 717 / 971 ms | 863 / 1096 ms |
+| Test @ 40 %: recall / FP / F1 | 0.600 / 64 / 0.563 | 0.642 / 30 / 0.678 |
+
+The weight of the mean (0, 0.5, 0.75, 1) was chosen on development data only: AUC rose monotonically with it for the
+built-in reference (0.746 / 0.849 / 0.884 / 0.900) and own-voice samples (1 sample 0.842 → 0.915, 5 samples 0.864 →
+0.940); the full mean also gave the best or near-best F1 at 50 %. Held-out confirmation, own voice: AUC 0.834 → 0.903 (1
+sample), 0.874 → 0.914 (5 samples), near-miss activations 600/h → 180/h and 690/h → 246/h.
+
+**Trade-off (measured):** separation is better everywhere, false triggers fall by half or more, but at the unchanged
+50 % default some conditions lose recall (test split 43 → 35 of 120; own voice held-out 18 → 14 of 36 with 1 sample,
+while the tuning conditions gain with 5 samples, 24 → 26). The score is not rescaled to compensate; users who miss the
+phrase can lower the threshold to 40–45 %, which now accepts fewer near misses than 50 % did with the earlier matcher.
+The trigger now tends to fire later in the phrase (median +150 ms), still before the phrase ends on average (−126 ms).
+Settings phrase test and monitoring stay equivalent (`WakePhrasePipelineTest`); for speech without the phrase, far
+below the lowest threshold, they can differ by up to 0.07 because the best window then contains background frames.
+
+**Not adopted: a larger, selected built-in reference.** Greedy forward selection over 25 renditions
+(`mango_ref_1..5`, `mango_pool_1..20`, voices in neither split; `BuiltInReferenceSelection`, run with
+`SELECT_BUILT_IN=1`) raised development F1 at 50 % from 0.416 to 0.476 with 5 references, but the test split got worse
+(F1 0.473 → 0.452, AUC 0.698 → 0.689, FP 19 → 17): over-fitting to the development voices. The bundled reference is
+unchanged.
+
+**Limits:** synthetic speech only; the corpus is small (12/20 positive voices), so a single utterance changes recall by
+1.4 / 0.8 points. Real voices, microphones and rooms must be tested on a device.

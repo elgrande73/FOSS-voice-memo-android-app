@@ -7,6 +7,11 @@ First release under the new name **Voice Memo** and the new application ID `io.g
 to it (see README, "New application identity").
 
 ### Changed (since pre-release v0.0.2)
+- Wake phrase: matching compares spectral shape relative to each sequence's own average (removes a voice's or
+  microphone's constant colouring). On the synthetic test corpus false triggers on similar phrases fall by half or more
+  and positives and negatives separate better (AUC 0.70 → 0.84), but at the unchanged 50 % default some voices are
+  detected less often; lower the threshold to 40–45 % if the phrase is missed. Stored samples and settings are
+  unchanged. New speaker-split evaluation corpus with utterance-level metrics, latency and false activations per hour.
 - **Breaking:** wake-phrase samples recorded with the very first app version (an older feature format) are no longer
   used; Settings shows how many and asks to record the phrase again (the files stay on disk). Memos started by the wake
   phrase get a new stored trigger type (database migration 1 → 2, only that column changes); the Wake Phrase filter

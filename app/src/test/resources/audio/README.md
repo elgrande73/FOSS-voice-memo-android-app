@@ -37,6 +37,21 @@ differences between pipelines and settings, not real-world accuracy; manual devi
 
 The benchmark (`WakePhraseBenchmark`) mixes these clips with generated noise at fixed seeds, so results are reproducible.
 
+## Utterance-level corpus with a development / test split
+
+Split by speaker: no voice of one split occurs in the other, in the built-in reference or in the enrollment samples
+(`WakePhraseCorpus`, docs/WAKE_PHRASE_DETECTION.md section 17).
+
+| Files | Content | Role |
+|---|---|---|
+| `dev_pos_1..12.pcm` | "Mango Tango" in 12 voices (en-us+m2, en+f1, Lancaster, New York, French, Portuguese, …) | Development positives |
+| `dev_near_1..32.pcm` | 8 near-miss phrases × 4 development voices | Development near misses |
+| `dev_conv_1..6.pcm` | Sentences, some with look-alike words ("mango juice", "tango") | Development conversation |
+| `test_pos_1..10.pcm` | "Mango Tango" in 10 further voices (West Midlands, Polish, Romanian, …); with `mango_eval_1..10` | Test positives |
+| `test_near_1..32.pcm` | The same 8 phrases × 4 test voices | Test near misses |
+| `test_conv_1..6.pcm` | Sentences ("tangled cables", "mangoes", "many tanks", Spanish, German) | Test conversation |
+| `mango_pool_1..20.pcm` | "Mango Tango" in 20 voices used in neither split | Candidates for the built-in reference (selection experiment, not adopted) |
+
 ## Built-in "Mango Tango" reference
 
 | Files | Content | Role |

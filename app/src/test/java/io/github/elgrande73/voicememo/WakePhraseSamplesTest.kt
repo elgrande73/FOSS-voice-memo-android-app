@@ -243,7 +243,8 @@ class WakePhraseSamplesTest {
                 monitor.processFrame(frame)
                 monitor.lastKeywordResult?.let { live = maxOf(live, it.confidence) }
             }
-            assertEquals(clip, test, live, 0.05f)
+            // Agree within 5 points, or both below the lowest configurable threshold (see WakePhrasePipelineTest)
+            if (maxOf(test, live) >= 0.2f) assertEquals(clip, test, live, 0.05f)
         }
     }
 
