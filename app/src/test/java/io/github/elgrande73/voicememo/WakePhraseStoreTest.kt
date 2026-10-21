@@ -32,7 +32,7 @@ class WakePhraseStoreTest {
 
     private fun enrolledTemplate(): ByteArray {
         val detector = TemplateKeywordDetector()
-        val chunks = TemplateKeywordDetector.generateCanonicalCiaoLindaAudio(amplitude = 9000.0)
+        val chunks = SyntheticPhrase.generate(amplitude = 9000.0)
         assertTrue(detector.recordTemplate(chunks))
         return detector.getTemplateData()!!
     }
@@ -54,7 +54,7 @@ class WakePhraseStoreTest {
 
     @Test
     fun testRecordingAndResultSurviveRestart() {
-        val chunks = TemplateKeywordDetector.generateCanonicalCiaoLindaAudio(amplitude = 12000.0)
+        val chunks = SyntheticPhrase.generate(amplitude = 12000.0)
         WakePhraseStore(filesDir).apply {
             saveTestRecording(chunks)
             saveTestResult(WakePhraseTestResult(0.73f, 1_700_000_000_000L))
@@ -117,7 +117,7 @@ class WakePhraseStoreTest {
     fun deletingEnrolledPhraseKeepsTestRecording() {
         val store = WakePhraseStore(filesDir)
         store.addSample(enrolledTemplate(), 800L, -10f)
-        store.saveTestRecording(TemplateKeywordDetector.generateCanonicalCiaoLindaAudio())
+        store.saveTestRecording(SyntheticPhrase.generate())
         store.clearSamples()
 
         assertFalse(store.hasSamples())

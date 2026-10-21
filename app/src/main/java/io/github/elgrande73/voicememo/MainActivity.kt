@@ -49,10 +49,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.selection.selectable
-import io.github.elgrande73.voicememo.wakephrase.WakePhraseText
-import io.github.elgrande73.voicememo.wakephrase.WakeWordModel
-import io.github.elgrande73.voicememo.wakephrase.WakeWordStatus
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -385,7 +381,7 @@ fun DashboardScreen(
     // Same persisted value the wake-phrase detector uses (Settings > Match confidence threshold)
     val matchConfidenceThresholdPercent by viewModel.matchConfidenceThresholdPercent.collectAsState()
     val usesRecordedWakePhrase by viewModel.hasKeywordTemplate.collectAsState()
-    val builtInWakePhrase by viewModel.builtInWakePhrase.collectAsState()
+    val wakePhraseChangedNotice by viewModel.wakePhraseChangedNotice.collectAsState()
 
     val context = LocalContext.current
 
@@ -541,6 +537,10 @@ fun DashboardScreen(
                 engineState = engineState
             )
 
+            if (wakePhraseChangedNotice) {
+                WakePhraseChangedNotice(hasRecordedSamples = usesRecordedWakePhrase, onDismiss = { viewModel.dismissWakePhraseChangedNotice() })
+            }
+
             // Live Wake-Phrase Match Confidence Gauge
             if (detectionMode == DetectionMode.KEYWORD_ONLY) {
                 Card(
@@ -568,7 +568,7 @@ fun DashboardScreen(
                             )
                             Text(
                                 text = if (usesRecordedWakePhrase) "Live similarity to your recorded wake phrase"
-                                else "Say \"${builtInWakePhrase.displayName}\" to start and stop a memo",
+                                else "Say \"${BuiltInWakePhrase.DISPLAY_NAME}\" to start and stop a memo",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.testTag("dashboard_wake_phrase_hint")
@@ -1965,89 +1965,25 @@ private fun HistorySelectionBar(
     }
 }
 
+/** One-time notice after an update that changed the built-in wake phrase (SettingsMigrator v4). */
 @Composable
-private fun WakeWordModelCard(
-    selected: WakeWordModel,
-    status: WakeWordStatus?,
-    monitoring: Boolean,
-    usesRecordedPhrase: Boolean,
-    builtInPhrase: BuiltInWakePhrase,
-    recordedPhraseText: String,
-    onSelect: (WakeWordModel) -> Unit,
-    onPhraseTextChange: (String) -> Unit
-) {
-    var draft by remember(recordedPhraseText) { mutableStateOf(recordedPhraseText) }
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        shape = RoundedCornerShape(20.dp),
+fun WakePhraseChangedNotice(hasRecordedSamples: Boolean, onDismiss: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("wake_word_model_card")
+            .testTag("wake_phrase_changed_notice")
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Wake-Word Detection Model", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Column(modifier = Modifier.selectableGroup()) {
-                WakeWordModel.entries.forEach { model ->
-                    Row(
-                        verticalAlignment = Alignment.Top,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .selectable(selected = model == selected, onClick = { onSelect(model) }, role = Role.RadioButton)
-                            .padding(vertical = 4.dp)
-                            .testTag("wake_word_model_${model.id}")
-                    ) {
-                        RadioButton(selected = model == selected, onClick = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Text(model.label, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
-                            Text(model.summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-            }
-            if (selected == WakeWordModel.SPEECH_CHECK) {
-                Text(
-                    "Uses the speech model already included in the app (Whisper base, about 55 MB, MIT license); nothing is " +
-                        "downloaded and audio never leaves the device. Your recorded samples are kept and used again with Standard.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (usesRecordedPhrase) {
-                    OutlinedTextField(
-                        value = draft,
-                        onValueChange = { draft = it },
-                        label = { Text("Words of your recorded phrase") },
-                        placeholder = { Text(builtInPhrase.displayName) },
-                        singleLine = true,
-                        supportingText = { WakePhraseText.problem(draft)?.let { Text(it) } },
-                        isError = WakePhraseText.problem(draft) != null,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .onFocusChanged {
-                                ShortcutRuntime.textInputFocused = it.isFocused
-                                if (!it.isFocused && draft != recordedPhraseText) onPhraseTextChange(draft)
-                            }
-                            .testTag("recorded_phrase_text")
-                    )
-                    TextButton(onClick = { onPhraseTextChange(draft) }, enabled = draft.trim() != recordedPhraseText) { Text("Save phrase words") }
-                } else {
-                    Text("Checks for the words \"${builtInPhrase.displayName}\".", style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            val statusText = when {
-                status == null || !monitoring -> "Takes effect when monitoring runs."
-                status.message != null -> status.message
-                else -> "Active: ${status.active.label}"
-            }
+        Column(modifier = Modifier.padding(12.dp)) {
             Text(
-                statusText,
+                text = "The built-in wake phrase is now \"${BuiltInWakePhrase.DISPLAY_NAME}\". " +
+                    if (hasRecordedSamples) "Your recorded phrase is unchanged and is still used."
+                    else "Record your own samples in Settings → Wake Phrase for the most reliable detection.",
                 style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.SemiBold,
-                color = if (status?.isFallback == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .semantics { liveRegion = LiveRegionMode.Polite }
-                    .testTag("wake_word_model_status")
+                color = MaterialTheme.colorScheme.onTertiaryContainer
             )
+            TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End).testTag("dismiss_wake_phrase_notice")) { Text("OK") }
         }
     }
 }
@@ -2080,11 +2016,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
     val feedbackSoundsEnabled by viewModel.feedbackSoundsEnabled.collectAsState()
 
     val matchConfidenceThresholdPercent by viewModel.matchConfidenceThresholdPercent.collectAsState()
-    val wakeWordModel by viewModel.wakeWordModel.collectAsState()
-    val wakeWordStatus by viewModel.wakeWordStatus.collectAsState()
-    val recordedPhraseText by viewModel.recordedPhraseText.collectAsState()
-    val isMonitoringServiceRunning by AudioMonitoringService.isServiceRunning.collectAsState()
-    val builtInWakePhrase by viewModel.builtInWakePhrase.collectAsState()
+    val wakePhraseChangedNotice by viewModel.wakePhraseChangedNotice.collectAsState()
     val keywordBehavior by viewModel.keywordBehavior.collectAsState()
     val hasKeywordTemplate by viewModel.hasKeywordTemplate.collectAsState()
     val wakePhraseSamples by viewModel.wakePhraseSamples.collectAsState()
@@ -2201,25 +2133,9 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    text = if (hasKeywordTemplate) "Built-in phrase (used only after all samples are deleted)" else "Built-in phrase",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.selectableGroup()) {
-                    BuiltInWakePhrase.entries.forEach { phrase ->
-                        FilterChip(
-                            selected = builtInWakePhrase == phrase,
-                            onClick = { viewModel.setBuiltInWakePhrase(phrase) },
-                            label = {
-                                Text(if (phrase == BuiltInWakePhrase.DEFAULT) "${phrase.displayName} (recommended)" else "${phrase.displayName} (earlier default)")
-                            },
-                            modifier = Modifier
-                                .semantics { role = Role.RadioButton }
-                                .testTag("built_in_phrase_${phrase.id}")
-                        )
-                    }
+                if (wakePhraseChangedNotice) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    WakePhraseChangedNotice(hasRecordedSamples = hasKeywordTemplate, onDismiss = { viewModel.dismissWakePhraseChangedNotice() })
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -2476,18 +2392,6 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                 }
             }
         }
-
-        // Section: Wake-word detection model
-        WakeWordModelCard(
-            selected = wakeWordModel,
-            status = wakeWordStatus,
-            monitoring = isMonitoringServiceRunning,
-            usesRecordedPhrase = hasKeywordTemplate,
-            builtInPhrase = builtInWakePhrase,
-            recordedPhraseText = recordedPhraseText,
-            onSelect = { viewModel.setWakeWordModel(it) },
-            onPhraseTextChange = { viewModel.setRecordedPhraseText(it) }
-        )
 
         // Section: Thresholds & Durations
         Card(

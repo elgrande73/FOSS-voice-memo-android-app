@@ -43,7 +43,7 @@ data class WakePhraseSample(
  * - the most recent test recording (16 kHz mono WAV) and
  * - its test result.
  *
- * The built-in wake phrases (BuiltInWakePhrase, e.g. "Mango Tango") are part of the app and are never written here,
+ * The built-in wake phrase (BuiltInWakePhrase, "Mango Tango") is part of the app and is never written here,
  * so enrolled samples are never replaced by the default. All writes are atomic; a missing or
  * unreadable file is reported as absent without deleting other data.
  *

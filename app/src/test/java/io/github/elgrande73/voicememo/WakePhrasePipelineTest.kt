@@ -70,7 +70,7 @@ class WakePhrasePipelineTest {
     @Test
     fun originalDiscrepancy_monitoringNowScoresLikeTheSettingsTest() {
         val template = AudioFixtures.enrollTemplate()
-        val frames = testRecording("ciao_linda_a", peakDbfs = -20.0)
+        val frames = testRecording("wake_phrase_a", peakDbfs = -20.0)
 
         val test = WakePhraseEvaluator.evaluate(frames, template, defaultThreshold, 48f)
         val liveScore = monitor(frames, template, NO_TRIGGER).bestScore
@@ -133,7 +133,7 @@ class WakePhrasePipelineTest {
         val template = AudioFixtures.enrollTemplate()
         // Enrolled close to the microphone (-10 dBFS peak), spoken at 1x, ~3x and ~6x the distance
         val scores = listOf(-10.0, -20.0, -25.0).map { peak ->
-            WakePhraseEvaluator.evaluate(testRecording("ciao_linda_a", peak), template, defaultThreshold, 0f).bestConfidence
+            WakePhraseEvaluator.evaluate(testRecording("wake_phrase_a", peak), template, defaultThreshold, 0f).bestConfidence
         }
         println("MEASURE level dependence: $scores")
         // Quieter speech loses detail below the background, so the score decreases, but stays above the default threshold
@@ -144,7 +144,7 @@ class WakePhrasePipelineTest {
     @Test
     fun bufferBoundariesDoNotChangeFramesFeaturesOrScores() {
         val template = AudioFixtures.enrollTemplate()
-        val samples = AudioFixtures.scene(AudioFixtures.atPeak(AudioFixtures.load("ciao_linda_a"), -15.0), 3.0, 0.5)
+        val samples = AudioFixtures.scene(AudioFixtures.atPeak(AudioFixtures.load("wake_phrase_a"), -15.0), 3.0, 0.5)
         val reference = AudioFixtures.frames(samples)
         val referenceScore = WakePhraseEvaluator.evaluate(reference, template, defaultThreshold, 48f).bestConfidence
 
@@ -172,7 +172,7 @@ class WakePhrasePipelineTest {
         val template = AudioFixtures.enrollTemplate()
         // Sub-frame offsets (0, 12.5, 25, 37.5 ms) and a later start spanning other matcher windows
         val scores = listOf(0.5, 0.5125, 0.525, 0.5375, 1.2).map { lead ->
-            val frames = testRecording("ciao_linda_a", -15.0, lead = lead)
+            val frames = testRecording("wake_phrase_a", -15.0, lead = lead)
             assertTrue("not triggered with lead $lead s", monitor(frames, template).triggered)
             monitor(frames, template, NO_TRIGGER).bestScore
         }
@@ -184,7 +184,7 @@ class WakePhrasePipelineTest {
     @Test
     fun thresholdDecisionsAt50IntermediateAnd80Percent() {
         val template = AudioFixtures.enrollTemplate()
-        for ((name, peak) in listOf("ciao_linda_a" to -15.0, "ciao_linda_b" to -20.0, "other_speech" to -10.0)) {
+        for ((name, peak) in listOf("wake_phrase_a" to -15.0, "wake_phrase_b" to -20.0, "other_speech" to -10.0)) {
             val frames = testRecording(name, peak)
             val score = monitor(frames, template, NO_TRIGGER).bestScore
             for (percent in listOf(50, 65, 80)) {
@@ -205,7 +205,7 @@ class WakePhrasePipelineTest {
     @Test
     fun activationRequiresTheLoudnessThreshold() {
         val template = AudioFixtures.enrollTemplate()
-        val quiet = testRecording("ciao_linda_a", peakDbfs = -50.0) // peak ≈ 40 dB on the VAD scale
+        val quiet = testRecording("wake_phrase_a", peakDbfs = -50.0) // peak ≈ 40 dB on the VAD scale
         val result = WakePhraseEvaluator.evaluate(quiet, template, defaultThreshold, minLevelDb = 48f)
         assertFalse(result.wouldTrigger)
         assertTrue(result.peakLevelDb < 48f)
@@ -214,7 +214,7 @@ class WakePhrasePipelineTest {
     @Test
     fun monitoringRestartReproducesResultsOfAFreshDetector() {
         val template = AudioFixtures.enrollTemplate()
-        val frames = testRecording("ciao_linda_b", -15.0)
+        val frames = testRecording("wake_phrase_b", -15.0)
         val fresh = monitor(frames, template)
 
         val reused = MemoTriggerDetector(keywordDetector = TemplateKeywordDetector().apply { loadTemplate(template) })
@@ -238,15 +238,15 @@ class WakePhrasePipelineTest {
         }
         monitor(AudioFixtures.frames(AudioFixtures.scene(ShortArray(0), 3.0, 0.0, -40.0)), template, detector = detector, warmUpSeconds = 0.0)
         detector.restartStream() // e.g. a different microphone with a different background
-        val result = monitor(testRecording("ciao_linda_a", -10.0, -50.0), template, warmUpSeconds = 2.0, noiseDbfs = -50.0, detector = detector)
+        val result = monitor(testRecording("wake_phrase_a", -10.0, -50.0), template, warmUpSeconds = 2.0, noiseDbfs = -50.0, detector = detector)
         assertTrue("score ${result.bestScore}", result.triggered)
     }
 
     @Test
     fun templatesFromEarlierVersionsStillLoadAndAreFlagged() {
         val legacy = TemplateKeywordDetector()
-        // An earlier-version template: 'CIAO' magic with legacy features
-        val legacyFeatures = TemplateKeywordDetector.generateCanonicalCiaoLindaAudio().map { legacy.extractFeatureVector(it) }
+        // An earlier-version template: legacy magic with legacy features
+        val legacyFeatures = SyntheticPhrase.generate().map { legacy.extractFeatureVector(it) }
         val buffer = java.nio.ByteBuffer.allocate(12 + legacyFeatures.size * 16 * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
         buffer.putInt(TemplateKeywordDetector.MAGIC_LEGACY_TEMPLATE).putInt(legacyFeatures.size).putInt(16)
         legacyFeatures.forEach { vec -> vec.forEach { buffer.putFloat(it) } }
@@ -256,7 +256,7 @@ class WakePhrasePipelineTest {
         assertTrue(detector.isLegacyTemplate)
         assertTrue(detector.hasCustomTemplate())
         // Matched with the legacy features it was recorded with: the canonical audio still matches itself
-        val best = TemplateKeywordDetector.generateCanonicalCiaoLindaAudio().maxOf { detector.processFrame(it, 0f, 0f).confidence }
+        val best = SyntheticPhrase.generate().maxOf { detector.processFrame(it, 0f, 0f).confidence }
         assertTrue("legacy self-match $best", best > 0.9f)
         // Saving keeps the legacy marker
         assertTrue(TemplateKeywordDetector().apply { loadTemplate(detector.getTemplateData()!!) }.isLegacyTemplate)
@@ -265,9 +265,9 @@ class WakePhrasePipelineTest {
     @Test
     fun enrollmentKeepsOnlyTheSpokenPart() {
         val detector = TemplateKeywordDetector()
-        val recording = AudioFixtures.scene(AudioFixtures.atPeak(AudioFixtures.load("ciao_linda_a"), -10.0), 2.5, 0.3)
+        val recording = AudioFixtures.scene(AudioFixtures.atPeak(AudioFixtures.load("wake_phrase_a"), -10.0), 2.5, 0.3)
         assertTrue(detector.recordTemplate(AudioFixtures.frames(recording)))
-        val phraseFrames = AudioFixtures.load("ciao_linda_a").size / 800.0
+        val phraseFrames = AudioFixtures.load("wake_phrase_a").size / 800.0
         // ~0.72 s phrase = ~15 frames (+ 1 frame padding each side), not the 50 frames of the whole recording
         assertTrue("template frames ${detector.templateFrameCount}", detector.templateFrameCount in phraseFrames.toInt()..(phraseFrames.toInt() + 4))
         assertFalse(detector.isLegacyTemplate)

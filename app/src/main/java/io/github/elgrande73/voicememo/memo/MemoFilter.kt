@@ -5,7 +5,7 @@ package io.github.elgrande73.voicememo.memo
  * also interprets values written by earlier versions.
  */
 enum class MemoSource {
-    /** Started by the wake phrase (any phrase; stored as "KEYWORD_CIAO_LINDA"). */
+    /** Started by the wake phrase (any phrase; stored as MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE). */
     WAKE_PHRASE,
     /** Started by the user: record button, notification, tile or shortcut (stored as "MANUAL"). */
     MANUAL,

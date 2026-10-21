@@ -1,5 +1,6 @@
 package io.github.elgrande73.voicememo
 
+import io.github.elgrande73.voicememo.detection.MemoTriggerDetector
 import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
@@ -80,7 +81,7 @@ class DatabasePersistenceTest {
                 put("timestamp", 1_700_000_000_000L)
                 put("duration_seconds", 4.5)
                 put("audio_file_path", audio.absolutePath)
-                put("trigger_type", "KEYWORD_CIAO_LINDA")
+                put("trigger_type", MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE)
                 put("is_favorite", 1)
                 put("transcription_status", "SKIPPED")
                 put("peak_db", 61.0f)
@@ -94,7 +95,7 @@ class DatabasePersistenceTest {
             val notes = runBlocking { database.voiceNoteDao().getAllNotes().first() }
             assertEquals(1, notes.size)
             assertEquals("Wake Phrase Memo (Oct 20)", notes.single().title)
-            assertEquals("KEYWORD_CIAO_LINDA", notes.single().triggerType)
+            assertEquals(MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE, notes.single().triggerType)
             assertTrue(notes.single().isFavorite)
             assertEquals(audio.absolutePath, notes.single().audioFilePath)
             database.close()

@@ -7,7 +7,6 @@ import io.github.elgrande73.voicememo.detection.RecordingLifecycleState
 import io.github.elgrande73.voicememo.detection.VoiceActivityDetector
 import io.github.elgrande73.voicememo.wakephrase.KeywordDetector
 import io.github.elgrande73.voicememo.wakephrase.KeywordMatchResult
-import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,7 +15,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.sin
 
-/** Detection engine tests; "Ciao Linda" is the default wake phrase the engine must keep recognizing. */
+/** Detection engine tests with a deterministic synthetic phrase enrolled as the sample ([SyntheticPhrase]). */
 class DetectionEngineTest {
 
     @Test
@@ -42,28 +41,28 @@ class DetectionEngineTest {
     }
 
     @Test
-    fun testKeywordDetectorBuiltInTemplateAndMatching() {
-        val keywordDetector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA)
-        assertTrue("Default built-in template should be available", keywordDetector.hasTemplate())
-        assertFalse("Custom user template should not exist initially", keywordDetector.hasCustomTemplate())
+    fun testKeywordDetectorEnrolledTemplateAndMatching() {
+        assertTrue("Built-in template is always available", TemplateKeywordDetector().hasTemplate())
+        assertFalse("No sample enrolled initially", TemplateKeywordDetector().hasCustomTemplate())
+        val keywordDetector = SyntheticPhrase.detector()
 
-        val ciaoLindaAudio = TemplateKeywordDetector.generateCanonicalCiaoLindaAudio(amplitude = 15000.0)
-        assertTrue("Audio chunks generated", ciaoLindaAudio.isNotEmpty())
+        val phraseAudio = SyntheticPhrase.generate(amplitude = 15000.0)
+        assertTrue("Audio chunks generated", phraseAudio.isNotEmpty())
 
         var detected = false
-        for (chunk in ciaoLindaAudio) {
+        for (chunk in phraseAudio) {
             val result = keywordDetector.processFrame(chunk, rms = 0.5f, db = 65f)
             if (result.matched) {
                 detected = true
                 break
             }
         }
-        assertTrue("Canonical Ciao Linda audio above threshold should match built-in template", detected)
+        assertTrue("The enrolled synthetic phrase above threshold should match", detected)
     }
 
     @Test
     fun testKeywordDetectorRejectsUnrelatedSpeech() {
-        val keywordDetector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA)
+        val keywordDetector = SyntheticPhrase.detector()
         // Generate 25 chunks of unrelated monotone tone (e.g. 440 Hz dial tone / siren)
         val sampleRate = 16000
         var falseTrigger = false
@@ -76,7 +75,7 @@ class DetectionEngineTest {
                 falseTrigger = true
             }
         }
-        assertFalse("Loud unrelated 440Hz tone should NOT trigger Ciao Linda detector", falseTrigger)
+        assertFalse("Loud unrelated 440Hz tone should NOT trigger the detector", falseTrigger)
     }
 
     @Test
@@ -114,7 +113,7 @@ class DetectionEngineTest {
 
     @Test
     fun testWakePhraseOnly_LoudSpeechWithoutWakePhrase_DoesNotRecord() {
-        val triggerDetector = MemoTriggerDetector(keywordDetector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA))
+        val triggerDetector = MemoTriggerDetector(keywordDetector = SyntheticPhrase.detector())
         triggerDetector.detectionMode = DetectionMode.KEYWORD_ONLY
         triggerDetector.thresholdDb = 45.0f
         triggerDetector.reset(startMonitoring = true)
@@ -127,7 +126,7 @@ class DetectionEngineTest {
         for (i in 0 until 15) {
             val events = triggerDetector.processFrame(loudTone)
             assertFalse(
-                "Loud speech without Ciao Linda must NOT start recording in KEYWORD_ONLY mode",
+                "Loud speech without the wake phrase must NOT start recording in KEYWORD_ONLY mode",
                 events.any { it is MemoDetectionEvent.TriggerStarted }
             )
         }
@@ -141,15 +140,15 @@ class DetectionEngineTest {
 
     @Test
     fun testWakePhraseOnly_WakePhraseBelowThreshold_DoesNotRecord() {
-        val triggerDetector = MemoTriggerDetector(keywordDetector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA))
+        val triggerDetector = MemoTriggerDetector(keywordDetector = SyntheticPhrase.detector())
         triggerDetector.detectionMode = DetectionMode.KEYWORD_ONLY
         triggerDetector.wakePhraseMinLevelDb = 55.0f // Optional minimum phrase level (dBFS + 90), set high
         triggerDetector.reset(startMonitoring = true)
 
-        // Ciao Linda phrase spoken as quiet whisper (amplitude 100, dB ~ 22dB)
-        val quietCiaoLinda = TemplateKeywordDetector.generateCanonicalCiaoLindaAudio(amplitude = 100.0)
+        // The phrase as a quiet whisper (amplitude 100, dB ~ 22dB)
+        val quietPhrase = SyntheticPhrase.generate(amplitude = 100.0)
 
-        for (chunk in quietCiaoLinda) {
+        for (chunk in quietPhrase) {
             val events = triggerDetector.processFrame(chunk)
             assertFalse(
                 "Wake phrase below loudness threshold must NOT trigger recording",
@@ -166,17 +165,17 @@ class DetectionEngineTest {
 
     @Test
     fun testWakePhraseOnly_WakePhraseAboveThreshold_StartsRecording() {
-        val triggerDetector = MemoTriggerDetector(keywordDetector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA))
+        val triggerDetector = MemoTriggerDetector(keywordDetector = SyntheticPhrase.detector())
         triggerDetector.detectionMode = DetectionMode.KEYWORD_ONLY
         triggerDetector.thresholdDb = 45.0f
         triggerDetector.reset(startMonitoring = true)
 
-        // Ciao Linda spoken clearly above threshold (~65 dB)
-        val ciaoLinda = TemplateKeywordDetector.generateCanonicalCiaoLindaAudio(amplitude = 15000.0)
+        // The phrase clearly above threshold (~65 dB)
+        val phrase = SyntheticPhrase.generate(amplitude = 15000.0)
 
         var triggerStarted = false
         var preTriggerCaptured = false
-        for (chunk in ciaoLinda) {
+        for (chunk in phrase) {
             val events = triggerDetector.processFrame(chunk)
             for (ev in events) {
                 if (ev is MemoDetectionEvent.TriggerStarted) {
@@ -196,7 +195,7 @@ class DetectionEngineTest {
 
     @Test
     fun testLoudnessOnly_LoudSpeechStartsRecordingWithoutWakePhrase() {
-        val triggerDetector = MemoTriggerDetector(keywordDetector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA))
+        val triggerDetector = MemoTriggerDetector(keywordDetector = SyntheticPhrase.detector())
         triggerDetector.detectionMode = DetectionMode.AUTO_SOUND
         triggerDetector.thresholdDb = 45.0f
         triggerDetector.minTriggerDurationMs = 50L
@@ -217,7 +216,7 @@ class DetectionEngineTest {
 
     @Test
     fun testPreTriggerBufferCapturesFirstWords() {
-        val triggerDetector = MemoTriggerDetector(keywordDetector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA))
+        val triggerDetector = MemoTriggerDetector(keywordDetector = SyntheticPhrase.detector())
         triggerDetector.detectionMode = DetectionMode.KEYWORD_ONLY
         triggerDetector.thresholdDb = 40.0f
         triggerDetector.preTriggerDurationMs = 1000L
@@ -229,11 +228,11 @@ class DetectionEngineTest {
             triggerDetector.processFrame(prePhraseNoise)
         }
 
-        // 2. Feed "Ciao Linda"
-        val ciaoLinda = TemplateKeywordDetector.generateCanonicalCiaoLindaAudio(amplitude = 16000.0)
+        // 2. Feed the wake phrase
+        val phrase = SyntheticPhrase.generate(amplitude = 16000.0)
         var triggerEvent: MemoDetectionEvent.TriggerStarted? = null
 
-        for (chunk in ciaoLinda) {
+        for (chunk in phrase) {
             val events = triggerDetector.processFrame(chunk)
             val started = events.filterIsInstance<MemoDetectionEvent.TriggerStarted>().firstOrNull()
             if (started != null) {
@@ -259,7 +258,7 @@ class DetectionEngineTest {
 
     @Test
     fun testCustomTemplateTrainingAndClearing() {
-        val keywordDetector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA)
+        val keywordDetector = SyntheticPhrase.detector()
         val trainingChunks = mutableListOf<ShortArray>()
         for (c in 0 until 10) {
             val chunk = ShortArray(800) { i ->
@@ -282,7 +281,7 @@ class DetectionEngineTest {
 
     @Test
     fun testRecordingDoesNotStopOnShortPauses() {
-        val triggerDetector = MemoTriggerDetector(keywordDetector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA))
+        val triggerDetector = MemoTriggerDetector(keywordDetector = SyntheticPhrase.detector())
         triggerDetector.detectionMode = DetectionMode.AUTO_SOUND
         triggerDetector.thresholdDb = 45.0f
         triggerDetector.minTriggerDurationMs = 50L
@@ -325,7 +324,7 @@ class DetectionEngineTest {
 
     @Test
     fun testRecordingDoesNotStopOnSpeechNearThreshold() {
-        val triggerDetector = MemoTriggerDetector(keywordDetector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA))
+        val triggerDetector = MemoTriggerDetector(keywordDetector = SyntheticPhrase.detector())
         triggerDetector.detectionMode = DetectionMode.AUTO_SOUND
         triggerDetector.thresholdDb = 48.0f
         triggerDetector.minTriggerDurationMs = 50L
@@ -354,7 +353,7 @@ class DetectionEngineTest {
 
     @Test
     fun testRecordingStopsOnlyAfterFullContinuousSilenceTimeout() {
-        val triggerDetector = MemoTriggerDetector(keywordDetector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA))
+        val triggerDetector = MemoTriggerDetector(keywordDetector = SyntheticPhrase.detector())
         triggerDetector.detectionMode = DetectionMode.AUTO_SOUND
         triggerDetector.thresholdDb = 45.0f
         triggerDetector.minTriggerDurationMs = 50L
@@ -388,7 +387,7 @@ class DetectionEngineTest {
 
     @Test
     fun testRecordingPreservesFinalSpokenWordsAndPostSpeechBuffer() {
-        val triggerDetector = MemoTriggerDetector(keywordDetector = TemplateKeywordDetector(builtInPhrase = BuiltInWakePhrase.CIAO_LINDA))
+        val triggerDetector = MemoTriggerDetector(keywordDetector = SyntheticPhrase.detector())
         triggerDetector.detectionMode = DetectionMode.AUTO_SOUND
         triggerDetector.thresholdDb = 45.0f
         triggerDetector.minTriggerDurationMs = 50L

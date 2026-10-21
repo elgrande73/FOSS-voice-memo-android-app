@@ -93,29 +93,8 @@ sealed class MemoDetectionEvent {
  */
 class MemoTriggerDetector(
     private val vad: VoiceActivityDetector = VoiceActivityDetector(),
-    keywordDetector: KeywordDetector = TemplateKeywordDetector()
+    val keywordDetector: KeywordDetector = TemplateKeywordDetector()
 ) {
-    /** The wake-phrase backend; replaced only through [replaceKeywordDetector]. */
-    var keywordDetector: KeywordDetector = keywordDetector
-        private set
-
-    /**
-     * Switches the wake-phrase backend (Settings → detection model). Refused (returns null) while a memo is being
-     * recorded, so a memo is always stopped by the backend that started it; the caller retries when it has ended.
-     * Returns the previous backend, which the caller releases.
-     */
-    @Synchronized
-    fun replaceKeywordDetector(detector: KeywordDetector): KeywordDetector? {
-        if (currentState == RecordingLifecycleState.RECORDING) return null
-        val previous = keywordDetector
-        detector.setMatchConfidenceThreshold(matchConfidenceThreshold)
-        detector.resetStream()
-        keywordDetector = detector
-        matchStreak = 0
-        lastKeywordResult = null
-        return previous
-    }
-
     // Configuration Parameters
     var detectionMode: DetectionMode = DetectionMode.KEYWORD_ONLY
     var thresholdDb: Float = 48.0f
@@ -264,8 +243,7 @@ class MemoTriggerDetector(
         // Rolling pre-trigger ring buffer maintenance
         // In KEYWORD_ONLY mode, buffer is large enough to retain the full wake phrase plus pre-phrase padding
         val targetPreTriggerMs = if (detectionMode == DetectionMode.KEYWORD_ONLY) {
-            // Plus the time a backend may need to decide after the phrase ended (speech check)
-            maxOf(preTriggerDurationMs + 1500L, 2500L) + keywordDetector.decisionLatencyMs
+            maxOf(preTriggerDurationMs + 1500L, 2500L)
         } else {
             preTriggerDurationMs.coerceAtLeast(400L)
         }
@@ -289,8 +267,7 @@ class MemoTriggerDetector(
                         // threshold; during media playback (noise filter on) wake-phrase triggers are suppressed
                         if (!shouldSuppressSound && kwResult.matched && phraseLoudEnough(kwResult)) {
                             currentState = RecordingLifecycleState.RECORDING
-                            // Persisted trigger type of wake-phrase memos; stored in the database, so it must not be renamed
-                            activeTriggerType = "KEYWORD_CIAO_LINDA" // persisted for every wake phrase; never rename
+                            activeTriggerType = WAKE_PHRASE_TRIGGER_TYPE
                             triggerStartTime = now
                             lastSpeechTime = now
                             soundSustainStartTime = 0L
@@ -610,6 +587,11 @@ class MemoTriggerDetector(
         private const val RECENT_LEVEL_FRAMES = 50
         private const val SAMPLE_RATE = 16000
         const val DEFAULT_CONSECUTIVE_MATCH_FRAMES = 1
+        /**
+         * Trigger type stored in the database for memos started by the wake phrase (any phrase). The value dates from
+         * the first version of the app and is kept unchanged so existing memos keep their meaning; never rename it.
+         */
+        const val WAKE_PHRASE_TRIGGER_TYPE = "KEYWORD_CIAO_LINDA"
     }
 }
 

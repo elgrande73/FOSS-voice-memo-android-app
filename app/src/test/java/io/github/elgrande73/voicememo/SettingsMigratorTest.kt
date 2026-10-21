@@ -6,7 +6,6 @@ import androidx.test.core.app.ApplicationProvider
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.settings.SettingsMigrator
-import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -174,41 +173,58 @@ class SettingsMigratorTest {
         assertEquals(-37f, minLevelDbfs(), 0.001f)
     }
 
-    private fun builtInPhrase() = prefs.getString(PreferenceKeys.BUILT_IN_WAKE_PHRASE, null)
+    private fun notice() = SettingsMigrator.wakePhraseChangedNotice(prefs)
 
     @Test
-    fun freshInstallationGetsMangoTango() {
+    fun freshInstallationUsesMangoTangoWithoutANotice() {
         SettingsMigrator.migrate(prefs)
-        assertEquals("mango_tango", builtInPhrase())
-        assertEquals(BuiltInWakePhrase.MANGO_TANGO, SettingsMigrator.builtInWakePhrase(prefs))
+        assertFalse(notice())
+        assertEquals(4, prefs.getInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 0))
     }
 
     @Test
-    fun existingInstallationsKeepCiaoLinda() {
+    fun existingInstallationsAreToldOnceThatTheBuiltInPhraseChanged() {
         for (version in 0..2) {
             prefs.edit().clear().putInt(PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT, 55).apply {
                 if (version > 0) putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, version)
             }.commit()
             SettingsMigrator.migrate(prefs)
-            assertEquals("v$version", "ciao_linda", builtInPhrase())
+            assertTrue("v$version", notice())
             assertEquals(55, threshold())
         }
+        // Dismissed: never shown again, also not by later migrations
+        prefs.edit().remove(PreferenceKeys.WAKE_PHRASE_CHANGED_NOTICE).commit()
+        repeat(2) { SettingsMigrator.migrate(prefs) }
+        assertFalse(notice())
     }
 
     @Test
-    fun aChosenBuiltInPhraseIsNeverReplaced() {
-        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 2).putString(PreferenceKeys.BUILT_IN_WAKE_PHRASE, "mango_tango").commit()
-        repeat(3) { SettingsMigrator.migrate(prefs) }
-        assertEquals("mango_tango", builtInPhrase())
-        prefs.edit().putString(PreferenceKeys.BUILT_IN_WAKE_PHRASE, "ciao_linda").commit()
+    fun v3InstallationsAlreadyOnMangoTangoGetNoNotice() {
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 3).putString("builtInWakePhrase", "mango_tango").commit()
         SettingsMigrator.migrate(prefs)
-        assertEquals("ciao_linda", builtInPhrase())
+        assertFalse(notice())
+        assertFalse(prefs.contains("builtInWakePhrase"))
     }
 
     @Test
-    fun corruptBuiltInPhraseFallsBackToTheDefaultWithoutCrashing() {
-        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 3).putInt(PreferenceKeys.BUILT_IN_WAKE_PHRASE, 7).commit()
-        SettingsMigrator.migrate(prefs)
-        assertEquals(BuiltInWakePhrase.DEFAULT, SettingsMigrator.builtInWakePhrase(prefs))
+    fun theRemovedSpeechCheckSettingsAreDroppedAndEverythingElseIsKept() {
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 3)
+            .putString("builtInWakePhrase", "earlier_default")
+            .putString("wakeWordModel", "speech_check")
+            .putString("recordedWakePhraseText", "Open sesame")
+            .putInt(PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT, 63)
+            .putBoolean(PreferenceKeys.WAKE_PHRASE_MIN_LEVEL_ENABLED, false)
+            .putString(PreferenceKeys.HISTORY_PLAYBACK_MODE, "single")
+            .putString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, "it")
+            .commit()
+        repeat(2) { SettingsMigrator.migrate(prefs) }
+        assertFalse(prefs.contains("wakeWordModel"))
+        assertFalse(prefs.contains("recordedWakePhraseText"))
+        assertFalse(prefs.contains("builtInWakePhrase"))
+        assertTrue(notice())
+        assertEquals(63, threshold())
+        assertFalse(minLevelEnabled())
+        assertEquals("single", prefs.getString(PreferenceKeys.HISTORY_PLAYBACK_MODE, null))
+        assertEquals("it", prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, null))
     }
 }

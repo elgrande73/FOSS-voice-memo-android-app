@@ -124,11 +124,11 @@ class TranscriptionTest {
         val before = file.readBytes()
         val other = insert(speechWav("other.wav"), text = "keep me", status = TranscriptionStatus.COMPLETED)
         val id = insert(file)
-        val engine = FakeEngine { _, _ -> TranscriptResult(" Ciao, ricordati il pane [Musica] ", "it", "m", 5) }
+        val engine = FakeEngine { _, _ -> TranscriptResult(" Allora, ricordati il pane [Musica] ", "it", "m", 5) }
         val m = manager(engine)
         m.enqueue(id)
         waitFor { note(id)?.transcriptionStatus == TranscriptionStatus.COMPLETED }
-        assertEquals("Ciao, ricordati il pane", note(id)!!.transcriptionText)
+        assertEquals("Allora, ricordati il pane", note(id)!!.transcriptionText)
         assertEquals("keep me", note(other)!!.transcriptionText)
         assertArrayEquals(before, file.readBytes())
         waitFor { m.jobs.value.isEmpty() }

@@ -42,7 +42,7 @@ object WakePhraseBenchmark {
     val TARGET_EVAL = (1..6).map { "target_eval_$it" }
     val OTHER_SPEAKERS = (1..3).map { "other_speaker_$it" }
     /** Phrases that sound like the wake phrase, or contain part of it. */
-    val NEAR_MISSES = (1..5).map { "neg_similar_$it" } + (1..2).map { "neg_partial_$it" }
+    val NEAR_MISSES = (1..5).map { "neg_similar_$it" } + (1..2).map { "neg_partial_$it" } + (1..2).map { "neg_context_$it" }
     /** Ordinary speech without the wake phrase. */
     val CONVERSATION = (1..5).map { "neg_speech_$it" } + listOf("other_speech", "other_speech_en")
     val NEGATIVES = NEAR_MISSES + CONVERSATION

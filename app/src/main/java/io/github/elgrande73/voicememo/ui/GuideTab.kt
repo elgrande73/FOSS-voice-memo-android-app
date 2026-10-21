@@ -98,7 +98,7 @@ fun GuideTab() {
                 content = """
                     In addition to raw sound level detection, Voice Memo features a built-in offline Keyword Spotter. The recommended wake phrase is "Mango Tango": say it to start a memo, and say it again to stop.
                     
-                    The built-in phrase works without setup, but it was made from synthetic voices and does not recognise every voice. For reliable detection, record the phrase in your own voice in Settings → Wake Phrase (you can also record a different phrase). Installations set up before "Mango Tango" became the default keep "Ciao Linda"; you can switch the built-in phrase there too. When monitoring is active, incoming audio is analyzed using local spectral filterbanks and Dynamic Time Warping (DTW) to match your voice.
+                    The built-in phrase works without setup, but it was made from synthetic voices and does not recognise every voice. For reliable detection, record the phrase in your own voice in Settings → Wake Phrase (you can also record a different phrase). When monitoring is active, incoming audio is analyzed using local spectral filterbanks and Dynamic Time Warping (DTW) to match your voice.
                     
                     You can configure the keyword to Start only, Stop only, or both Start & Stop recording.
                 """.trimIndent(),

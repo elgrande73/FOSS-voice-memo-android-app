@@ -45,13 +45,13 @@ class StopBehaviorTest {
     /** background, start phrase, pause, memo words, [pause], stop phrase, background — with low-level noise added. */
     private fun keywordSession(
         pauseBeforeStop: Double,
-        stopPhrase: String = "ciao_linda_b",
+        stopPhrase: String = "wake_phrase_b",
         offsetSamples: Int = 0,
         trailingSeconds: Double = 1.5
     ): Session {
         val parts = listOf(
             silence(2.0).copyOf((2.0 * rate).toInt() + offsetSamples),
-            speech("ciao_linda_a"),
+            speech("wake_phrase_a"),
             silence(0.4),
             speech("other_speech", -12.0),
             speech("other_speech_en", -14.0),
@@ -72,7 +72,7 @@ class StopBehaviorTest {
             detectionMode = DetectionMode.KEYWORD_ONLY
             thresholdDb = 45f
             // This test measures where the stop phrase is cut, not detection rates (WakePhraseStartStopTest does).
-            // "ciao_linda_b" after a 150 ms pause scores 0.48 (0.50 before the gain-release change), so the
+            // "wake_phrase_b" after a 150 ms pause scores 0.48 (0.50 before the gain-release change), so the
             // threshold sits just below the weakest of these stop phrases.
             matchConfidenceThreshold = 0.45f
             silenceTimeoutMs = 3000L
@@ -96,7 +96,7 @@ class StopBehaviorTest {
     @Test
     fun keywordStopRemovesTheStopPhraseButKeepsTheMemo() {
         val template = AudioFixtures.enrollTemplate()
-        for (pause in listOf(0.15, 0.3, 0.6)) for (stopPhrase in listOf("ciao_linda_a", "ciao_linda_b")) for (offset in listOf(0, 137, 411)) {
+        for (pause in listOf(0.15, 0.3, 0.6)) for (stopPhrase in listOf("wake_phrase_a", "wake_phrase_b")) for (offset in listOf(0, 137, 411)) {
             val session = keywordSession(pause, stopPhrase, offset)
             val (memo, firstSample) = run(keywordDetector(template), session.samples)
             val savedEnd = firstSample + memo.audioChunks.sumOf { it.size }
@@ -129,7 +129,7 @@ class StopBehaviorTest {
         assertEquals(RecordingStopReason.SILENCE_TIMEOUT, memo.stopReason)
         assertEquals(0, memo.removedStopPhraseFrames)
         val savedEnd = firstSample + memo.audioChunks.sumOf { it.size }
-        assertTrue("phrase must be kept", savedEnd >= session.stopPhraseStart + speech("ciao_linda_b").size)
+        assertTrue("phrase must be kept", savedEnd >= session.stopPhraseStart + speech("wake_phrase_b").size)
     }
 
     private fun loudnessDetector() = MemoTriggerDetector().apply {

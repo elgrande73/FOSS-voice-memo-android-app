@@ -11,7 +11,6 @@ import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.ui.theme.MyApplicationTheme
 import io.github.elgrande73.voicememo.viewmodel.VoiceMemoViewModel
-import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
 import io.github.elgrande73.voicememo.wakephrase.TemplateKeywordDetector
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseStore
 import io.github.elgrande73.voicememo.wakephrase.WakePhraseTestResult
@@ -66,7 +65,7 @@ class UserDataPersistenceTest {
 
         assertEquals(MatchConfidenceThreshold.DEFAULT_PERCENT, viewModel.matchConfidenceThresholdPercent.value)
         assertFalse("No enrolled phrase: the built-in phrase is used", viewModel.hasKeywordTemplate.value)
-        assertEquals(BuiltInWakePhrase.MANGO_TANGO, viewModel.builtInWakePhrase.value)
+        assertFalse("fresh installation: no notice about a changed phrase", viewModel.wakePhraseChangedNotice.value)
         assertTrue(TemplateKeywordDetector().hasTemplate())
         assertNull(viewModel.keywordTestResult.value)
     }
@@ -116,7 +115,7 @@ class UserDataPersistenceTest {
     @Test
     fun enrolledWakePhraseIsNotReplacedByDefaultOnRestart() {
         val detector = TemplateKeywordDetector()
-        assertTrue(detector.recordTemplate(TemplateKeywordDetector.generateCanonicalCiaoLindaAudio(amplitude = 7000.0)))
+        assertTrue(detector.recordTemplate(SyntheticPhrase.generate(amplitude = 7000.0)))
         val template = detector.getTemplateData()!!
         WakePhraseStore(app.filesDir).addSample(template, 800L, -10f)
 
@@ -130,7 +129,7 @@ class UserDataPersistenceTest {
     @Test
     fun testPhraseResultAndRecordingAreRestoredAfterRestart() {
         WakePhraseStore(app.filesDir).apply {
-            saveTestRecording(TemplateKeywordDetector.generateCanonicalCiaoLindaAudio())
+            saveTestRecording(SyntheticPhrase.generate())
             saveTestResult(WakePhraseTestResult(0.66f, 1_700_000_000_000L))
         }
 
