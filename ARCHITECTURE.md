@@ -1,7 +1,7 @@
 # System & Software Architecture Documentation (arc42 Aligned)
 
 **Application:** Voice Memo (Automatic Voice-Note Assistant for Android — FOSS / F-Droid Distribution)  
-**Application ID / package:** `io.github.elgrande73.voicememo` (formerly `com.aistudio.ciaolinda`, see [README](README.md#new-application-identity))  
+**Application ID / package:** `io.github.elgrande73.voicememo` (the app previously used another ID, see [README](README.md#new-application-identity))  
 **Default wake phrase:** "Mango Tango" (or the user's recorded phrase)  
 **Target Platform:** Android 7.0 (API Level 24) through Android 15 / 16 (API Level 36)
 

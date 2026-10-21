@@ -291,9 +291,9 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     /** Full evaluation of the latest phrase test in this session (includes the loudness check). */
     val lastTestEvaluation = _lastTestEvaluation.asStateFlow()
 
-    private val _isLegacyTemplate = MutableStateFlow(false)
-    /** The enrolled phrase was recorded with an earlier version (legacy features); re-recording is recommended. */
-    val isLegacyTemplate = _isLegacyTemplate.asStateFlow()
+    // Samples on disk that cannot be used any more (unsupported format of the first app version)
+    private val _unusableSampleCount = MutableStateFlow(0)
+    val unusableSampleCount = _unusableSampleCount.asStateFlow()
 
     // Enrolled wake-phrase samples (1-5, optional); read synchronously so the screen starts with the stored state
     private val _wakePhraseSamples = MutableStateFlow(wakePhraseStore.loadSamples().map { it.toSummary() })
@@ -1100,7 +1100,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         if (loaded < samples.size) Log.w(TAG, "${samples.size - loaded} wake-phrase sample(s) could not be read")
         _wakePhraseSamples.value = samples.map { it.toSummary() }
         _hasKeywordTemplate.value = samples.isNotEmpty()
-        _isLegacyTemplate.value = keywordDetector.isLegacyTemplate
+        _unusableSampleCount.value = wakePhraseStore.unusableSampleCount()
     }
 
     /**
@@ -1581,14 +1581,9 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
 }
 
 /** What the Settings screen shows about an enrolled sample (no audio, no features). */
-data class WakePhraseSampleSummary(val id: Long, val createdAt: Long, val phraseDurationMs: Long, val legacyFeatures: Boolean)
+data class WakePhraseSampleSummary(val id: Long, val createdAt: Long, val phraseDurationMs: Long)
 
-private fun WakePhraseSample.toSummary() = WakePhraseSampleSummary(
-    id = id,
-    createdAt = createdAt,
-    phraseDurationMs = phraseDurationMs,
-    legacyFeatures = TemplateKeywordDetector().apply { loadTemplate(templateBytes) }.isLegacyTemplate
-)
+private fun WakePhraseSample.toSummary() = WakePhraseSampleSummary(id = id, createdAt = createdAt, phraseDurationMs = phraseDurationMs)
 
 /** A speech-to-text model as shown in Settings. */
 data class SpeechModelSummary(val id: String, val name: String, val description: String, val downloaded: Boolean)

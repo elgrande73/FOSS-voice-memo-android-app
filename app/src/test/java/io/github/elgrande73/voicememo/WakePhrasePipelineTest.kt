@@ -243,23 +243,17 @@ class WakePhrasePipelineTest {
     }
 
     @Test
-    fun templatesFromEarlierVersionsStillLoadAndAreFlagged() {
-        val legacy = TemplateKeywordDetector()
-        // An earlier-version template: legacy magic with legacy features
-        val legacyFeatures = SyntheticPhrase.generate().map { legacy.extractFeatureVector(it) }
-        val buffer = java.nio.ByteBuffer.allocate(12 + legacyFeatures.size * 16 * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-        buffer.putInt(TemplateKeywordDetector.MAGIC_LEGACY_TEMPLATE).putInt(legacyFeatures.size).putInt(16)
-        legacyFeatures.forEach { vec -> vec.forEach { buffer.putFloat(it) } }
-
+    fun templatesInOtherFormatsAreNotLoaded() {
+        val features = SyntheticPhrase.generate().map { FloatArray(16) { 0.25f } }
+        val buffer = java.nio.ByteBuffer.allocate(12 + features.size * 16 * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        buffer.putInt(0x01020304).putInt(features.size).putInt(16)
+        features.forEach { vec -> vec.forEach { buffer.putFloat(it) } }
         val detector = TemplateKeywordDetector()
-        assertTrue(detector.loadTemplate(buffer.array()))
-        assertTrue(detector.isLegacyTemplate)
-        assertTrue(detector.hasCustomTemplate())
-        // Matched with the legacy features it was recorded with: the canonical audio still matches itself
-        val best = SyntheticPhrase.generate().maxOf { detector.processFrame(it, 0f, 0f).confidence }
-        assertTrue("legacy self-match $best", best > 0.9f)
-        // Saving keeps the legacy marker
-        assertTrue(TemplateKeywordDetector().apply { loadTemplate(detector.getTemplateData()!!) }.isLegacyTemplate)
+        assertFalse(detector.loadTemplate(buffer.array()))
+        assertFalse(detector.hasCustomTemplate())
+        // The current format round-trips
+        val enrolled = SyntheticPhrase.detector()
+        assertTrue(TemplateKeywordDetector().loadTemplate(enrolled.getTemplateData()!!))
     }
 
     @Test
@@ -270,7 +264,6 @@ class WakePhrasePipelineTest {
         val phraseFrames = AudioFixtures.load("wake_phrase_a").size / 800.0
         // ~0.72 s phrase = ~15 frames (+ 1 frame padding each side), not the 50 frames of the whole recording
         assertTrue("template frames ${detector.templateFrameCount}", detector.templateFrameCount in phraseFrames.toInt()..(phraseFrames.toInt() + 4))
-        assertFalse(detector.isLegacyTemplate)
     }
 
     @Test

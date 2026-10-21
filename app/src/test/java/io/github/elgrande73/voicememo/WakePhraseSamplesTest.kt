@@ -132,13 +132,18 @@ class WakePhraseSamplesTest {
     }
 
     @Test
-    fun outdatedFeatureVersionsAreRecognisedAndStillUsable() {
-        val legacy = TemplateKeywordDetector()
-        val features = SyntheticPhrase.generate().map { legacy.extractFeatureVector(it) }
-        val legacyBytes = TemplateKeywordDetector.serialize(features, legacy = true)
+    fun samplesInAnUnsupportedFormatAreSkippedKeptAndReported() {
+        // A template in another format (e.g. from the very first app version): valid sample container, foreign magic
+        val good = accepted("target_enroll_1").templateBytes
+        val foreign = good.copyOf().also { java.nio.ByteBuffer.wrap(it).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(0, 0x01020304) }
         val detector = TemplateKeywordDetector()
-        assertEquals(2, detector.loadTemplates(listOf(legacyBytes, accepted("target_enroll_1").templateBytes)))
-        assertTrue(detector.isLegacyTemplate)
+        assertEquals(1, detector.loadTemplates(listOf(foreign, good)))
+        val store = WakePhraseStore(filesDir)
+        assertNotNull(store.addSample(foreign, 900, -12f))
+        assertNotNull(store.addSample(good, 900, -12f))
+        assertEquals("only the usable sample is listed and used", 1, store.loadSamples().size)
+        assertEquals(1, store.unusableSampleCount())
+        assertEquals("kept on disk", 2, File(File(filesDir, WakePhraseStore.DIRECTORY_NAME), WakePhraseStore.SAMPLES_DIRECTORY_NAME).listFiles()!!.size)
         // Unknown/incompatible data is skipped, not misinterpreted
         assertEquals(0, detector.loadTemplates(listOf(byteArrayOf(9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9))))
         assertFalse(detector.hasCustomTemplate())

@@ -165,7 +165,7 @@ class UserDataPersistenceTest {
     @Test
     fun newIdentityDoesNotClaimDataFromOldApplication() {
         assertEquals("io.github.elgrande73.voicememo", BuildConfig.APPLICATION_ID)
-        assertNotEquals("com.aistudio.ciaolinda", app.packageName)
+        assertFalse("the earlier application ID must not return", app.packageName.startsWith("com.aistudio"))
 
         val viewModel = VoiceMemoViewModel(app)
         assertFalse(viewModel.hasKeywordTemplate.value)

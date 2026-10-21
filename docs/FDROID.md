@@ -37,7 +37,7 @@ the app has been accepted by F-Droid. Inclusion is decided by the F-Droid review
 4. **Screenshots**: add phone screenshots to `fastlane/metadata/android/en-US/images/phoneScreenshots/`.
 5. **Submit** the metadata as a merge request to fdroiddata and run `fdroid lint` / `fdroid build` there (or with
    `fdroidserver` locally). These checks were not run in this repository.
-6. **Old app**: decide what happens to the listing of the previous application ID (`com.aistudio.ciaolinda`), e.g. mark it as superseded.
+6. **Old app**: decide what happens to the listing of the previously published app (other name and ID), e.g. mark it as superseded.
    Users must install Voice Memo separately; their old data does not migrate automatically (see README).
 
 ## Remaining risks

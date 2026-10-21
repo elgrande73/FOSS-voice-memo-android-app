@@ -2109,7 +2109,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
     val phraseCaptureState by viewModel.phraseCaptureState.collectAsState()
     val phraseCaptureError by viewModel.phraseCaptureError.collectAsState()
     val phraseMessage by viewModel.phraseMessage.collectAsState()
-    val isLegacyTemplate by viewModel.isLegacyTemplate.collectAsState()
+    val unusableSampleCount by viewModel.unusableSampleCount.collectAsState()
     val hasSavedTestRecording by viewModel.hasSavedTestRecording.collectAsState()
 
     val speechToTextEnabled by viewModel.speechToTextEnabled.collectAsState()
@@ -2298,9 +2298,10 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                         modifier = Modifier.testTag("phrase_message")
                     )
                 }
-                if (isLegacyTemplate) {
+                if (unusableSampleCount > 0) {
                     Text(
-                        text = "Your phrase was recorded with an earlier version. Record it again for more reliable detection.",
+                        text = "$unusableSampleCount sample(s) recorded with a much older version of the app can no longer be used. " +
+                            "Record the phrase again.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2325,8 +2326,7 @@ fun SettingsScreen(viewModel: VoiceMemoViewModel) {
                                 )
                                 Text(
                                     text = dateFormat.format(Date(sample.createdAt)) +
-                                        (if (sample.phraseDurationMs > 0) " · %.1f s".format(sample.phraseDurationMs / 1000f) else "") +
-                                        (if (sample.legacyFeatures) " · earlier version" else ""),
+                                        (if (sample.phraseDurationMs > 0) " · %.1f s".format(sample.phraseDurationMs / 1000f) else ""),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

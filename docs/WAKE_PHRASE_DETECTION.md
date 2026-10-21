@@ -60,8 +60,9 @@ Saved test WAV (validated)  ───┘   (exact 50 ms frames) └─ WakePhras
   evaluator primes it with the same recording first; during monitoring it has converged long before.
 * **Frame assembly**: `PcmFrameAssembler` turns partial `AudioRecord` reads into exact 800-sample frames (previously a
   short read was processed together with stale samples left in the buffer).
-* **Templates from earlier versions** (legacy format and features) keep working and are matched with the legacy
-  feature extractor; Settings recommends re-recording. New templates use the `'CIA2'` format.
+* **Template format**: templates store `WakePhraseFrontEnd` features (`MAGIC_FRONT_END_TEMPLATE`). Templates in any
+  other format (the very first app version used a different feature extractor) are no longer loaded: they stay on disk,
+  are not used, and Settings asks the user to record the phrase again (`WakePhraseStore.unusableSampleCount`).
 
 ### Score semantics
 
@@ -118,7 +119,7 @@ No audio or recognised content is logged; release builds create no logger.
 ## 6. Tests
 
 `WakePhrasePipelineTest` (same audio through both workflows, original discrepancy, other speech, silence, levels, buffer
-boundaries, sub-frame offsets, thresholds 50/65/80 %, loudness criterion, restarts, legacy templates, endpointing,
+boundaries, sub-frame offsets, thresholds 50/65/80 %, loudness criterion, restarts, unsupported template formats, endpointing,
 performance), `WakePhraseNoiseRobustnessTest`, `WakePhraseFrontEndTest`, `NoiseFloorEstimatorTest`,
 `PcmFrameAssemblerTest`, `WakePhraseStoreTest` (format validation), `WakePhraseSamplesTest` (multi-sample enrollment),
 `WakePhraseEvaluationTest` (metrics, sweep, false activations, processing time), `StopBehaviorTest` (stop reasons),
@@ -203,7 +204,7 @@ Natural variation in pace, pitch, volume or distance is deliberately accepted.
 - The data never leaves the device.
 - An unreadable file is skipped, not deleted.
 - The single template of earlier versions (`enrolled_template.bin`) is migrated once to sample 1. The migration is idempotent, and the old file is deleted only after the copy has been read back.
-- Templates in older feature formats are still loaded and are flagged as outdated.
+- Templates in other feature formats are skipped (kept on disk) and reported in Settings as unusable.
 
 **Choice of aggregation** (measured, 5 samples, tuning set, earlier set). Mean of the best two references: AUC 0.807. Max: AUC 0.817. Max was chosen.
 

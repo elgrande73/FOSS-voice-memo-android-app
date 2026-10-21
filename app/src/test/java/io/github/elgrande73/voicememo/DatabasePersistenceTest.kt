@@ -81,7 +81,8 @@ class DatabasePersistenceTest {
                 put("timestamp", 1_700_000_000_000L)
                 put("duration_seconds", 4.5)
                 put("audio_file_path", audio.absolutePath)
-                put("trigger_type", MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE)
+                // Version 1 stored a phrase-specific keyword value; any KEYWORD… value stands in for it here
+                put("trigger_type", "KEYWORD_EARLIER_VERSION")
                 put("is_favorite", 1)
                 put("transcription_status", "SKIPPED")
                 put("peak_db", 61.0f)
@@ -101,5 +102,27 @@ class DatabasePersistenceTest {
             database.close()
         }
         assertEquals(64L, audio.length())
+    }
+
+    @Test
+    fun migrationTo2RewritesOnlyWakePhraseTriggerTypes() {
+        createDatabaseFromExportedSchema(1).use { db ->
+            for ((title, trigger) in listOf("w" to "KEYWORD_EARLIER_VERSION", "m" to "MANUAL", "a" to "AUTO_SOUND", "v" to "AUTO_VOICE")) {
+                db.insertOrThrow("voice_notes", null, ContentValues().apply {
+                    put("title", title); put("timestamp", 1L); put("duration_seconds", 1.0)
+                    put("audio_file_path", "/x/$title.wav"); put("trigger_type", trigger); put("is_favorite", 0)
+                    put("transcription_status", "COMPLETED"); put("transcription_text", "text $title")
+                    put("peak_db", 1f); put("avg_db", 1f)
+                })
+            }
+        }
+        val database = openWithCurrentApp()
+        val byTitle = runBlocking { database.voiceNoteDao().getAllNotes().first() }.associateBy { it.title }
+        assertEquals(MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE, byTitle.getValue("w").triggerType)
+        assertEquals("MANUAL", byTitle.getValue("m").triggerType)
+        assertEquals("AUTO_SOUND", byTitle.getValue("a").triggerType)
+        assertEquals("AUTO_VOICE", byTitle.getValue("v").triggerType)
+        assertTrue(byTitle.values.all { it.transcriptionText == "text ${it.title}" })
+        database.close()
     }
 }

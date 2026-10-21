@@ -30,7 +30,7 @@ The default wake phrase is **"Mango Tango"**; you can also record your own phras
 
 ## 🆔 New application identity
 
-This app was previously published under a different name and the application ID `com.aistudio.ciaolinda`. It is now **Voice Memo** with the application ID **`io.github.elgrande73.voicememo`**.
+This app was previously published under a different name and application ID. It is now **Voice Memo** with the application ID **`io.github.elgrande73.voicememo`**.
 
 > ⚠️ The ID `io.github.elgrande73.voicememo` is derived from the GitHub account hosting the source code (`github.com/elgrande73`). It is **provisional until the maintainer confirms it** before the first release; changing it after a release would again create a separate app.
 

@@ -3,10 +3,14 @@
 ## Unreleased — Voice Memo 1.0 (versionCode 1)
 
 First release under the new name **Voice Memo** and the new application ID `io.github.elgrande73.voicememo`
-(previously `com.aistudio.ciaolinda`). Android installs it as a separate app; data of the old app is not accessible
+(the app was previously published under another name and ID). Android installs it as a separate app; data of the old app is not accessible
 to it (see README, "New application identity").
 
 ### Changed (since pre-release v0.0.2)
+- **Breaking:** wake-phrase samples recorded with the very first app version (an older feature format) are no longer
+  used; Settings shows how many and asks to record the phrase again (the files stay on disk). Memos started by the wake
+  phrase get a new stored trigger type (database migration 1 → 2, only that column changes); the Wake Phrase filter
+  works for old and new memos.
 - **Smaller app, model downloaded on request:** the speech model is no longer inside the app. *Settings → On-device
   transcription → Download Whisper Base model* downloads OpenAI Whisper base (MIT, 142 MiB, whisper.cpp's official
   file) once, with progress, Cancel, resume after interruptions, checksum and test load before use, and a Remove

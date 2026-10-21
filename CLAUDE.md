@@ -5,8 +5,8 @@ Architecture, persistence rules and pipelines: `ARCHITECTURE.md`, `docs/WAKE_PHR
 
 ## Identity & branding (mandatory)
 - App name / launcher label: **Voice Memo** (`R.string.app_name`). Dashboard title: **Voice memo** (`R.string.dashboard_title`). These are separate strings; change neither as a side effect.
-- Application ID / namespace / package: `io.github.elgrande73.voicememo` (provisional until the maintainer confirms; never change it after a release). The previous application ID `com.aistudio.ciaolinda` must not return (it is named only where users or F-Droid need it).
-- **"Mango Tango" is the only built-in and recommended wake phrase** (`BuiltInWakePhrase`, reference rebuilt from fixtures by `BuiltInWakePhraseTest`); users may record any other phrase. Do not reintroduce the earlier default phrase in UI, docs, tests or fixtures. Persisted values `MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE` (trigger type of every wake-phrase memo) and `MAGIC_LEGACY_TEMPLATE` must never change.
+- Application ID / namespace / package: `io.github.elgrande73.voicememo` (provisional until the maintainer confirms; never change it after a release). The previous app's name and application ID must not return anywhere in the repository.
+- **"Mango Tango" is the only built-in and recommended wake phrase** (`BuiltInWakePhrase`, reference rebuilt from fixtures by `BuiltInWakePhraseTest`); users may record any other phrase. The earlier default phrase must not appear anywhere (code, compatibility logic, UI, docs, tests, fixtures). Persisted values `MemoTriggerDetector.WAKE_PHRASE_TRIGGER_TYPE` (`KEYWORD_WAKE_PHRASE`, set for old rows by database migration 1 → 2) and `MAGIC_FRONT_END_TEMPLATE` must never change; templates in other formats are not loaded (`WakePhraseStore.unusableSampleCount`).
 - Never claim Voice Memo inherits the previous app's private data; there is no importer.
 
 ## Settings & detection (mandatory)

@@ -588,10 +588,10 @@ class MemoTriggerDetector(
         private const val SAMPLE_RATE = 16000
         const val DEFAULT_CONSECUTIVE_MATCH_FRAMES = 1
         /**
-         * Trigger type stored in the database for memos started by the wake phrase (any phrase). The value dates from
-         * the first version of the app and is kept unchanged so existing memos keep their meaning; never rename it.
+         * Trigger type stored in the database for memos started by the wake phrase (any phrase). Database migration
+         * 1 → 2 rewrites the values of earlier versions to it; never change it.
          */
-        const val WAKE_PHRASE_TRIGGER_TYPE = "KEYWORD_CIAO_LINDA"
+        const val WAKE_PHRASE_TRIGGER_TYPE = "KEYWORD_WAKE_PHRASE"
     }
 }
 
