@@ -2,6 +2,22 @@
 
 Newest first. Numbers come from synthetic fixtures unless stated otherwise.
 
+## 2026-10-21 — Transcription: shorter encoder context for short memos (not adopted)
+
+- **Hypothesis:** whisper.cpp `audio_ctx`, sized to the memo length plus a margin, makes short memos faster without
+  losing quality.
+- **Measured** (temporary experiment; host, base q5_0, greedy, 21 synthetic sentences in 5 languages, language given):
+
+  | Encoder context | WER | Total decode time |
+  |---|---|---|
+  | Default (30 s) | 0.318 (62/195) | 33.5 s |
+  | Memo + 64 frames | 0.785 | 41.2 s |
+  | Memo only | 1.015 | 59.6 s |
+
+- With the shorter context, accuracy collapses and decoding gets slower because of repetitions and hallucinated text.
+- **Decision:** rejected; the default context is kept and the experiment code removed.
+- Backlog item closed.
+
 ## 2026-10-21 — Transcription: real stage progress, timings, threads
 
 - **Stages:** queued → preparing audio → loading model (only when it is not loaded) → transcribing → saving, then a

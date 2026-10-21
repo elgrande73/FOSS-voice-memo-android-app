@@ -8,7 +8,8 @@
 - The earlier default phrase is gone completely (commit `7a173a8`).
 - The wake phrase has a speaker-split corpus, and mean-normalised matching is adopted (see `IMPROVEMENT_LOG.md`).
 - Transcription now reports real stages and per-stage timings, and uses more threads while monitoring.
-- Next: backlog item 1 (`audio_ctx` for short memos, only if WER does not get worse), then wake-phrase recall at 50 %.
+- A shorter encoder context (`audio_ctx`) was measured and rejected: WER went from 0.32 to 0.79–1.0.
+- Next: backlog item 1, wake-phrase recall at 50 %.
 
 ## Environment notes
 
