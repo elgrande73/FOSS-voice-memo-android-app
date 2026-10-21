@@ -20,12 +20,14 @@ import io.github.elgrande73.voicememo.transcription.TranscriptionException
 import io.github.elgrande73.voicememo.transcription.TranscriptionJobState
 import io.github.elgrande73.voicememo.transcription.TranscriptionManager
 import io.github.elgrande73.voicememo.transcription.TranscriptionSettings
+import io.github.elgrande73.voicememo.transcription.TranscriptionStage
 import io.github.elgrande73.voicememo.transcription.TranscriptionStatus
 import io.github.elgrande73.voicememo.transcription.TranscriptText
 import io.github.elgrande73.voicememo.transcription.WavReader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -73,8 +75,8 @@ class TranscriptionTest {
 
     // --- Helpers ---
 
-    private fun speechWav(name: String = "memo.wav", silent: Boolean = false): File {
-        val frames = List(40) { f -> ShortArray(800) { i -> if (silent) 0 else (sin((f * 800 + i) * 0.05) * 8000).toInt().toShort() } }
+    private fun speechWav(name: String = "memo.wav", silent: Boolean = false, frameCount: Int = 40): File {
+        val frames = List(frameCount) { f -> ShortArray(800) { i -> if (silent) 0 else (sin((f * 800 + i) * 0.05) * 8000).toInt().toShort() } }
         return File(app.filesDir, name).also { WavWriter.writeWavFile(it, frames, 16000, 1) }
     }
 
@@ -138,7 +140,9 @@ class TranscriptionTest {
         assertEquals("Allora, ricordati il pane", note(id)!!.transcriptionText)
         assertEquals("keep me", note(other)!!.transcriptionText)
         assertArrayEquals(before, file.readBytes())
-        waitFor { m.jobs.value.isEmpty() }
+        waitFor { m.jobs.value[id] is TranscriptionJobState.Completed }
+        assertEquals(2000L, (m.jobs.value[id] as TranscriptionJobState.Completed).audioMs)
+        assertEquals(2000L, m.lastTimings.value!!.audioMs)
     }
 
     @Test
@@ -187,7 +191,7 @@ class TranscriptionTest {
         assertTrue(started.await(5, TimeUnit.SECONDS))
         assertTrue(m.jobs.value[id] is TranscriptionJobState.Running)
         m.cancel(id)
-        waitFor { m.jobs.value.isEmpty() }
+        assertEquals(TranscriptionJobState.Cancelled, m.jobs.value[id])
         Thread.sleep(100)
         assertEquals(TranscriptionStatus.SKIPPED, note(id)!!.transcriptionStatus)
         assertNull(note(id)!!.transcriptionText)
@@ -204,11 +208,12 @@ class TranscriptionTest {
         m.enqueue(first)
         m.enqueue(second)
         m.cancel(second)
-        assertFalse(m.jobs.value.containsKey(second))
+        assertEquals(TranscriptionJobState.Cancelled, m.jobs.value[second])
         gate.countDown()
         waitFor { note(first)?.transcriptionStatus == TranscriptionStatus.COMPLETED }
         Thread.sleep(200)
         assertEquals(1, engine.calls.get())
+        assertEquals(TranscriptionJobState.Cancelled, m.jobs.value[second])
         assertEquals(TranscriptionStatus.SKIPPED, note(second)!!.transcriptionStatus)
     }
 
@@ -295,7 +300,7 @@ class TranscriptionTest {
             first.cancel(id) // release the hung test engine; a cancel never changes a completed memo
             secondExecutor.shutdownNow()
         }
-        waitFor { first.jobs.value.isEmpty() }
+        waitFor { first.jobs.value[id] == TranscriptionJobState.Cancelled }
         assertEquals("after restart", note(id)!!.transcriptionText)
         assertEquals(TranscriptionStatus.COMPLETED, note(id)!!.transcriptionStatus)
     }
@@ -327,20 +332,86 @@ class TranscriptionTest {
     }
 
     @Test
-    fun progressIsReportedWhileRunning() {
-        val id = insert(speechWav())
+    fun progressIsReportedWhileRunningOnlyWhereItIsMeaningful() {
+        // 32 s memo: more than one 30 s decoding window, so whisper's percentage is shown
+        val long = insert(speechWav("long.wav", frameCount = 640))
         val engine = blockingEngine(maxMs = 3000).apply { reportedProgress = 42 }
         val m = manager(engine)
+        m.enqueue(long)
+        waitFor { (m.jobs.value[long] as? TranscriptionJobState.Running)?.progress == 42 }
+        assertEquals(TranscriptionStage.TRANSCRIBING, (m.jobs.value[long] as TranscriptionJobState.Running).stage)
+        m.cancel(long)
+        // 2 s memo: the engine's value jumps from 0 to 100, so no percentage, only the stage
+        val short = insert(speechWav("short.wav"))
+        m.enqueue(short)
+        waitFor { (m.jobs.value[short] as? TranscriptionJobState.Running)?.stage == TranscriptionStage.TRANSCRIBING }
+        Thread.sleep(3 * TranscriptionManager.PROGRESS_POLL_MS)
+        val running = m.jobs.value[short] as TranscriptionJobState.Running
+        assertNull(running.progress)
+        assertTrue(running.startedAtMs > 0)
+        m.cancel(short)
+    }
+
+    @Test
+    fun stagesAreReportedInOrderAndModelLoadingOnlyWhenNeeded() {
+        val stages = java.util.Collections.synchronizedList(mutableListOf<TranscriptionStage>())
+        val loadGate = CountDownLatch(1)
+        val engine = object : FakeEngine({ _, _ -> TranscriptResult("ok", "en", "m", 1) }) {
+            @Volatile var loaded = false
+            override fun isModelLoaded() = loaded
+            override fun prepare() {
+                if (!loaded) loadGate.await(5, TimeUnit.SECONDS)
+                loaded = true
+            }
+        }
+        val m = manager(engine)
+        val watcher = CoroutineScope(SupervisorJob()).launch(kotlinx.coroutines.Dispatchers.Default) {
+            m.jobs.collect { jobs ->
+                jobs.values.filterIsInstance<TranscriptionJobState.Running>().forEach { if (stages.lastOrNull() != it.stage) stages += it.stage }
+            }
+        }
+        val first = insert(speechWav("a.wav"))
+        m.enqueue(first)
+        waitFor { (m.jobs.value[first] as? TranscriptionJobState.Running)?.stage == TranscriptionStage.LOADING_MODEL }
+        loadGate.countDown()
+        waitFor { m.jobs.value[first] is TranscriptionJobState.Completed }
+        assertTrue("load time measured", m.lastTimings.value!!.loadModelMs >= 0)
+        // Warm run: the model is loaded, so no loading stage
+        val loadsBefore = stages.count { it == TranscriptionStage.LOADING_MODEL }
+        val second = insert(speechWav("b.wav"))
+        m.enqueue(second)
+        waitFor { m.jobs.value[second] is TranscriptionJobState.Completed }
+        watcher.cancel()
+        assertEquals(1, loadsBefore)
+        assertEquals(1, stages.count { it == TranscriptionStage.LOADING_MODEL })
+        assertEquals(TranscriptionStage.PREPARING_AUDIO, stages.first())
+        // Never backwards within a run: preparing < loading < transcribing < saving
+        val firstRun = stages.takeWhile { it != TranscriptionStage.SAVING } + TranscriptionStage.SAVING
+        assertEquals(firstRun.sortedBy { it.ordinal }, firstRun)
+    }
+
+    @Test
+    fun aMissingModelFailsWhileLoadingAndTheMemoCanBeRetried() {
+        val id = insert(speechWav())
+        val engine = object : FakeEngine({ _, _ -> TranscriptResult("never", "en", "m", 1) }) {
+            override fun isModelLoaded() = false
+            override fun prepare() = throw TranscriptionException(TranscriptionException.Kind.MODEL_MISSING, "No speech model.")
+        }
+        val m = manager(engine)
         m.enqueue(id)
-        waitFor { (m.jobs.value[id] as? TranscriptionJobState.Running)?.progress == 42 }
-        m.cancel(id)
-        waitFor { m.jobs.value.isEmpty() }
+        waitFor { m.jobs.value[id] is TranscriptionJobState.Failed }
+        assertTrue((m.jobs.value[id] as TranscriptionJobState.Failed).modelMissing)
+        assertEquals(0, engine.calls.get())
+        assertEquals(TranscriptionStatus.FAILED, note(id)!!.transcriptionStatus)
     }
 
     @Test
     fun threadCountLeavesRoomForMonitoring() {
-        assertEquals(2, Transcription.threadCount(monitoring = true, cores = 8))
+        assertEquals(4, Transcription.threadCount(monitoring = true, cores = 8))
+        assertEquals(2, Transcription.threadCount(monitoring = true, cores = 4))
+        assertEquals(3, Transcription.threadCount(monitoring = false, cores = 4))
         assertEquals(4, Transcription.threadCount(monitoring = false, cores = 8))
+        assertEquals(1, Transcription.threadCount(monitoring = true, cores = 2))
         assertEquals(1, Transcription.threadCount(monitoring = false, cores = 1))
         assertEquals(1, Transcription.threadCount(monitoring = true, cores = 1))
     }

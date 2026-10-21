@@ -73,8 +73,8 @@ class TranscriptionService : Service() {
         val running = jobs.values.filterIsInstance<TranscriptionJobState.Running>().firstOrNull()
         val queued = jobs.values.count { it == TranscriptionJobState.Queued }
         val text = when {
-            running != null && queued > 0 -> "Transcribing (${running.progress}%), $queued more waiting"
-            running != null -> "Transcribing (${running.progress}%)"
+            running != null && queued > 0 -> "${running.stage.label}${running.progress?.let { " $it%" } ?: ""}, $queued more waiting"
+            running != null -> "${running.stage.label}${running.progress?.let { " $it%" } ?: ""}"
             else -> "$queued memo(s) waiting"
         }
         val open = PendingIntent.getActivity(
@@ -91,7 +91,8 @@ class TranscriptionService : Service() {
             .setOngoing(true)
             .setSilent(true)
             .setOnlyAlertOnce(true)
-            .setProgress(100, running?.progress ?: 0, running == null)
+            // A bar only for a real percentage; otherwise indeterminate
+            .setProgress(100, running?.progress ?: 0, running?.progress == null)
             .addAction(0, "Cancel", cancel)
             .build()
     }

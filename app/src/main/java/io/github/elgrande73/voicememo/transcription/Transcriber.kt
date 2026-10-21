@@ -94,6 +94,10 @@ interface SpeechTranscriber {
     fun release()
     /** Progress of the running transcription in percent; may be called from another thread. */
     fun progress(): Int = 0
+    /** Whether the model is loaded, so the next run starts decoding without loading it. */
+    fun isModelLoaded(): Boolean = true
+    /** Loads the model if it is not loaded yet; fails like [transcribe]. Called before [transcribe]. */
+    fun prepare() {}
 }
 
 /** whisper.cpp with the model selected in [SpeechModelStore]; the model stays loaded until [release]. */
@@ -109,8 +113,15 @@ class WhisperTranscriber(
 
     override fun progress(): Int = handle.let { if (it == 0L) 0 else WhisperNative.progress(it) }
 
+    override fun isModelLoaded(): Boolean = handle != 0L
+
     @Synchronized
-    override fun transcribe(samples: FloatArray, settings: TranscriptionSettings, cancel: CancelToken): TranscriptResult {
+    override fun prepare() {
+        loadModel()
+    }
+
+    /** Loads the active model unless it is already loaded; returns it. */
+    private fun loadModel(): SpeechModel {
         if (!WhisperNative.load(context)) {
             throw TranscriptionException(TranscriptionException.Kind.NOT_AVAILABLE, "Speech-to-text is not available on this device.")
         }
@@ -129,6 +140,12 @@ class WhisperTranscriber(
             }
             loadedModelId = model.id
         }
+        return model
+    }
+
+    @Synchronized
+    override fun transcribe(samples: FloatArray, settings: TranscriptionSettings, cancel: CancelToken): TranscriptResult {
+        val model = loadModel()
         val current = handle
         val start = System.nanoTime()
         cancel.setOnCancel { WhisperNative.requestAbort(current) }

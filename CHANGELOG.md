@@ -7,6 +7,11 @@ First release under the new name **Voice Memo** and the new application ID `io.g
 to it (see README, "New application identity").
 
 ### Changed (since pre-release v0.0.2)
+- Transcription shows what it is doing: preparing audio, loading the speech model (only when needed), transcribing,
+  saving, with elapsed time and memo length; then how long it took, or that it was cancelled or failed. A percentage
+  appears only for memos over 30 s, where whisper.cpp's progress is meaningful.
+- Transcription uses up to 4 threads while monitoring runs (previously 2), leaving two cores free; about 1.8× faster
+  decoding on the build host.
 - Wake phrase: matching compares spectral shape relative to each sequence's own average (removes a voice's or
   microphone's constant colouring). On the synthetic test corpus false triggers on similar phrases fall by half or more
   and positives and negatives separate better (AUC 0.70 → 0.84), but at the unchanged 50 % default some voices are

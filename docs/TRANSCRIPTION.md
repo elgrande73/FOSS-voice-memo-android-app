@@ -25,8 +25,9 @@ TranscriptionManager (queue, one worker thread, foreground service while it work
 ```
 
 - The model is loaded on the first transcription and released 60 s after the queue is empty.
-- 4 threads (2 while monitoring runs, so wake-phrase detection keeps CPU time); ggml's worker threads inherit the
-  background priority.
+- Up to 4 decoding threads: all cores but one, and all but two while monitoring runs (capture and wake-phrase detection
+  need about 0.1 ms of CPU per 50 ms frame on the build host). Earlier versions used only 2 threads during monitoring,
+  which made decoding about 1.8× slower (measured below). ggml's worker threads inherit the background priority.
 - The model is the downloaded file (or an imported one) in app-private storage; without one, a transcription request
   fails at once with "No speech model is installed…" and a *Download speech model* action (never an endless "waiting").
 - arm64: ggml's CPU backend is built in seven variants (ARMv8.0 … ARMv9.2 with dot-product, fp16, int8-matmul, SVE/SME)
@@ -41,9 +42,15 @@ TranscriptionManager (queue, one worker thread, foreground service while it work
   `COMPLETED`, `FAILED`. A queued memo is stored as `PENDING` and re-queued when the app starts again
   (`TranscriptionManager.resumePending`); "running" is kept in memory only, so a memo can never stay "transcribing"
   after the app was closed.
-- Explicit states in History: *Waiting to be transcribed…*, *Transcribing on this device… n %* (whisper.cpp progress),
-  *Transcription failed: reason* with Retry, transcript, or nothing (not transcribed). Cancel is available while
-  waiting or running; a retry right after a cancel is not lost, and a memo is never queued twice.
+- Explicit states in History, each reported when it happens (never estimated):
+  *Waiting to be transcribed…* → *Preparing audio…* → *Loading speech model…* (only when the model is not loaded yet)
+  → *Transcribing on this device…* → *Saving transcript…*, each with the elapsed time and the memo's length, then
+  *Transcribed m:ss of audio in m:ss.*, *Transcription cancelled.* or *Transcription failed: reason* with Retry.
+  A percentage is shown only for memos longer than 30 s: whisper.cpp reports the share of audio already decoded per
+  30 s window, so for shorter memos it jumps from 0 to 100 and would be meaningless. The notification shows the same
+  stage, with a progress bar only when there is a real percentage. Cancel is available while waiting or running; a
+  retry right after a cancel is not lost, and a memo is never queued twice.
+- Concurrency: one memo at a time, in request order (one worker); the watchdog covers model loading and decoding.
 
 ### Reliability (fix for memos stuck at "Transcribing…" / "Waiting…")
 Traced causes, all fixed (no device was available to reproduce; fixes verified with unit tests and real inference on
@@ -137,6 +144,28 @@ app path on the host: the model is "downloaded" with the app's `ModelDownloader`
 header check, test load: 0.4 s for 55 MB), registered, and three memos are transcribed by `TranscriptionManager` into a
 Room database (1.9–2.2 s: "Can you send me the file later?"; a damaged WAV fails with an explanation; a silent one gets
 an empty transcript); the results are still there after reopening the database.
+
+### Stage timings, cold vs warm (host)
+
+`TranscriptionTimingHostTest`, Whisper base q5_0, greedy ("Fast"), English synthetic speech, x86-64 build host with 4
+cores (not a phone; phones are several times slower). Times per stage from `TranscriptionManager.lastTimings`:
+
+| Run | Audio | Prepare audio | Load model | Decode | Save | Total | RTF |
+|---|---|---|---|---|---|---|---|
+| 4 threads, cold (first memo) | 4 s | 1 ms | 471 ms | 1565 ms | 1 ms | 2038 ms | 0.51 |
+| 4 threads, warm | 4 s | 4 ms | 0 | 1468 ms | 2 ms | 1474 ms | 0.37 |
+| 4 threads, warm | 12 s | 3 ms | 0 | 1624 ms | 2 ms | 1629 ms | 0.14 |
+| 4 threads, warm | 35 s | 4 ms | 0 | 3262 ms | 2 ms | 3268 ms | 0.09 |
+| 2 threads, warm | 4 s | 1 ms | 0 | 2610 ms | 1 ms | 2612 ms | 0.65 |
+| 2 threads, warm | 12 s | 1 ms | 0 | 2754 ms | 2 ms | 2757 ms | 0.23 |
+| 2 threads, warm | 35 s | 4 ms | 0 | 5762 ms | 2 ms | 5768 ms | 0.17 |
+
+**Bottleneck:** decoding (`whisper_full`) is 96–99 % of the time; reading the WAV and saving take milliseconds. Short
+memos are dominated by the fixed cost of encoding one 30 s window (a 4 s memo takes almost as long as a 12 s one).
+The model load is paid once per 60 s idle period (cold run; 95 ms when the file is in the OS cache). Optimisations
+applied: more threads while monitoring (above); the model stays loaded between queued memos. Not changed (would affect
+quality): beam search stays opt-in; the audio is not shortened or resampled differently. The cold load of the f16 base
+model on a phone (142 MB) is expected to take seconds; it is now shown as its own stage. Not measured on a device.
 
 ## 3. Distribution: model download from Settings
 

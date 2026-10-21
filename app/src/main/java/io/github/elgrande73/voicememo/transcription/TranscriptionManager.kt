@@ -19,14 +19,52 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
-/** In-memory state of a memo in the transcription queue (memos not in the map are idle). */
+/** What a running transcription is doing; reported as it happens, never estimated. */
+enum class TranscriptionStage(val label: String) {
+    PREPARING_AUDIO("Preparing audio…"),
+    LOADING_MODEL("Loading speech model…"),
+    TRANSCRIBING("Transcribing on this device…"),
+    SAVING("Saving transcript…")
+}
+
+/**
+ * In-memory state of a memo in the transcription queue (memos not in the map are idle). [Queued] and [Running] are
+ * active; [Completed], [Cancelled] and [Failed] describe the last attempt in this session.
+ */
 sealed interface TranscriptionJobState {
     data object Queued : TranscriptionJobState
-    /** Running; [progress] in percent as reported by the engine (0 until it reports). */
-    data class Running(val progress: Int = 0) : TranscriptionJobState
+    /**
+     * Running since [startedAtMs] (wall clock) in [stage]. [progress]: share of the audio already decoded in percent,
+     * as reported by whisper.cpp; null when it is not meaningful (before the engine reports, or memos shorter than
+     * one 30 s decoding window, where it jumps from 0 to 100).
+     */
+    data class Running(
+        val stage: TranscriptionStage = TranscriptionStage.TRANSCRIBING,
+        val progress: Int? = null,
+        val startedAtMs: Long = 0L
+    ) : TranscriptionJobState
+    /** Finished: [audioMs] of audio transcribed in [elapsedMs] (queue wait excluded). */
+    data class Completed(val audioMs: Long, val elapsedMs: Long) : TranscriptionJobState
+    /** Cancelled by the user; the stored transcript was kept. */
+    data object Cancelled : TranscriptionJobState
     /** The last attempt failed in this session; the database holds [TranscriptionStatus.FAILED]. */
     data class Failed(val message: String, val modelMissing: Boolean = false) : TranscriptionJobState
+}
+
+/** Durations of the stages of one successful run (for diagnostics and measurements). */
+data class TranscriptionTimings(
+    val audioMs: Long,
+    val prepareAudioMs: Long,
+    /** 0 when the model was already loaded (warm run). */
+    val loadModelMs: Long,
+    val transcribeMs: Long,
+    val saveMs: Long
+) {
+    val totalMs get() = prepareAudioMs + loadModelMs + transcribeMs + saveMs
+    /** Processing time divided by audio duration (below 1 = faster than real time). */
+    val realTimeFactor get() = if (audioMs == 0L) Double.NaN else totalMs.toDouble() / audioMs
 }
 
 /**
@@ -40,6 +78,10 @@ sealed interface TranscriptionJobState {
  *
  * Every run ends in a terminal outcome: success, failure (any exception or error, including native-library
  * problems and a watchdog timeout), or cancellation (the stored transcript and status are restored).
+ *
+ * Concurrency: one memo at a time, in request order; a memo already queued or running is not queued twice. While a
+ * run is active its stage is published in [jobs] ([TranscriptionStage]); the watchdog covers model loading and
+ * decoding.
  */
 class TranscriptionManager(
     private val dao: VoiceNoteDao,
@@ -52,7 +94,8 @@ class TranscriptionManager(
     /** Longest a run may take for [audioSeconds] of audio before it is aborted as failed. */
     private val timeoutMs: (audioSeconds: Double) -> Long = { s -> maxOf(MIN_TIMEOUT_MS, (s * TIMEOUT_PER_AUDIO_SECOND_MS).toLong()) },
     /** Called with true when work is queued or running and false when the queue is empty (foreground service). */
-    private val onBusyChanged: (Boolean) -> Unit = {}
+    private val onBusyChanged: (Boolean) -> Unit = {},
+    private val clock: () -> Long = System::currentTimeMillis
 ) {
     private val _jobs = MutableStateFlow<Map<Int, TranscriptionJobState>>(emptyMap())
     val jobs: StateFlow<Map<Int, TranscriptionJobState>> = _jobs.asStateFlow()
@@ -60,6 +103,10 @@ class TranscriptionManager(
     private val _lastResult = MutableStateFlow<TranscriptResult?>(null)
     /** Measurement of the last successful run (for diagnostics). */
     val lastResult: StateFlow<TranscriptResult?> = _lastResult.asStateFlow()
+
+    private val _lastTimings = MutableStateFlow<TranscriptionTimings?>(null)
+    /** Stage durations of the last successful run. */
+    val lastTimings: StateFlow<TranscriptionTimings?> = _lastTimings.asStateFlow()
 
     private val queue = Channel<Int>(Channel.UNLIMITED)
     private val cancelTokens = mutableMapOf<Int, CancelToken>()
@@ -130,16 +177,24 @@ class TranscriptionManager(
     fun cancel(noteId: Int) {
         synchronized(cancelTokens) {
             cancelTokens.remove(noteId)?.cancel() ?: return
-            _jobs.update { it - noteId }
+            _jobs.update { it + (noteId to TranscriptionJobState.Cancelled) }
         }
         updateBusy()
         scope.launch(statusWrites) { statusLock.withLock { restoreAfterCancel(noteId) } }
     }
 
-    /** Forgets a failure message (e.g. after the transcript was edited). */
+    /** Forgets the outcome of the last attempt (e.g. after the transcript was edited); active jobs stay. */
     fun clearState(noteId: Int) {
         synchronized(cancelTokens) {
-            if (_jobs.value[noteId] is TranscriptionJobState.Failed) _jobs.update { it - noteId }
+            val state = _jobs.value[noteId]
+            if (state != null && state != TranscriptionJobState.Queued && state !is TranscriptionJobState.Running) _jobs.update { it - noteId }
+        }
+    }
+
+    /** Publishes [stage] for [noteId] if the run owning [token] is still current. */
+    private fun setStage(noteId: Int, token: CancelToken, stage: TranscriptionStage, startedAtMs: Long) {
+        synchronized(cancelTokens) {
+            if (cancelTokens[noteId] === token) _jobs.update { it + (noteId to TranscriptionJobState.Running(stage, null, startedAtMs)) }
         }
     }
 
@@ -158,9 +213,10 @@ class TranscriptionManager(
     }
 
     private suspend fun process(noteId: Int) {
+        val startedAt = clock()
         val token = synchronized(cancelTokens) {
             val t = cancelTokens[noteId] ?: return // cancelled while queued
-            _jobs.update { it + (noteId to TranscriptionJobState.Running()) }
+            _jobs.update { it + (noteId to TranscriptionJobState.Running(TranscriptionStage.PREPARING_AUDIO, null, startedAt)) }
             t
         }
         val outcome: TranscriptionJobState? = try {
@@ -174,22 +230,31 @@ class TranscriptionManager(
                     throw TranscriptionException(TranscriptionException.Kind.AUDIO, "The recording could not be read (missing or damaged file).")
                 }
                 if (samples.isEmpty()) throw TranscriptionException(TranscriptionException.Kind.AUDIO, "The recording is empty.")
+                val audioMs = samples.size * 1000L / SAMPLE_RATE
+                val prepared = clock()
                 if (!TranscriptText.hasAudibleContent(samples)) {
                     // Silence: Whisper would invent text; store an empty transcript without running the model
+                    setStage(noteId, token, TranscriptionStage.SAVING, startedAt)
                     dao.updateTranscription(noteId, "", TranscriptionStatus.COMPLETED)
                 } else {
                     val engine = transcriber ?: transcriberFactory().also { transcriber = it }
-                    val result = runWithWatchdog(noteId, engine, samples, token)
+                    val run = runWithWatchdog(noteId, engine, samples, token, startedAt)
                     if (token.isCancelled) throw TranscriptionException(TranscriptionException.Kind.CANCELLED, "Cancelled.")
-                    val text = TranscriptText.clean(result.text)
+                    setStage(noteId, token, TranscriptionStage.SAVING, startedAt)
+                    val saving = clock()
+                    val text = TranscriptText.clean(run.result.text)
                     dao.updateTranscription(noteId, text, TranscriptionStatus.COMPLETED)
-                    _lastResult.value = result.copy(text = text)
+                    _lastResult.value = run.result.copy(text = text)
+                    val timings = TranscriptionTimings(audioMs, prepared - startedAt, run.loadMs, run.transcribeMs, clock() - saving)
+                    _lastTimings.value = timings
+                    Log.i(TAG, "Memo $noteId: ${audioMs} ms of audio; prepare ${timings.prepareAudioMs} ms, load ${timings.loadModelMs} ms, " +
+                        "transcribe ${timings.transcribeMs} ms, save ${timings.saveMs} ms (RTF %.2f)".format(timings.realTimeFactor))
                 }
-                null
+                TranscriptionJobState.Completed(audioMs, clock() - startedAt)
             }
         } catch (e: TranscriptionException) {
             if (e.kind == TranscriptionException.Kind.CANCELLED && token.isCancelled) {
-                null
+                TranscriptionJobState.Cancelled
             } else {
                 markFailed(noteId)
                 TranscriptionJobState.Failed(e.message ?: "Transcription failed.", modelMissing = e.kind == TranscriptionException.Kind.MODEL_MISSING)
@@ -212,6 +277,9 @@ class TranscriptionManager(
             if (cancelTokens[noteId] === token) {
                 cancelTokens.remove(noteId)
                 _jobs.update { if (outcome != null) it + (noteId to outcome) else it - noteId }
+            } else if (token.isCancelled && _jobs.value[noteId] == TranscriptionJobState.Cancelled && outcome is TranscriptionJobState.Completed) {
+                // Finished just before the cancel took effect: the transcript was saved, so say so
+                _jobs.update { it + (noteId to outcome) }
             } else if (outcome is TranscriptionJobState.Failed && !_jobs.value.containsKey(noteId)) {
                 _jobs.update { it + (noteId to outcome) }
             }
@@ -220,19 +288,31 @@ class TranscriptionManager(
         if (!busy) scheduleUnload()
     }
 
-    /** Runs the engine; reports progress and aborts the run (as failed) if it exceeds the time limit. */
-    private suspend fun runWithWatchdog(noteId: Int, engine: SpeechTranscriber, samples: FloatArray, token: CancelToken): TranscriptResult {
-        val limitMs = timeoutMs(samples.size / 16_000.0)
+    private class EngineRun(val result: TranscriptResult, val loadMs: Long, val transcribeMs: Long)
+
+    /**
+     * Loads the model if needed, then runs the engine; publishes the stage and the engine's progress, and aborts the run
+     * (as failed) if model loading and decoding together exceed the time limit.
+     */
+    private suspend fun runWithWatchdog(noteId: Int, engine: SpeechTranscriber, samples: FloatArray, token: CancelToken, startedAt: Long): EngineRun {
+        val audioSeconds = samples.size / SAMPLE_RATE.toDouble()
+        val limitMs = timeoutMs(audioSeconds)
         val engineToken = CancelToken()
         token.setOnCancel { engineToken.cancel() }
         var timedOut = false
+        val decoding = AtomicBoolean(false)
         val monitor = scope.launch(Dispatchers.Default) {
             val start = System.currentTimeMillis()
             while (isActive) {
                 delay(PROGRESS_POLL_MS)
-                val progress = engine.progress()
-                synchronized(cancelTokens) {
-                    if (cancelTokens[noteId] === token) _jobs.update { it + (noteId to TranscriptionJobState.Running(progress)) }
+                if (decoding.get()) {
+                    val reported = engine.progress()
+                    val progress = reported.takeIf { audioSeconds > RELIABLE_PROGRESS_MIN_AUDIO_S && it in 1..100 }
+                    synchronized(cancelTokens) {
+                        if (cancelTokens[noteId] === token) {
+                            _jobs.update { it + (noteId to TranscriptionJobState.Running(TranscriptionStage.TRANSCRIBING, progress, startedAt)) }
+                        }
+                    }
                 }
                 if (System.currentTimeMillis() - start > limitMs) {
                     timedOut = true
@@ -242,7 +322,16 @@ class TranscriptionManager(
             }
         }
         try {
-            return engine.transcribe(samples, settings(), engineToken)
+            val loadStart = clock()
+            if (!engine.isModelLoaded()) setStage(noteId, token, TranscriptionStage.LOADING_MODEL, startedAt)
+            engine.prepare()
+            if (engineToken.isCancelled) throw TranscriptionException(TranscriptionException.Kind.CANCELLED, "Cancelled.")
+            val loadMs = clock() - loadStart
+            setStage(noteId, token, TranscriptionStage.TRANSCRIBING, startedAt)
+            decoding.set(true)
+            val decodeStart = clock()
+            val result = engine.transcribe(samples, settings(), engineToken)
+            return EngineRun(result, loadMs, clock() - decodeStart)
         } catch (e: TranscriptionException) {
             if (timedOut) {
                 throw TranscriptionException(
@@ -309,6 +398,9 @@ class TranscriptionManager(
         private const val TAG = "TranscriptionManager"
         const val DEFAULT_IDLE_UNLOAD_MS = 60_000L
         const val PROGRESS_POLL_MS = 500L
+        private const val SAMPLE_RATE = 16_000
+        /** whisper.cpp reports progress per decoded window (≤ 30 s), so only longer memos get a meaningful percentage. */
+        const val RELIABLE_PROGRESS_MIN_AUDIO_S = 30.0
         /** A run is aborted after max(5 min, 40 × audio duration): far beyond normal speed, but never endless. */
         const val MIN_TIMEOUT_MS = 5 * 60_000L
         const val TIMEOUT_PER_AUDIO_SECOND_MS = 40_000.0

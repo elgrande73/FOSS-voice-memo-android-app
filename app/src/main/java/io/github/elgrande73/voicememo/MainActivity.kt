@@ -103,6 +103,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -974,6 +975,35 @@ fun LiveLevelCard(
     }
 }
 
+/** Duration as m:ss. */
+private fun clockText(ms: Long): String {
+    val seconds = (ms.coerceAtLeast(0L) + 500) / 1000
+    return "%d:%02d".format(seconds / 60, seconds % 60)
+}
+
+/**
+ * Status line of a memo's transcription: the running stage (as reported by the queue, never estimated) with elapsed
+ * time and the memo's length, the outcome of the last attempt, or null when there is nothing to report.
+ */
+fun transcriptionStatusText(note: VoiceNote, job: TranscriptionJobState?, nowMs: Long): String? {
+    val audio = clockText((note.durationSeconds * 1000).toLong())
+    return when {
+        job is TranscriptionJobState.Running -> buildString {
+            append(job.stage.label)
+            job.progress?.let { append(" $it%") }
+            if (job.startedAtMs > 0) append(" · ${clockText(nowMs - job.startedAtMs)} elapsed")
+            append(" · $audio of audio")
+        }
+        job == TranscriptionJobState.Queued || (job == null && note.transcriptionStatus == TranscriptionStatus.PENDING) -> "Waiting to be transcribed…"
+        job is TranscriptionJobState.Failed -> "Transcription failed: ${job.message}"
+        job is TranscriptionJobState.Completed -> "Transcribed ${clockText(job.audioMs)} of audio in ${clockText(job.elapsedMs)}."
+        job == TranscriptionJobState.Cancelled ->
+            if (note.transcriptionText != null) "Transcription cancelled; the previous text was kept." else "Transcription cancelled."
+        note.transcriptionStatus == TranscriptionStatus.FAILED -> "The last transcription failed. Tap Retry."
+        else -> null
+    }
+}
+
 /** Transcript of a memo with its on-device transcription status and actions. */
 @Composable
 fun TranscriptSection(
@@ -1004,14 +1034,14 @@ fun TranscriptSection(
         // In-memory job state first; after a restart the stored status tells whether the memo is still queued
         val queued = job == TranscriptionJobState.Queued || (job == null && note.transcriptionStatus == TranscriptionStatus.PENDING)
         val running = job is TranscriptionJobState.Running
-        val status = when {
-            job is TranscriptionJobState.Running ->
-                if (job.progress > 0) "Transcribing on this device… ${job.progress}%" else "Transcribing on this device…"
-            queued -> "Waiting to be transcribed…"
-            job is TranscriptionJobState.Failed -> "Transcription failed: ${job.message}"
-            note.transcriptionStatus == TranscriptionStatus.FAILED -> "The last transcription failed. Tap Retry."
-            else -> null
+        // Elapsed time ticks once a second while the job runs
+        val now by produceState(System.currentTimeMillis(), job) {
+            while (job is TranscriptionJobState.Running) {
+                value = System.currentTimeMillis()
+                kotlinx.coroutines.delay(1000)
+            }
         }
+        val status = transcriptionStatusText(note, job, now)
         status?.let {
             Text(
                 text = it,
