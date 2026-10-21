@@ -55,9 +55,10 @@ class WakePhraseNoiseRobustnessTest {
         val bypass = run(FrontEndConfig.BYPASS, noisy)
         println("MEASURE noise: suppression $withSuppression | bypass $bypass")
         assertEquals("false matches with suppression", 0, withSuppression.falseMatches)
-        assertTrue("bypass false matches ${bypass.falseMatches}", bypass.falseMatches > withSuppression.falseMatches)
-        // Without suppression the score does not separate the phrase from other speech: any detection advantage of the
-        // bypass comes with false matches. Suppression must keep a useful share of detections.
+        // Measured with recorded samples matched in a 20 dB range: suppression 23/36 detections, bypass 13/36, neither
+        // with false matches (with the earlier 40 dB matching, bypass had 23 false matches of 36)
+        assertTrue("bypass false matches ${bypass.falseMatches}", bypass.falseMatches >= withSuppression.falseMatches)
+        assertTrue("detections $withSuppression vs bypass $bypass", withSuppression.detections > bypass.detections)
         assertTrue("detections $withSuppression", withSuppression.detections * 3 >= withSuppression.phraseTrials)
     }
 

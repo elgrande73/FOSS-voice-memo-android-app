@@ -149,3 +149,10 @@ gen en+Zac 130 50 mango_pool_17 "Mango Tango"
 gen en-us+norbert 150 40 mango_pool_18 "Mango Tango"
 gen ca 150 50 mango_pool_19 "Mango Tango"
 gen en-gb-scotland+f3 150 55 mango_pool_20 "Mango Tango"
+# Systematic pronunciation variation (WakePhraseVariationTest; evaluation only, never used to choose parameters):
+# speed (words per minute) × pitch × pause between the words, in a lower and a higher voice not used elsewhere
+for v in en-us+m4 en+f5; do
+  for sp in 110 140 170 200; do for p in 20 50 80; do for g in 0 4; do
+    gen "$v" "$sp" "$p" "var_${v//[^a-z0-9]/}_s${sp}_p${p}_g${g}" "Mango Tango" "$g"
+  done; done; done
+done

@@ -236,7 +236,14 @@ class AudioMonitoringService : Service() {
         // Ensure foreground notification is active immediately for FGS requirements
         ensureForegroundNotification()
 
-        if (intent == null) return START_STICKY
+        if (intent == null) {
+            // Restarted by the system after the process was killed: Android 11+ does not let a service restarted in
+            // the background use the microphone, and the settings came with the original start request. Stop instead
+            // of showing a monitoring notification while nothing is captured; tile and widget show "off".
+            Log.i("AudioService", "Restarted without a request: stopping (monitoring must be started from the app)")
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         when (intent.action) {
             ACTION_START_MANUAL_RECORDING -> {
@@ -489,6 +496,8 @@ class AudioMonitoringService : Service() {
                     _currentSessionData.value = historyPoints.toList()
                 }
                 is MemoDetectionEvent.RecordingCompleted -> onRecordingCompleted(event)
+                // The stop phrase arrived after the memo had already ended on its own: confirm "stopped"
+                is MemoDetectionEvent.LateStopPhrase -> playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STOPPED)
                 else -> {}
             }
         }

@@ -115,4 +115,13 @@ class LockScreenControlsTest {
         assertFalse(AudioMonitoringService.requestToggle(app))
         assertNull(shadowOf(app).nextStartedService)
     }
+
+    @Test
+    fun aSystemRestartWithoutARequestDoesNotPretendToMonitor() {
+        val controller = Robolectric.buildService(AudioMonitoringService::class.java, null).create()
+        controller.get().onStartCommand(null, 0, 1)
+        assertFalse(AudioMonitoringService.isServiceRunning.value)
+        assertTrue("stopped itself", shadowOf(controller.get()).isStoppedBySelf)
+        controller.destroy()
+    }
 }

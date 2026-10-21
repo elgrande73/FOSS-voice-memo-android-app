@@ -84,6 +84,13 @@ sealed class MemoDetectionEvent {
     ) : MemoDetectionEvent()
 
     data class StateChanged(val newState: RecordingLifecycleState) : MemoDetectionEvent()
+
+    /**
+     * The wake phrase was said shortly after a memo had ended on its own (silence timeout or maximum length) in
+     * "Start memo & stop if repeated" mode: it is the user's stop command, arriving after the memo already ended, so
+     * no new memo is started (see [MemoTriggerDetector.LATE_STOP_GRACE_MS]).
+     */
+    data class LateStopPhrase(val timestamp: Long) : MemoDetectionEvent()
 }
 
 /**
@@ -128,6 +135,8 @@ class MemoTriggerDetector(
             field = value.coerceAtLeast(1)
         }
     private var matchStreak = 0
+    // Frames left in which the wake phrase counts as a late stop command (after an automatic memo end)
+    private var lateStopFramesRemaining = 0
 
     // Observable DSP States
     var isVoiceDetected: Boolean = false
@@ -190,6 +199,7 @@ class MemoTriggerDetector(
         keywordConfidence = 0f
         lastKeywordResult = null
         matchStreak = 0
+        lateStopFramesRemaining = 0
         sessionMaxDb = 0f
         sessionSumDb = 0.0
         sessionDbCount = 0
@@ -263,9 +273,17 @@ class MemoTriggerDetector(
                         // Every frame reaches the matcher (contiguous context, same as the Settings phrase test)
                         val kwResult = matchWakePhrase(frame, vadResult)
 
+                        val lateStopWindow = lateStopFramesRemaining > 0
+                        if (lateStopWindow) lateStopFramesRemaining--
                         // Trigger only if the wake phrase matched AND the phrase reached the activation (loudness)
                         // threshold; during media playback (noise filter on) wake-phrase triggers are suppressed
-                        if (!shouldSuppressSound && kwResult.matched && phraseLoudEnough(kwResult)) {
+                        if (lateStopWindow && kwResult.matched && phraseLoudEnough(kwResult)) {
+                            // The memo already ended on its own: this phrase is the user's stop command, not a start
+                            lateStopFramesRemaining = 0
+                            keywordDetector.resetWindow()
+                            matchStreak = 0
+                            events.add(MemoDetectionEvent.LateStopPhrase(now))
+                        } else if (!shouldSuppressSound && kwResult.matched && phraseLoudEnough(kwResult)) {
                             currentState = RecordingLifecycleState.RECORDING
                             activeTriggerType = WAKE_PHRASE_TRIGGER_TYPE
                             triggerStartTime = now
@@ -515,6 +533,12 @@ class MemoTriggerDetector(
         // The window still holds the stop phrase; clear it so it cannot immediately start a new memo
         keywordDetector.resetWindow()
         matchStreak = 0
+        // Ended on its own while the user may still be about to say the stop phrase: for a short time that phrase
+        // means "stop", not "start a new memo"
+        lateStopFramesRemaining = if (
+            (reason == RecordingStopReason.SILENCE_TIMEOUT || reason == RecordingStopReason.MAX_DURATION) &&
+            detectionMode == DetectionMode.KEYWORD_ONLY && keywordBehavior == KeywordBehavior.START_AND_STOP
+        ) (LATE_STOP_GRACE_MS / chunkDurationMs).toInt() else 0
         pendingStopReason = null
         activeRecordingChunks.clear()
         memoStartChunkIndex = 0
@@ -583,6 +607,13 @@ class MemoTriggerDetector(
     companion object {
         private const val KEYWORD_CONFIDENCE_DECAY = 0.92f // per 50ms frame
         private const val STOP_PHRASE_DEBOUNCE_MS = 1500L
+        /**
+         * After a memo ended by the silence timeout or the length limit (Wake Phrase mode, "Start memo & stop if
+         * repeated"), the wake phrase within this time is taken as the late stop command instead of starting a new
+         * memo. Without it, pausing longer than the silence timeout before saying the stop phrase made the stop phrase
+         * start a new memo (measured: 31 of 36 with a 3 s pause; docs/WAKE_PHRASE_DETECTION.md, section 18).
+         */
+        const val LATE_STOP_GRACE_MS = 5000L
         /** 2.5 s: matches the matcher's sliding window (50 frames). */
         private const val RECENT_LEVEL_FRAMES = 50
         private const val SAMPLE_RATE = 16000
