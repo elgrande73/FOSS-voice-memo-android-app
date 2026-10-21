@@ -31,8 +31,6 @@ object PreferenceKeys {
     const val SPEECH_TO_TEXT_ENABLED = "speechToTextEnabled"
 
     /** Shortcut settings (see shortcuts.ShortcutSettings); absent means the default. */
-    const val HARDWARE_SHORTCUT_ENABLED = "hardwareShortcutEnabled"
-    const val HARDWARE_SHORTCUT_GESTURE = "hardwareShortcutGesture"
     const val KEYBOARD_SHORTCUT_ENABLED = "keyboardShortcutEnabled"
     const val KEYBOARD_SHORTCUT_KEY_CODE = "keyboardShortcutKeyCode"
     const val KEYBOARD_SHORTCUT_MODIFIERS = "keyboardShortcutModifiers"
@@ -48,7 +46,7 @@ object PreferenceKeys {
  * saved are never replaced by defaults, and unrelated keys are never touched.
  */
 object SettingsMigrator {
-    const val CURRENT_VERSION = 4
+    const val CURRENT_VERSION = 5
 
     private const val TAG = "SettingsMigrator"
 
@@ -79,6 +77,9 @@ object SettingsMigrator {
         // v3 stored a choice of built-in wake phrase; v4 replaces it, so there is nothing to do for v3 itself
         if (version < 4) {
             migrateToV4(prefs, editor, existingInstallation)
+        }
+        if (version < 5) {
+            migrateToV5(editor)
         }
 
         // Always validate the authoritative threshold, so a corrupt or out-of-range value can never reach the detector
@@ -153,6 +154,15 @@ object SettingsMigrator {
         editor.remove(REMOVED_RECORDED_WAKE_PHRASE_TEXT)
     }
 
+    /**
+     * v5: the volume-button shortcut and the accessibility service for shortcuts outside the app were removed (they did
+     * not work reliably). Their two settings are dropped; the keyboard shortcut and every other setting stay as saved.
+     */
+    private fun migrateToV5(editor: SharedPreferences.Editor) {
+        editor.remove(REMOVED_HARDWARE_SHORTCUT_ENABLED)
+        editor.remove(REMOVED_HARDWARE_SHORTCUT_GESTURE)
+    }
+
     /** Whether the one-time notice about the changed built-in wake phrase is still to be shown. */
     fun wakePhraseChangedNotice(prefs: SharedPreferences): Boolean = try {
         prefs.getBoolean(PreferenceKeys.WAKE_PHRASE_CHANGED_NOTICE, false)
@@ -165,6 +175,9 @@ object SettingsMigrator {
     private const val V3_MANGO_TANGO_ID = "mango_tango"
     private const val REMOVED_WAKE_WORD_MODEL = "wakeWordModel"
     private const val REMOVED_RECORDED_WAKE_PHRASE_TEXT = "recordedWakePhraseText"
+    // Keys of settings removed by v5
+    private const val REMOVED_HARDWARE_SHORTCUT_ENABLED = "hardwareShortcutEnabled"
+    private const val REMOVED_HARDWARE_SHORTCUT_GESTURE = "hardwareShortcutGesture"
 
     /**
      * Effective confidence threshold of the former sensitivity model: a match required

@@ -16,12 +16,7 @@ object ShortcutSettings {
         val shortcut = keyCode
             ?.takeIf { KeyboardShortcut.validate(it, modifiers) == null }
             ?.let { KeyboardShortcut(it, modifiers) }
-        val gesture = readString(prefs, PreferenceKeys.HARDWARE_SHORTCUT_GESTURE)
-            ?.let { name -> HardwareGesture.entries.firstOrNull { it.name == name } }
-            ?: HardwareGesture.HOLD_BOTH_VOLUME
         return ShortcutConfig(
-            hardwareEnabled = readBoolean(prefs, PreferenceKeys.HARDWARE_SHORTCUT_ENABLED) ?: false,
-            hardwareGesture = gesture,
             keyboardEnabled = (readBoolean(prefs, PreferenceKeys.KEYBOARD_SHORTCUT_ENABLED) ?: false) && shortcut != null,
             keyboardShortcut = shortcut
         )
@@ -29,8 +24,6 @@ object ShortcutSettings {
 
     fun save(prefs: SharedPreferences, config: ShortcutConfig) {
         prefs.edit {
-            putBoolean(PreferenceKeys.HARDWARE_SHORTCUT_ENABLED, config.hardwareEnabled)
-            putString(PreferenceKeys.HARDWARE_SHORTCUT_GESTURE, config.hardwareGesture.name)
             putBoolean(PreferenceKeys.KEYBOARD_SHORTCUT_ENABLED, config.keyboardEnabled && config.keyboardShortcut != null)
             val shortcut = config.keyboardShortcut
             if (shortcut != null) {
@@ -55,7 +48,4 @@ object ShortcutSettings {
 
     private fun readBoolean(prefs: SharedPreferences, key: String): Boolean? =
         if (!prefs.contains(key)) null else try { prefs.getBoolean(key, false) } catch (_: ClassCastException) { null }
-
-    private fun readString(prefs: SharedPreferences, key: String): String? =
-        if (!prefs.contains(key)) null else try { prefs.getString(key, null) } catch (_: ClassCastException) { null }
 }

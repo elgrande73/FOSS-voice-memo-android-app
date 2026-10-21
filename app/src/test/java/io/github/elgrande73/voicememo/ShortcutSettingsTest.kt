@@ -16,7 +16,6 @@ import io.github.elgrande73.voicememo.detection.DetectionMode
 import io.github.elgrande73.voicememo.detection.MemoTriggerDetector
 import io.github.elgrande73.voicememo.detection.RecordingLifecycleState
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
-import io.github.elgrande73.voicememo.shortcuts.HardwareGesture
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
 import io.github.elgrande73.voicememo.shortcuts.ShortcutConfig
 import io.github.elgrande73.voicememo.shortcuts.ShortcutRuntime
@@ -56,7 +55,6 @@ class ShortcutSettingsTest {
     @Test
     fun everythingIsOffByDefaultExceptLockScreenControls() {
         assertEquals(ShortcutConfig(), ShortcutSettings.load(prefs))
-        assertFalse(ShortcutConfig().hardwareEnabled)
         assertFalse(ShortcutConfig().keyboardEnabled)
         assertTrue(ShortcutSettings.lockScreenControlsEnabled(prefs))
     }
@@ -64,15 +62,13 @@ class ShortcutSettingsTest {
     @Test
     fun settingsSurviveRestart() {
         VoiceMemoViewModel(app).apply {
-            setHardwareShortcutEnabled(true)
-            setHardwareGesture(HardwareGesture.HOLD_VOLUME_DOWN)
             setLockScreenControlsEnabled(false)
             startKeyboardShortcutCapture()
             onShortcutKeyCaptured(KeyEvent.KEYCODE_R, KeyboardShortcut.CTRL or KeyboardShortcut.SHIFT)
         }
         val restarted = VoiceMemoViewModel(app)
         assertEquals(
-            ShortcutConfig(true, HardwareGesture.HOLD_VOLUME_DOWN, true, KeyboardShortcut(KeyEvent.KEYCODE_R, KeyboardShortcut.CTRL or KeyboardShortcut.SHIFT)),
+            ShortcutConfig(true, KeyboardShortcut(KeyEvent.KEYCODE_R, KeyboardShortcut.CTRL or KeyboardShortcut.SHIFT)),
             restarted.shortcutConfig.value
         )
         assertFalse(restarted.lockScreenControlsEnabled.value)
@@ -81,8 +77,6 @@ class ShortcutSettingsTest {
     @Test
     fun corruptOrUnknownValuesFallBackToDefaultsWithoutTouchingOtherSettings() {
         prefs.edit()
-            .putString(PreferenceKeys.HARDWARE_SHORTCUT_ENABLED, "yes")
-            .putString(PreferenceKeys.HARDWARE_SHORTCUT_GESTURE, "TRIPLE_TAP")
             .putBoolean(PreferenceKeys.KEYBOARD_SHORTCUT_ENABLED, true)
             .putInt(PreferenceKeys.KEYBOARD_SHORTCUT_KEY_CODE, KeyEvent.KEYCODE_A) // no modifier: not allowed
             .putFloat(PreferenceKeys.LOCK_SCREEN_CONTROLS_ENABLED, 1f)

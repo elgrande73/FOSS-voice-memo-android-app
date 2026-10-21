@@ -179,7 +179,7 @@ class SettingsMigratorTest {
     fun freshInstallationUsesMangoTangoWithoutANotice() {
         SettingsMigrator.migrate(prefs)
         assertFalse(notice())
-        assertEquals(4, prefs.getInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 0))
+        assertEquals(SettingsMigrator.CURRENT_VERSION, prefs.getInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 0))
     }
 
     @Test
@@ -226,5 +226,26 @@ class SettingsMigratorTest {
         assertFalse(minLevelEnabled())
         assertEquals("single", prefs.getString(PreferenceKeys.HISTORY_PLAYBACK_MODE, null))
         assertEquals("it", prefs.getString(PreferenceKeys.TRANSCRIPTION_LANGUAGE, null))
+    }
+
+    @Test
+    fun v5DropsTheRemovedVolumeButtonShortcutAndKeepsTheKeyboardShortcut() {
+        prefs.edit().putInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 4)
+            .putBoolean("hardwareShortcutEnabled", true)
+            .putString("hardwareShortcutGesture", "HOLD_VOLUME_DOWN")
+            .putBoolean(PreferenceKeys.KEYBOARD_SHORTCUT_ENABLED, true)
+            .putInt(PreferenceKeys.KEYBOARD_SHORTCUT_KEY_CODE, 140)
+            .putInt(PreferenceKeys.KEYBOARD_SHORTCUT_MODIFIERS, 0)
+            .putBoolean(PreferenceKeys.LOCK_SCREEN_CONTROLS_ENABLED, false)
+            .putInt(PreferenceKeys.MATCH_CONFIDENCE_THRESHOLD_PERCENT, 55)
+            .commit()
+        repeat(2) { SettingsMigrator.migrate(prefs) }
+        assertFalse(prefs.contains("hardwareShortcutEnabled"))
+        assertFalse(prefs.contains("hardwareShortcutGesture"))
+        assertTrue(prefs.getBoolean(PreferenceKeys.KEYBOARD_SHORTCUT_ENABLED, false))
+        assertEquals(140, prefs.getInt(PreferenceKeys.KEYBOARD_SHORTCUT_KEY_CODE, 0))
+        assertFalse(prefs.getBoolean(PreferenceKeys.LOCK_SCREEN_CONTROLS_ENABLED, true))
+        assertEquals(55, threshold())
+        assertEquals(5, prefs.getInt(PreferenceKeys.SETTINGS_SCHEMA_VERSION, 0))
     }
 }

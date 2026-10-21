@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher shortcut (long-press the app icon, or drag it to the home screen): opens Voice Memo and starts a memo. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="record_memo"
+        android:shortcutLongLabel="@string/shortcut_record_long"
+        android:shortcutShortLabel="@string/shortcut_record_short">
+        <intent
+            android:action="io.github.elgrande73.voicememo.action.RECORD_MEMO"
+            android:targetClass="io.github.elgrande73.voicememo.MainActivity"
+            android:targetPackage="io.github.elgrande73.voicememo" />
+    </shortcut>
+</shortcuts>

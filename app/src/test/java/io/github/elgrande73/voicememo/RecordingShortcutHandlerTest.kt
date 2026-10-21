@@ -1,16 +1,12 @@
 package io.github.elgrande73.voicememo
 
 import android.view.KeyEvent
-import io.github.elgrande73.voicememo.shortcuts.HardwareGesture
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut.Companion.ALT
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut.Companion.CTRL
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut.Companion.SHIFT
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut.Problem
 import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutHandler
-import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutHandler.Companion.CHORD_HOLD_MS
-import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutHandler.Companion.CHORD_WINDOW_MS
-import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutHandler.Companion.SINGLE_KEY_HOLD_MS
 import io.github.elgrande73.voicememo.shortcuts.ShortcutConfig
 import io.github.elgrande73.voicememo.shortcuts.ShortcutKeyInput
 import io.github.elgrande73.voicememo.shortcuts.ToggleDebouncer
@@ -20,168 +16,37 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Pure state-machine tests (no Android runtime): times are explicit, the host's timer is simulated with [tickUntil]. */
+/** Pure state-machine tests of the keyboard shortcut (no Android runtime); times are explicit. */
 class RecordingShortcutHandlerTest {
 
-    private val up = KeyEvent.KEYCODE_VOLUME_UP
-    private val down = KeyEvent.KEYCODE_VOLUME_DOWN
-
     private var toggles = 0
-    private val volumeSteps = mutableListOf<Boolean>() // true = raise
 
-    private fun handler(config: ShortcutConfig) = RecordingShortcutHandler(config, { toggles++ }) { volumeSteps += it }
-
-    private fun hardware(gesture: HardwareGesture = HardwareGesture.HOLD_BOTH_VOLUME) =
-        handler(ShortcutConfig(hardwareEnabled = true, hardwareGesture = gesture))
+    private fun handler(config: ShortcutConfig) = RecordingShortcutHandler(config) { toggles++ }
 
     private fun RecordingShortcutHandler.down(key: Int, t: Long, repeat: Int = 0, modifiers: Int = 0, virtual: Boolean = false, text: Boolean = false) =
         onKey(ShortcutKeyInput(true, key, repeat, modifiers, t, virtual, text))
 
     private fun RecordingShortcutHandler.up(key: Int, t: Long, modifiers: Int = 0) = onKey(ShortcutKeyInput(false, key, 0, modifiers, t))
 
-    /** What the host's timer does: run onTick whenever a deadline has passed. */
-    private fun RecordingShortcutHandler.tickUntil(t: Long) {
-        while (true) {
-            val deadline = nextDeadlineMs ?: return
-            if (deadline > t) return
-            onTick(deadline)
-        }
-    }
-
-    // --- Both volume buttons ---
-
-    @Test
-    fun holdingBothVolumeButtonsTogglesOnceAndLeavesTheVolumeAlone() {
-        val h = hardware()
-        assertTrue(h.down(up, 0))
-        assertTrue(h.down(down, 80))
-        h.tickUntil(80 + CHORD_HOLD_MS - 1)
-        assertEquals(0, toggles)
-        h.tickUntil(80 + CHORD_HOLD_MS)
-        assertEquals(1, toggles)
-        // Key repeats while still held never fire again
-        for (t in 700L..3000L step 50) {
-            assertTrue(h.down(up, t, repeat = 1))
-            assertTrue(h.down(down, t, repeat = 1))
-        }
-        assertTrue(h.up(up, 3100))
-        assertTrue(h.up(down, 3120))
-        assertEquals(1, toggles)
-        assertTrue(volumeSteps.isEmpty())
-        assertNull(h.nextDeadlineMs)
-    }
-
-    @Test
-    fun holdIsAlsoDetectedFromKeyRepeatsWithoutTimer() {
-        val h = hardware()
-        h.down(down, 0)
-        h.down(up, 50)
-        h.down(up, 50 + CHORD_HOLD_MS, repeat = 5)
-        assertEquals(1, toggles)
-    }
-
-    @Test
-    fun aSecondPressStopsTheMemo() {
-        val h = hardware()
-        h.down(up, 0); h.down(down, 10); h.tickUntil(2000); h.up(up, 2000); h.up(down, 2000)
-        h.down(up, 5000); h.down(down, 5050); h.tickUntil(7000); h.up(up, 7000); h.up(down, 7000)
-        assertEquals(2, toggles)
-    }
-
-    @Test
-    fun shortVolumePressStillChangesTheVolumeOnce() {
-        val h = hardware()
-        assertTrue(h.down(up, 0))
-        h.tickUntil(100)
-        assertTrue(h.up(up, 120))
-        assertEquals(listOf(true), volumeSteps)
-        assertEquals(0, toggles)
-    }
-
-    @Test
-    fun holdingOneVolumeButtonKeepsAdjustingTheVolume() {
-        val h = hardware()
-        h.down(down, 0)
-        h.tickUntil(CHORD_WINDOW_MS) // not joined by the other key: a normal press
-        assertEquals(listOf(false), volumeSteps)
-        h.down(down, 500, repeat = 1)
-        h.down(down, 550, repeat = 2)
-        h.up(down, 600)
-        assertEquals(listOf(false, false, false), volumeSteps)
-        assertEquals(0, toggles)
-        // Pressing the other key late is a normal volume press too, not the gesture
-        h.down(up, 1000); h.tickUntil(1000 + CHORD_WINDOW_MS); h.down(down, 1000 + CHORD_WINDOW_MS + 10)
-        h.tickUntil(5000)
-        assertEquals(0, toggles)
-    }
-
-    @Test
-    fun releasingBeforeTheHoldTimeCancelsWithoutSideEffects() {
-        val h = hardware()
-        h.down(up, 0); h.down(down, 30)
-        h.tickUntil(300)
-        assertTrue(h.up(down, 300))
-        h.tickUntil(2000)
-        assertTrue(h.up(up, 2000))
-        assertEquals(0, toggles)
-        assertTrue(volumeSteps.isEmpty())
-    }
-
-    @Test
-    fun disabledShortcutDoesNotConsumeVolumeKeys() {
-        val h = handler(ShortcutConfig(hardwareEnabled = false))
-        assertFalse(h.down(up, 0))
-        assertFalse(h.up(up, 50))
-        assertNull(h.nextDeadlineMs)
-    }
-
-    @Test
-    fun unseenKeyUpOrRepeatIsPassedOn() {
-        val h = hardware()
-        assertFalse(h.down(up, 0, repeat = 3))
-        assertFalse(h.up(down, 10))
-    }
-
-    // --- One volume button held ---
-
-    @Test
-    fun holdVolumeDownFiresAfterOneSecondAndShortPressesStillWork() {
-        val h = hardware(HardwareGesture.HOLD_VOLUME_DOWN)
-        assertFalse("Volume Up keeps its normal behaviour", h.down(up, 0))
-        assertFalse(h.up(up, 50))
-
-        h.down(down, 100); h.up(down, 300) // short press
-        assertEquals(listOf(false), volumeSteps)
-
-        h.down(down, 1000)
-        h.tickUntil(1000 + SINGLE_KEY_HOLD_MS - 1)
-        assertEquals(0, toggles)
-        h.tickUntil(1000 + SINGLE_KEY_HOLD_MS)
-        assertEquals(1, toggles)
-        h.down(down, 2500, repeat = 10)
-        h.up(down, 2600)
-        assertEquals(1, toggles)
-        assertEquals("no volume change from the gesture", listOf(false), volumeSteps)
-    }
-
-    @Test
-    fun holdVolumeUpUsesTheOtherKey() {
-        val h = hardware(HardwareGesture.HOLD_VOLUME_UP)
-        assertFalse(h.down(down, 0))
-        h.down(up, 100); h.tickUntil(100 + SINGLE_KEY_HOLD_MS); h.up(up, 2000)
-        assertEquals(1, toggles)
-    }
-
     @Test
     fun togglesAreAtLeastTheMinimumIntervalApart() {
-        val h = hardware(HardwareGesture.HOLD_VOLUME_DOWN)
-        h.down(down, 0); h.tickUntil(SINGLE_KEY_HOLD_MS); h.up(down, SINGLE_KEY_HOLD_MS)
-        // A bouncing button: a second complete hold could not happen this fast, but a keyboard press could
         val k = handler(ShortcutConfig(keyboardEnabled = true, keyboardShortcut = KeyboardShortcut(KeyEvent.KEYCODE_F9, 0)))
         k.down(KeyEvent.KEYCODE_F9, 0); k.up(KeyEvent.KEYCODE_F9, 20)
         k.down(KeyEvent.KEYCODE_F9, 300); k.up(KeyEvent.KEYCODE_F9, 320)
         k.down(KeyEvent.KEYCODE_F9, 900); k.up(KeyEvent.KEYCODE_F9, 920)
-        assertEquals(1 + 2, toggles)
+        assertEquals(2, toggles)
+    }
+
+    @Test
+    fun volumeKeysAreNeverConsumed() {
+        // The volume-button shortcut was removed: volume keys always keep their normal behaviour
+        val h = keyboard()
+        for (key in listOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) {
+            assertFalse(h.down(key, 0))
+            assertFalse(h.down(key, 600, repeat = 1))
+            assertFalse(h.up(key, 1200))
+        }
+        assertEquals(0, toggles)
     }
 
     // --- Keyboard ---
@@ -241,13 +106,13 @@ class RecordingShortcutHandlerTest {
     }
 
     @Test
-    fun changingTheConfigurationResetsHalfFinishedGestures() {
-        val h = hardware()
-        h.down(up, 0); h.down(down, 10)
-        h.config = ShortcutConfig(hardwareEnabled = false)
-        h.tickUntil(5000)
-        assertEquals(0, toggles)
-        assertNull(h.nextDeadlineMs)
+    fun changingTheConfigurationReleasesAHeldShortcutKey() {
+        val h = keyboard()
+        h.down(KeyEvent.KEYCODE_R, 0, modifiers = CTRL or SHIFT)
+        h.config = ShortcutConfig()
+        // The key-up of the earlier press is no longer the shortcut's: passed on
+        assertFalse(h.up(KeyEvent.KEYCODE_R, 100, modifiers = CTRL or SHIFT))
+        assertEquals(1, toggles)
     }
 
     // --- Validation and labels ---

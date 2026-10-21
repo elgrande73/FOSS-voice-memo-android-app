@@ -20,6 +20,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
 import android.util.Log
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -66,7 +67,6 @@ import io.github.elgrande73.voicememo.transcription.TranscriptionQuality
 import io.github.elgrande73.voicememo.transcription.TranscriptionSettings
 import io.github.elgrande73.voicememo.transcription.TranscriptionStatus
 import io.github.elgrande73.voicememo.settings.WakePhraseLevel
-import io.github.elgrande73.voicememo.shortcuts.HardwareGesture
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
 import io.github.elgrande73.voicememo.shortcuts.ShortcutConfig
 import io.github.elgrande73.voicememo.shortcuts.ShortcutRuntime
@@ -459,9 +459,31 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private val _recordPermissionPrompt = MutableStateFlow(0)
+    /** Incremented when a recording request needs the microphone permission; the activity then asks for it. */
+    val recordPermissionPrompt: StateFlow<Int> = _recordPermissionPrompt.asStateFlow()
+    private var recordAfterPermission = false
+
+    /** A tile, widget or launcher shortcut asked to record but the microphone permission is missing. */
+    fun requestRecordingAfterPermission() {
+        recordAfterPermission = true
+        _recordPermissionPrompt.value += 1
+    }
+
+    /** Result of a microphone permission request: starts the memo that was waiting for it, if any. */
+    fun onMicrophonePermissionResult(granted: Boolean) {
+        if (!recordAfterPermission) return
+        recordAfterPermission = false
+        if (granted) {
+            startManualRecording()
+        } else {
+            Toast.makeText(context, "Voice Memo needs the microphone permission to record.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     /**
-     * Starts a memo, or stops the one being recorded (dashboard-equivalent action for keyboard and hardware
-     * shortcuts while the app is in the foreground). Starts monitoring if needed, like Quick Memo.
+     * Starts a memo, or stops the one being recorded (dashboard-equivalent action for the keyboard shortcut while
+     * the app is in the foreground). Starts monitoring if needed, like Quick Memo.
      */
     fun toggleManualRecording() {
         if (AudioMonitoringService.isServiceRunning.value) {
@@ -469,14 +491,6 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         } else {
             startManualRecording()
         }
-    }
-
-    fun setHardwareShortcutEnabled(enabled: Boolean) {
-        updateShortcutConfig(_shortcutConfig.value.copy(hardwareEnabled = enabled))
-    }
-
-    fun setHardwareGesture(gesture: HardwareGesture) {
-        updateShortcutConfig(_shortcutConfig.value.copy(hardwareGesture = gesture))
     }
 
     fun setKeyboardShortcutEnabled(enabled: Boolean) {

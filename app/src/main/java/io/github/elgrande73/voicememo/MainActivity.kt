@@ -150,9 +150,8 @@ import io.github.elgrande73.voicememo.transcription.TranscriptionJobState
 import io.github.elgrande73.voicememo.transcription.TranscriptionQuality
 import io.github.elgrande73.voicememo.transcription.TranscriptionSettings
 import io.github.elgrande73.voicememo.transcription.TranscriptionStatus
-import io.github.elgrande73.voicememo.shortcuts.HardwareGesture
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
-import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutAccessibilityService
+import io.github.elgrande73.voicememo.shortcuts.RecordingEntryPoints
 import io.github.elgrande73.voicememo.shortcuts.ShortcutKeyHost
 import io.github.elgrande73.voicememo.shortcuts.ShortcutRuntime
 import io.github.elgrande73.voicememo.wakephrase.BuiltInWakePhrase
@@ -165,17 +164,15 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: VoiceMemoViewModel by viewModels()
 
-    /** Hardware-button and keyboard shortcuts while this activity has focus. */
+    /** Keyboard shortcut while this activity has focus. */
     private val shortcutHost by lazy { ShortcutKeyHost(this) { viewModel.toggleManualRecording() } }
 
     override fun onResume() {
         super.onResume()
         shortcutHost.start()
-        ShortcutRuntime.foregroundToggle = { viewModel.toggleManualRecording() }
     }
 
     override fun onPause() {
-        ShortcutRuntime.foregroundToggle = null
         shortcutHost.stop()
         super.onPause()
     }
@@ -199,8 +196,29 @@ class MainActivity : ComponentActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleRecordIntent(intent)
+    }
+
+    /**
+     * Tile, widget or launcher shortcut asked to record while monitoring was off ([RecordingEntryPoints]): start the
+     * memo like the dashboard's Quick Memo button, after the microphone permission if it is missing. Handled once:
+     * the intent is cleared so a recreated activity does not start another memo.
+     */
+    private fun handleRecordIntent(intent: Intent?) {
+        if (intent?.action != RecordingEntryPoints.ACTION_RECORD_MEMO) return
+        setIntent(Intent(intent).setAction(Intent.ACTION_MAIN))
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            viewModel.startManualRecording()
+        } else {
+            viewModel.requestRecordingAfterPermission()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) handleRecordIntent(intent)
         enableEdgeToEdge()
         setContent {
             val themeMode by viewModel.themeMode.collectAsState()
@@ -249,6 +267,7 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestMultiplePermissions()
                 ) { permissions ->
                     hasMicPermission = permissions[Manifest.permission.RECORD_AUDIO] == true
+                    if (permissions.containsKey(Manifest.permission.RECORD_AUDIO)) viewModel.onMicrophonePermissionResult(hasMicPermission)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         hasNotificationPermission = permissions[Manifest.permission.POST_NOTIFICATIONS] == true
                     }
@@ -258,7 +277,15 @@ class MainActivity : ComponentActivity() {
                     viewModel.refreshAvailableInputDevices()
                 }
 
+                // A recording request (tile, widget, launcher shortcut) without the microphone permission asks for it
+                val recordPermissionPrompt by viewModel.recordPermissionPrompt.collectAsState()
+                LaunchedEffect(recordPermissionPrompt) {
+                    if (recordPermissionPrompt > 0) permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                }
+
                 LaunchedEffect(Unit) {
+                    // Already being asked for the microphone by a recording request: one dialog at a time
+                    if (recordPermissionPrompt > 0) return@LaunchedEffect
                     val list = mutableListOf<String>()
                     if (!hasMicPermission) list.add(Manifest.permission.RECORD_AUDIO)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
@@ -719,7 +746,7 @@ fun DashboardScreen(
     }
 }
 
-/** Settings > Shortcuts & lock screen: hardware buttons, external keyboard, background use and lock-screen controls. */
+/** Settings > Shortcuts & lock screen: keyboard shortcut and the recording controls in the notification and on the lock screen. */
 @Composable
 fun ShortcutSettingsCard(viewModel: VoiceMemoViewModel) {
     val config by viewModel.shortcutConfig.collectAsState()
@@ -727,10 +754,7 @@ fun ShortcutSettingsCard(viewModel: VoiceMemoViewModel) {
     val keyboardMessage by viewModel.keyboardShortcutMessage.collectAsState()
     val lockScreenControls by viewModel.lockScreenControlsEnabled.collectAsState()
     val context = LocalContext.current
-    var backgroundShortcutsEnabled by remember { mutableStateOf(RecordingShortcutAccessibilityService.isEnabled(context)) }
-    // Re-check after returning from Android's accessibility settings
     LifecycleResumeEffect(Unit) {
-        backgroundShortcutsEnabled = RecordingShortcutAccessibilityService.isEnabled(context)
         onPauseOrDispose { viewModel.cancelKeyboardShortcutCapture() }
     }
 
@@ -748,44 +772,6 @@ fun ShortcutSettingsCard(viewModel: VoiceMemoViewModel) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-
-            // Hardware buttons
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "Volume-button shortcut", fontWeight = FontWeight.SemiBold)
-                    Text(
-                        text = config.hardwareGesture.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = config.hardwareEnabled,
-                    onCheckedChange = { viewModel.setHardwareShortcutEnabled(it) },
-                    modifier = Modifier.testTag("hardware_shortcut_switch")
-                )
-            }
-            if (config.hardwareEnabled) {
-                HardwareGesture.entries.forEach { gesture ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { viewModel.setHardwareGesture(gesture) }
-                            .testTag("hardware_gesture_${gesture.name}")
-                    ) {
-                        RadioButton(selected = config.hardwareGesture == gesture, onClick = { viewModel.setHardwareGesture(gesture) })
-                        Text(text = gesture.title, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-                Text(
-                    text = "Release the buttons when the memo starts. If Android's accessibility shortcut is set to both volume " +
-                        "buttons, Android may take that combination; use Hold Volume Down instead.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
 
             // External keyboard
             Spacer(modifier = Modifier.height(12.dp))
@@ -835,37 +821,17 @@ fun ShortcutSettingsCard(viewModel: VoiceMemoViewModel) {
                 )
             }
 
-            // Background use
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(text = "Use shortcuts outside the app", fontWeight = FontWeight.SemiBold)
-            Text(
-                text = (if (backgroundShortcutsEnabled) "On. " else "Off. ") +
-                    "Without it, shortcuts work only while Voice Memo is open. To use them in other apps and on the lock " +
-                    "screen, enable \"${context.getString(R.string.accessibility_service_label)}\" in Android's accessibility " +
-                    "settings. It only checks key presses for your shortcut and never reads screen content or typed text. " +
-                    "Outside the app a shortcut can start a memo only while monitoring is running. No shortcut works " +
-                    "while the screen is off (Android does not pass button presses to apps then).",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.testTag("background_shortcuts_status")
-            )
-            TextButton(onClick = {
-                try {
-                    context.startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                } catch (_: Exception) {
-                    Toast.makeText(context, "Accessibility settings are not available on this device", Toast.LENGTH_LONG).show()
-                }
-            }) { Text("Open Accessibility Settings") }
-
             // Lock screen
             Spacer(modifier = Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "Recording controls on the lock screen", fontWeight = FontWeight.SemiBold)
+                    Text(text = "Recording controls in the notification and on the lock screen", fontWeight = FontWeight.SemiBold)
                     Text(
-                        text = "While monitoring runs, the notification's Start/Stop memo button and the \"Voice memo\" " +
-                            "Quick Settings tile work without unlocking. Memos can only be played after unlocking. " +
-                            "When off, Android asks you to unlock first.",
+                        text = "On: while monitoring runs, its notification has a Start/Stop memo button that also works " +
+                            "on the lock screen, and the \"Voice memo\" Quick Settings tile works without unlocking. " +
+                            "Off: the notification shows only the status (no button; on the lock screen just the app " +
+                            "name), and the tile asks you to unlock first. The dashboard, tile, widget, keyboard " +
+                            "shortcut and wake phrase keep working. Memos can only be played after unlocking.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

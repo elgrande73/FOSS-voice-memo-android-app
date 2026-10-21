@@ -1,5 +1,6 @@
 package io.github.elgrande73.voicememo.shortcuts
 
+import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.os.Build
@@ -9,9 +10,13 @@ import io.github.elgrande73.voicememo.monitoring.AudioMonitoringService
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
 
 /**
- * Quick Settings tile that starts and stops a memo, also from the lock screen. It works while monitoring is running
- * (Android lets an app start using the microphone only from the foreground). If lock-screen controls are turned off,
- * a tap on the lock screen asks the user to unlock first.
+ * Quick Settings tile that starts and stops a memo. Adding or refreshing the tile never records; only a tap does.
+ * - Monitoring running: a tap toggles the memo through the running service (also on the lock screen while recording
+ *   controls are on; otherwise Android asks to unlock first).
+ * - Monitoring off: a tap opens the app, which starts the memo ([RecordingEntryPoints]); Android lets an app start the
+ *   microphone only from a visible screen. On the lock screen the device is unlocked first (no app content is ever
+ *   shown over the lock screen).
+ * The tile shows the real state (Recording / Tap to record) and is refreshed on every state change.
  */
 class RecordingTileService : TileService() {
 
@@ -23,7 +28,7 @@ class RecordingTileService : TileService() {
     override fun onClick() {
         super.onClick()
         if (!AudioMonitoringService.isServiceRunning.value) {
-            updateTile()
+            if (isLocked) unlockAndRun { openAppToRecord() } else openAppToRecord()
             return
         }
         val prefs = getSharedPreferences(PreferenceKeys.PREFS_NAME, Context.MODE_PRIVATE)
@@ -34,27 +39,35 @@ class RecordingTileService : TileService() {
         }
     }
 
+    @SuppressLint("StartActivityAndCollapseDeprecated")
+    private fun openAppToRecord() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startActivityAndCollapse(RecordingEntryPoints.recordPendingIntent(this, 30))
+        } else {
+            @Suppress("DEPRECATION")
+            startActivityAndCollapse(RecordingEntryPoints.recordIntent(this))
+        }
+    }
+
     private fun updateTile() {
         val tile = qsTile ?: return
-        val running = AudioMonitoringService.isServiceRunning.value
-        val recording = AudioMonitoringService.isCurrentlyRecording.value
-        tile.state = when {
-            !running -> Tile.STATE_UNAVAILABLE
-            recording -> Tile.STATE_ACTIVE
-            else -> Tile.STATE_INACTIVE
-        }
-        tile.label = if (recording) "Stop memo" else "Voice memo"
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            tile.subtitle = when {
-                !running -> "Monitoring off"
-                recording -> "Recording"
-                else -> "Tap to record"
-            }
-        }
+        val view = tileView(AudioMonitoringService.isServiceRunning.value, AudioMonitoringService.isCurrentlyRecording.value)
+        tile.state = view.state
+        tile.label = view.label
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) tile.subtitle = view.subtitle
         tile.updateTile()
     }
 
+    /** Tile appearance for a state: never "active" unless a memo is really being recorded. */
+    data class TileView(val state: Int, val label: String, val subtitle: String)
+
     companion object {
+        fun tileView(monitoring: Boolean, recording: Boolean): TileView = when {
+            monitoring && recording -> TileView(Tile.STATE_ACTIVE, "Stop memo", "Recording")
+            monitoring -> TileView(Tile.STATE_INACTIVE, "Voice memo", "Tap to record")
+            else -> TileView(Tile.STATE_INACTIVE, "Voice memo", "Tap to open and record")
+        }
+
         /** Asks the system to refresh the tile (after the recording or monitoring state changed). */
         fun requestUpdate(context: Context) {
             try {
