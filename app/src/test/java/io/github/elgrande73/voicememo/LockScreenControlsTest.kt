@@ -59,19 +59,39 @@ class LockScreenControlsTest {
         val channel = manager.getNotificationChannel(AudioMonitoringService.CONTROLS_CHANNEL_ID)
         assertNotNull(channel)
         assertNull("never makes a sound", channel.sound)
-        assertEquals(Notification.VISIBILITY_PUBLIC, channel.lockscreenVisibility)
+        // Root cause of the setting having no effect: a channel-level override replaced every notification's visibility
+        assertEquals("no channel override", android.service.notification.NotificationListenerService.Ranking.VISIBILITY_NO_OVERRIDE, channel.lockscreenVisibility)
         assertTrue("shown on lock screens that hide silent notifications", channel.importance >= NotificationManager.IMPORTANCE_DEFAULT)
         assertNull("old silent channel removed", manager.getNotificationChannel(AudioMonitoringService.CHANNEL_ID))
+        assertNull("old channel with the override removed", manager.getNotificationChannel(AudioMonitoringService.PREVIOUS_CONTROLS_CHANNEL_ID))
     }
 
     @Test
-    fun turningLockScreenControlsOffRequiresUnlockingAndHidesTheButton() {
+    fun turningRecordingControlsOffRemovesTheButtonEverywhere() {
         ShortcutSettings.setLockScreenControlsEnabled(prefs, false)
         val notification = notificationAfterRefresh()
+        assertTrue("no Start memo button, locked or not", notification.actions.isNullOrEmpty())
         assertEquals(Notification.VISIBILITY_PRIVATE, notification.visibility)
-        assertTrue(notification.actions.single().isAuthenticationRequired)
         assertNotNull(notification.publicVersion)
         assertTrue("lock-screen version has no buttons", notification.publicVersion.actions.isNullOrEmpty())
+    }
+
+    @Test
+    fun theSettingAppliesImmediatelyWhileMonitoringRunsAndAlsoDuringAMemo() {
+        val controller = Robolectric.buildService(AudioMonitoringService::class.java,
+            Intent(app, AudioMonitoringService::class.java).setAction(AudioMonitoringService.ACTION_START_MANUAL_RECORDING)).create().startCommand(0, 1)
+        val manager = app.getSystemService(NotificationManager::class.java)
+        fun current() = shadowOf(manager).getNotification(AudioMonitoringService.NOTIFICATION_ID)
+        assertEquals("Stop memo", current().actions.single().title.toString())
+        // What Settings does: store the value and ask the running service to rebuild its notification
+        ShortcutSettings.setLockScreenControlsEnabled(prefs, false)
+        controller.withIntent(Intent(app, AudioMonitoringService::class.java).setAction(AudioMonitoringService.ACTION_REFRESH_NOTIFICATION)).startCommand(0, 2)
+        assertTrue("button gone without a restart", current().actions.isNullOrEmpty())
+        assertTrue("hiding the controls does not stop the memo", AudioMonitoringService.isCurrentlyRecording.value)
+        ShortcutSettings.setLockScreenControlsEnabled(prefs, true)
+        controller.withIntent(Intent(app, AudioMonitoringService::class.java).setAction(AudioMonitoringService.ACTION_REFRESH_NOTIFICATION)).startCommand(0, 3)
+        assertEquals("Stop memo", current().actions.single().title.toString())
+        controller.destroy()
     }
 
     @Test
@@ -94,5 +114,14 @@ class LockScreenControlsTest {
         assertFalse(AudioMonitoringService.isServiceRunning.value)
         assertFalse(AudioMonitoringService.requestToggle(app))
         assertNull(shadowOf(app).nextStartedService)
+    }
+
+    @Test
+    fun aSystemRestartWithoutARequestDoesNotPretendToMonitor() {
+        val controller = Robolectric.buildService(AudioMonitoringService::class.java, null).create()
+        controller.get().onStartCommand(null, 0, 1)
+        assertFalse(AudioMonitoringService.isServiceRunning.value)
+        assertTrue("stopped itself", shadowOf(controller.get()).isStoppedBySelf)
+        controller.destroy()
     }
 }

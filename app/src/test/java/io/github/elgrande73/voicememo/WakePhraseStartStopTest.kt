@@ -47,20 +47,24 @@ class WakePhraseStartStopTest {
         val templates = WakePhraseBenchmark.templates(1, frontEnd)
         var start = 0; var stop = 0; var n = 0; var seed = 1
         var startLatency = 0L; var stopLatency = 0L
-        for ((nd, nt) in backgrounds) for (peak in peaks) for (clip in WakePhraseBenchmark.TARGET_EVAL) {
+        // Three random positions within the 50 ms frame grid per clip, for start and stop alike (a phrase starting exactly on
+        // a frame boundary, like the enrollment recordings, matches better and would favour whichever case got it)
+        for ((nd, nt) in backgrounds) for (peak in peaks) for (clip in WakePhraseBenchmark.TARGET_EVAL) repeat(3) {
             n++
+            val phase = kotlin.random.Random(seed)
+            val startLead = 2.0 + phase.nextInt(800) / rate.toDouble()
             val phrase = AudioFixtures.atPeak(AudioFixtures.load(clip), peak)
             val phraseFrames = phrase.size / 800
 
-            val startStream = bg(2.0, nd, nt, seed) + withBg(phrase, nd, nt, seed + 1) + bg(1.0, nd, nt, seed + 2)
+            val startStream = bg(startLead, nd, nt, seed) + withBg(phrase, nd, nt, seed + 1) + bg(1.0, nd, nt, seed + 2)
             val d1 = detector(templates, frontEnd, minLevelDb)
-            val startEnd = 2 * rate / 800 + phraseFrames
+            val startEnd = (startLead * rate).toInt() / 800 + phraseFrames
             AudioFixtures.frames(startStream).forEachIndexed { i, f ->
                 if (d1.processFrame(f).any { it is MemoDetectionEvent.TriggerStarted }) { start++; startLatency += (i - startEnd) * 50L }
             }
 
             val memo = AudioFixtures.atPeak(AudioFixtures.load("neg_speech_${1 + seed % 5}"), peak)
-            val stopStream = bg(2.0, nd, nt, seed + 3) + withBg(memo, nd, nt, seed + 4) + bg(pause, nd, nt, seed + 5) +
+            val stopStream = bg(2.0, nd, nt, seed + 3) + withBg(memo, nd, nt, seed + 4) + bg(pause + phase.nextInt(800) / rate.toDouble(), nd, nt, seed + 5) +
                 withBg(phrase, nd, nt, seed + 6) + bg(1.0, nd, nt, seed + 7)
             val d2 = detector(templates, frontEnd, minLevelDb).apply { startManualRecording() }
             val stopEnd = (stopStream.size - rate) / 800

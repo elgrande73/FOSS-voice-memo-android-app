@@ -4,9 +4,12 @@ Prioritised. Each item: evidence → proposed change → how to verify. Move fin
 
 ## Now
 
-1. **Near-miss rejection for "Tango Mango" / "Mango tea"**: anti-references (score against near-miss templates and veto
-   when they match better). Needs bundled near-miss features; measure on the corpus first (test near-miss FP at 50 %:
-   5/192, at 40 %: 29/192).
+1. **Device verification** of this round: transcription time for a 4 s memo (debug and release, cold/warm, logcat
+   "TranscriptionManager" stage line), tile/widget/launcher shortcut, notification with the setting off, wake-phrase
+   start/stop and the late-stop window on a phone.
+2. **q8_0 Whisper base on the device** (host: 14 % faster, same WER, half the memory): on-device quantisation of the
+   verified download, or an officially checksummed source; measure on a phone first.
+3. **Stopping right after speech** with recorded samples (0.2 s pause: stop 65 vs start 77 of 108).
 
 ## Next
 

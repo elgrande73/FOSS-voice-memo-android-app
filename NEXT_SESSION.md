@@ -5,12 +5,14 @@
 
 ## State at the end of the last session
 
-- The earlier default phrase is gone completely (commit `7a173a8`).
-- The wake phrase has a speaker-split corpus, and mean-normalised matching is adopted (see `IMPROVEMENT_LOG.md`).
-- Transcription now reports real stages and per-stage timings, and uses more threads while monitoring.
-- A shorter encoder context (`audio_ctx`) was measured and rejected: WER went from 0.32 to 0.79–1.0.
-- Window length and flux gate were measured: no effect (see log).
-- Next: backlog item 1, near-miss anti-references.
+- The requested fixes are done (see `IMPROVEMENT_LOG.md`, top entry):
+  - shortcuts removed;
+  - recording-controls setting fixed;
+  - tile, widget and launcher shortcut added;
+  - late stop after an automatic end;
+  - 20 dB matching for recorded samples;
+  - transcription -O3 and the single-encode patch.
+- Nothing was verified on a device. Start with backlog item 1.
 
 ## Environment notes
 
@@ -18,6 +20,8 @@
   `./gradlew assembleDebug assembleRelease lintDebug testDebugUnitTest compileDebugAndroidTestKotlin --no-daemon`.
 - Corpus tests take a few minutes: `./gradlew testDebugUnitTest --tests '*WakePhraseCorpusTest*'`.
   - `SELECT_BUILT_IN=1` runs the reference selection experiment.
+- `TranscriptionModelBenchmarkHostTest`: set `WHISPER_BENCH_DIR` to a folder of ggml files (built from the sherpa-onnx
+  exports with `scripts/whisper-model/onnx_whisper_to_ggml.py` and whisper-quantize; see docs/TRANSCRIPTION.md).
 - Host transcription tests need two things:
   - `build/whisper-model/ggml-base-q5_0.bin` (`scripts/whisper-model/build-bundled-model.sh`; Hugging Face may be blocked).
   - `build/host-whisper-jni/lib/libvmwhisper.so` (`scripts/host-whisper-jni/build.sh`).

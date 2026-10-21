@@ -20,6 +20,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
 import android.util.Log
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -44,6 +45,7 @@ import io.github.elgrande73.voicememo.memo.VoiceNote
 import io.github.elgrande73.voicememo.memo.VoiceNoteExportManager
 import io.github.elgrande73.voicememo.memo.VoiceNoteRepository
 import io.github.elgrande73.voicememo.monitoring.AudioMonitoringService
+import io.github.elgrande73.voicememo.monitoring.MonitoringRequest
 import io.github.elgrande73.voicememo.playback.ChimePlayer
 import io.github.elgrande73.voicememo.playback.MemoAudioOutput
 import io.github.elgrande73.voicememo.memo.DeleteReport
@@ -66,7 +68,6 @@ import io.github.elgrande73.voicememo.transcription.TranscriptionQuality
 import io.github.elgrande73.voicememo.transcription.TranscriptionSettings
 import io.github.elgrande73.voicememo.transcription.TranscriptionStatus
 import io.github.elgrande73.voicememo.settings.WakePhraseLevel
-import io.github.elgrande73.voicememo.shortcuts.HardwareGesture
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
 import io.github.elgrande73.voicememo.shortcuts.ShortcutConfig
 import io.github.elgrande73.voicememo.shortcuts.ShortcutRuntime
@@ -266,8 +267,15 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         arbiter = MicrophoneArbiter.shared,
         monitoring = object : MonitoringControl {
             override val isRunning: Boolean get() = AudioMonitoringService.isServiceRunning.value
-            override fun stop() = stopServiceDetection()
-            override fun start() = startServiceDetection()
+            // Monitoring that ran only for one quick memo is not restored after the phrase recording
+            private var wasOneMemoSession = false
+            override fun stop() {
+                wasOneMemoSession = AudioMonitoringService.oneMemoSession.value
+                stopServiceDetection()
+            }
+            override fun start() {
+                if (!wasOneMemoSession) startServiceDetection(MonitoringRequest.CONTINUOUS)
+            }
         },
         hasPermission = {
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -403,11 +411,13 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     /** Monitoring started or stopped by the user (dashboard); an ongoing phrase recording will respect this choice. */
     fun setMonitoringEnabledByUser(enabled: Boolean) {
         phraseCapture.onUserChangedMonitoring()
-        if (enabled) startServiceDetection() else stopServiceDetection()
+        if (enabled) startServiceDetection(MonitoringRequest.CONTINUOUS) else stopServiceDetection()
     }
 
-    fun startServiceDetection() {
+    /** Starts monitoring, or re-applies the settings to the running service ([request]: why; see [MonitoringRequest]). */
+    fun startServiceDetection(request: MonitoringRequest = MonitoringRequest.CONTINUOUS) {
         val intent = Intent(context, AudioMonitoringService::class.java).apply {
+            putExtra(AudioMonitoringService.EXTRA_MONITORING_REQUEST, request.name)
             putExtra("audioInputId", _selectedAudioInputId.value)
             putExtra("audioInputName", _selectedAudioInputName.value)
             putExtra("detectionMode", _detectionMode.value.name)
@@ -444,10 +454,14 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    /**
+     * Quick Memo (also tile, widget and launcher shortcut while monitoring is off). If monitoring is off, it runs only
+     * for this memo and stops again once the memo is saved; if it was already on, it stays on.
+     */
     fun startManualRecording() {
         if (!AudioMonitoringService.isServiceRunning.value) {
             phraseCapture.onUserChangedMonitoring()
-            startServiceDetection()
+            startServiceDetection(MonitoringRequest.ONE_MEMO)
         }
         try {
             val intent = Intent(context, AudioMonitoringService::class.java).apply {
@@ -459,9 +473,31 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private val _recordPermissionPrompt = MutableStateFlow(0)
+    /** Incremented when a recording request needs the microphone permission; the activity then asks for it. */
+    val recordPermissionPrompt: StateFlow<Int> = _recordPermissionPrompt.asStateFlow()
+    private var recordAfterPermission = false
+
+    /** A tile, widget or launcher shortcut asked to record but the microphone permission is missing. */
+    fun requestRecordingAfterPermission() {
+        recordAfterPermission = true
+        _recordPermissionPrompt.value += 1
+    }
+
+    /** Result of a microphone permission request: starts the memo that was waiting for it, if any. */
+    fun onMicrophonePermissionResult(granted: Boolean) {
+        if (!recordAfterPermission) return
+        recordAfterPermission = false
+        if (granted) {
+            startManualRecording()
+        } else {
+            Toast.makeText(context, "Voice Memo needs the microphone permission to record.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     /**
-     * Starts a memo, or stops the one being recorded (dashboard-equivalent action for keyboard and hardware
-     * shortcuts while the app is in the foreground). Starts monitoring if needed, like Quick Memo.
+     * Starts a memo, or stops the one being recorded (dashboard-equivalent action for the keyboard shortcut while
+     * the app is in the foreground). Starts monitoring if needed, like Quick Memo.
      */
     fun toggleManualRecording() {
         if (AudioMonitoringService.isServiceRunning.value) {
@@ -469,14 +505,6 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         } else {
             startManualRecording()
         }
-    }
-
-    fun setHardwareShortcutEnabled(enabled: Boolean) {
-        updateShortcutConfig(_shortcutConfig.value.copy(hardwareEnabled = enabled))
-    }
-
-    fun setHardwareGesture(gesture: HardwareGesture) {
-        updateShortcutConfig(_shortcutConfig.value.copy(hardwareGesture = gesture))
     }
 
     fun setKeyboardShortcutEnabled(enabled: Boolean) {
@@ -1551,7 +1579,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun restartServiceIfRunning() {
         if (AudioMonitoringService.isServiceRunning.value) {
-            startServiceDetection()
+            startServiceDetection(MonitoringRequest.KEEP)
         }
     }
 

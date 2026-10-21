@@ -2,17 +2,6 @@ package io.github.elgrande73.voicememo.shortcuts
 
 import android.view.KeyEvent
 
-/**
- * Hardware-button gestures that start or stop a memo. Android only delivers volume-key events to an app whose window
- * has focus, or to an enabled accessibility service while the screen is on; see docs/SHORTCUTS_AND_LOCK_SCREEN.md.
- * The names are persisted: never rename them.
- */
-enum class HardwareGesture(val title: String, val description: String) {
-    HOLD_BOTH_VOLUME("Hold both volume buttons", "Press Volume Up and Volume Down together and hold for about half a second."),
-    HOLD_VOLUME_DOWN("Hold Volume Down", "Hold Volume Down for one second. A short press still lowers the volume."),
-    HOLD_VOLUME_UP("Hold Volume Up", "Hold Volume Up for one second. A short press still raises the volume.")
-}
-
 /** A key on an external keyboard plus the modifier keys that must be held with it. */
 data class KeyboardShortcut(val keyCode: Int, val modifiers: Int) {
 
@@ -97,10 +86,8 @@ data class KeyboardShortcut(val keyCode: Int, val modifiers: Int) {
     }
 }
 
-/** Persisted shortcut settings. Everything is off until the user enables it. */
+/** Persisted shortcut settings. Off until the user enables it. */
 data class ShortcutConfig(
-    val hardwareEnabled: Boolean = false,
-    val hardwareGesture: HardwareGesture = HardwareGesture.HOLD_BOTH_VOLUME,
     val keyboardEnabled: Boolean = false,
     val keyboardShortcut: KeyboardShortcut? = null
 )
@@ -119,23 +106,14 @@ data class ShortcutKeyInput(
 )
 
 /**
- * Turns key events into "toggle recording" requests.
- *
- * - Each gesture fires at most once per press: nothing fires again until every involved key is released, and two
- *   toggles are at least [MIN_TOGGLE_INTERVAL_MS] apart.
- * - Volume keys involved in a gesture are consumed. A press that turns out not to be the gesture is replayed as a
- *   normal volume step through [onVolumeStep] (at release, or after [CHORD_WINDOW_MS] while held, then once per key
- *   repeat), so the volume buttons keep working.
- * - Keyboard shortcuts fire on the key-down of the main key (repeats and the key-up are consumed), never for events
- *   from on-screen keyboards, and while a text field has focus only if they include Ctrl, Alt or Meta.
- *
- * Time is passed in explicitly; the host must call [onTick] at [nextDeadlineMs] (hold detection without key repeats).
- * Not thread-safe: use it from one thread (the main thread in practice).
+ * Turns key events into "toggle recording" requests for the keyboard shortcut: it fires on the key-down of the main
+ * key with exactly the saved modifiers (repeats and the key-up are consumed), never for events from on-screen
+ * keyboards, and while a text field has focus only if the shortcut includes Ctrl, Alt or Meta. Two toggles are at
+ * least [MIN_TOGGLE_INTERVAL_MS] apart. Not thread-safe: use it from one thread (the main thread in practice).
  */
 class RecordingShortcutHandler(
     config: ShortcutConfig,
-    private val onToggle: () -> Unit,
-    private val onVolumeStep: (raise: Boolean) -> Unit
+    private val onToggle: () -> Unit
 ) {
     var config: ShortcutConfig = config
         set(value) {
@@ -143,102 +121,15 @@ class RecordingShortcutHandler(
             reset()
         }
 
-    private sealed interface Phase {
-        data object Idle : Phase
-        /** One volume key is down; waiting to see whether the other one follows (chord) or it is a volume press. */
-        data class Pending(val keyCode: Int, val deadline: Long) : Phase
-        /** Not a gesture: volume keys behave normally until all are released. */
-        data object PassThrough : Phase
-        /** Gesture keys held; fires at [deadline]. */
-        data class Holding(val deadline: Long) : Phase
-        /** Gesture fired or abandoned: consume until all gesture keys are released. */
-        data object Latched : Phase
-    }
-
-    private var phase: Phase = Phase.Idle
-    private val volumeKeysDown = mutableSetOf<Int>()
     private var latchedKeyboardKey: Int? = null
     private var lastToggleMs = Long.MIN_VALUE / 2
 
-    val nextDeadlineMs: Long?
-        get() = when (val p = phase) {
-            is Phase.Pending -> p.deadline
-            is Phase.Holding -> p.deadline
-            else -> null
-        }
-
     fun reset() {
-        phase = Phase.Idle
-        volumeKeysDown.clear()
         latchedKeyboardKey = null
     }
 
     /** @return true if the event was consumed (must not reach the system or other views). */
     fun onKey(input: ShortcutKeyInput): Boolean {
-        if (input.keyCode == KeyEvent.KEYCODE_VOLUME_UP || input.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
-            if (!config.hardwareEnabled && phase == Phase.Idle) return false
-            return onVolumeKey(input)
-        }
-        return onKeyboardKey(input)
-    }
-
-    fun onTick(timeMs: Long) {
-        when (val p = phase) {
-            is Phase.Pending -> if (timeMs >= p.deadline) {
-                // Held alone past the chord window: it is a normal volume press
-                phase = Phase.PassThrough
-                onVolumeStep(p.keyCode == KeyEvent.KEYCODE_VOLUME_UP)
-            }
-            is Phase.Holding -> if (timeMs >= p.deadline) fire(timeMs)
-            else -> {}
-        }
-    }
-
-    private fun onVolumeKey(input: ShortcutKeyInput): Boolean {
-        val key = input.keyCode
-        val raise = key == KeyEvent.KEYCODE_VOLUME_UP
-        val gesture = config.hardwareGesture
-        if (gesture != HardwareGesture.HOLD_BOTH_VOLUME && key != targetKey(gesture)) {
-            return false // the other volume key keeps its normal behaviour
-        }
-
-        if (!input.isDown) {
-            volumeKeysDown.remove(key)
-            when (val p = phase) {
-                is Phase.Pending -> if (p.keyCode == key) { onVolumeStep(raise); phase = Phase.Idle }
-                is Phase.Holding -> {
-                    // Released before the hold time: a single-key gesture was a short volume press; an
-                    // unfinished chord is abandoned without changing the volume
-                    if (gesture != HardwareGesture.HOLD_BOTH_VOLUME) onVolumeStep(raise)
-                    phase = if (volumeKeysDown.isEmpty()) Phase.Idle else Phase.Latched
-                }
-                Phase.PassThrough, Phase.Latched -> if (volumeKeysDown.isEmpty()) phase = Phase.Idle
-                Phase.Idle -> return false
-            }
-            return true
-        }
-
-        if (input.repeatCount > 0) {
-            onTick(input.timeMs)
-            if (phase == Phase.PassThrough) onVolumeStep(raise)
-            return phase != Phase.Idle
-        }
-
-        volumeKeysDown += key
-        when (val p = phase) {
-            Phase.Idle -> phase = if (gesture == HardwareGesture.HOLD_BOTH_VOLUME) {
-                Phase.Pending(key, input.timeMs + CHORD_WINDOW_MS)
-            } else {
-                Phase.Holding(input.timeMs + SINGLE_KEY_HOLD_MS)
-            }
-            is Phase.Pending -> if (p.keyCode != key) phase = Phase.Holding(input.timeMs + CHORD_HOLD_MS)
-            Phase.PassThrough -> onVolumeStep(raise)
-            is Phase.Holding, Phase.Latched -> {}
-        }
-        return true
-    }
-
-    private fun onKeyboardKey(input: ShortcutKeyInput): Boolean {
         val latched = latchedKeyboardKey
         if (latched != null && input.keyCode == latched) {
             if (!input.isDown) latchedKeyboardKey = null
@@ -249,27 +140,14 @@ class RecordingShortcutHandler(
         if (input.keyCode != shortcut.keyCode || input.modifiers != shortcut.modifiers) return false
         if (input.textInputFocused && !shortcut.hasCommandModifier) return false
         latchedKeyboardKey = input.keyCode
-        fire(input.timeMs)
+        if (input.timeMs - lastToggleMs >= MIN_TOGGLE_INTERVAL_MS) {
+            lastToggleMs = input.timeMs
+            onToggle()
+        }
         return true
     }
 
-    private fun fire(timeMs: Long) {
-        if (phase is Phase.Holding) phase = Phase.Latched
-        if (timeMs - lastToggleMs < MIN_TOGGLE_INTERVAL_MS) return
-        lastToggleMs = timeMs
-        onToggle()
-    }
-
-    private fun targetKey(gesture: HardwareGesture) =
-        if (gesture == HardwareGesture.HOLD_VOLUME_UP) KeyEvent.KEYCODE_VOLUME_UP else KeyEvent.KEYCODE_VOLUME_DOWN
-
     companion object {
-        /** Both volume keys must go down within this time to count as pressed together. */
-        const val CHORD_WINDOW_MS = 200L
-        /** Hold time for the two-key gesture; well below Android's 3 s accessibility shortcut. */
-        const val CHORD_HOLD_MS = 600L
-        /** Hold time for a single volume key; longer, because single keys are often held to change the volume. */
-        const val SINGLE_KEY_HOLD_MS = 1000L
         const val MIN_TOGGLE_INTERVAL_MS = 800L
     }
 }

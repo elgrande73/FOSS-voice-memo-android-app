@@ -9,9 +9,7 @@ import android.view.KeyEvent
 import androidx.test.core.app.ApplicationProvider
 import io.github.elgrande73.voicememo.monitoring.AudioMonitoringService
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
-import io.github.elgrande73.voicememo.shortcuts.HardwareGesture
 import io.github.elgrande73.voicememo.shortcuts.KeyboardShortcut
-import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutHandler
 import io.github.elgrande73.voicememo.shortcuts.ShortcutConfig
 import io.github.elgrande73.voicememo.shortcuts.ShortcutRuntime
 import io.github.elgrande73.voicememo.shortcuts.ShortcutSettings
@@ -133,25 +131,13 @@ class ShortcutActivityTest {
     }
 
     @Test
-    fun holdingBothVolumeButtonsStartsAMemoAfterTheHoldTime() {
-        launch(ShortcutConfig(hardwareEnabled = true, hardwareGesture = HardwareGesture.HOLD_BOTH_VOLUME))
-        assertTrue(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_UP))
-        assertTrue(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN))
-        advance(RecordingShortcutHandler.CHORD_HOLD_MS / 2)
-        assertEquals(emptyList<String?>(), startedServiceActions())
-        advance(RecordingShortcutHandler.CHORD_HOLD_MS)
-        assertEquals(2, startedServiceActions().size)
-        assertTrue(key(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_VOLUME_UP))
-        assertTrue(key(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_VOLUME_DOWN))
-        advance(2000)
-        assertEquals(emptyList<String?>(), startedServiceActions())
-    }
-
-    @Test
-    fun volumeButtonsAreUntouchedWhenTheShortcutIsOff() {
-        launch(ShortcutConfig(hardwareEnabled = false))
-        key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_UP)
-        key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN)
+    fun volumeButtonsAreNeverUsedAsAShortcut() {
+        // The volume-button shortcut was removed, even if an earlier version stored it as enabled
+        app.getSharedPreferences(PreferenceKeys.PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean("hardwareShortcutEnabled", true).putString("hardwareShortcutGesture", "HOLD_BOTH_VOLUME").commit()
+        launch(ShortcutConfig(keyboardEnabled = true, keyboardShortcut = KeyboardShortcut(KeyEvent.KEYCODE_F9, 0)))
+        assertFalse(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_UP))
+        assertFalse(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN))
         advance(3000)
         key(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_VOLUME_UP)
         key(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_VOLUME_DOWN)

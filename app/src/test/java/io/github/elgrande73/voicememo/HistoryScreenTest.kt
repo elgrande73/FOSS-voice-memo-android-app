@@ -134,7 +134,8 @@ class HistoryScreenTest {
         waitFor { runBlocking { AppDatabase.getDatabase(app).voiceNoteDao().getAllNoteIds() }.size == 2 }
         val remaining = runBlocking { AppDatabase.getDatabase(app).voiceNoteDao().getAllNoteIds() }.toSet()
         assertEquals(ids.takeLast(2).toSet(), remaining)
-        assertEquals(remaining, viewModel.selectedIds.value)
+        // The selection is pruned asynchronously once the list reflects the deletion
+        waitFor { viewModel.selectedIds.value == remaining }
     }
 
     @Test

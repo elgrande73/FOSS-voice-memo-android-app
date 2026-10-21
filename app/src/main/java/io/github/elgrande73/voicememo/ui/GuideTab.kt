@@ -139,11 +139,11 @@ fun GuideTab() {
                     
                     Monitoring runs as an Android Foreground Service with a persistent notification. It can run continuously with your screen off, inside your pocket, or placed on a desk.
 
-                    While monitoring runs, the notification's Start/Stop memo button and the "Voice memo" Quick Settings tile work from the lock screen without unlocking (Settings → Shortcuts & Lock Screen). Optional shortcuts: hold both volume buttons (or one), or a key combination on a Bluetooth/USB keyboard.
+                    While monitoring runs, the notification's Start/Stop memo button and the "Voice memo" Quick Settings tile work from the lock screen without unlocking (Settings → Shortcuts & Lock Screen). The tile, the "Record memo" home-screen widget and the "Record memo" launcher shortcut (long-press the app icon) also work when monitoring is off: they open Voice Memo and start a memo. Optional: a key combination on a Bluetooth/USB keyboard while the app is open.
                 """.trimIndent(),
                 tips = listOf(
                     "Add the \"Voice memo\" tile: pull down Quick Settings, tap the edit (pencil) button and drag the tile in.",
-                    "Shortcuts work in other apps and on the lock screen only after enabling \"Voice Memo recording shortcuts\" in Android's accessibility settings, and never while the screen is off.",
+                    "Add the \"Record memo\" widget: long-press the home screen, choose Widgets and drag Voice Memo onto it.",
                     "Exclude Voice Memo from aggressive OS Battery Optimization in Android Settings for uninterrupted overnight listening.",
                     "If plugging in or disconnecting a headset, the audio pipeline automatically re-routes with zero data loss."
                 )

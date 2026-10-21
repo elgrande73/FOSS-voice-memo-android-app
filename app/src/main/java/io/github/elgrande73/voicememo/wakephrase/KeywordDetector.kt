@@ -94,12 +94,20 @@ class TemplateKeywordDetector(
      * colouring. Evaluated in docs/WAKE_PHRASE_DETECTION.md (section "Mean-normalised matching"); false only to
      * reproduce the earlier matcher in evaluation tests.
      */
-    private val meanNormalization: Boolean = DEFAULT_MEAN_NORMALIZATION
+    private val meanNormalization: Boolean = DEFAULT_MEAN_NORMALIZATION,
+    /**
+     * Spectral-shape range (dB below the loudest band) used to match recorded samples; 40 dB keeps the stored features
+     * unchanged. Background noise fills the weak bands of live speech that were empty when the user recorded the
+     * phrase in a quiet room; comparing only the strongest [enrolledMatchRangeDb] dB removes that difference (chosen
+     * on development data, docs/WAKE_PHRASE_DETECTION.md section 19). The built-in reference (many voices) keeps 40 dB,
+     * which measured better across speakers.
+     */
+    private val enrolledMatchRangeDb: Double = DEFAULT_ENROLLED_MATCH_RANGE_DB
 ) : KeywordDetector {
 
     /** One enrolled sample (or built-in reference): its feature sequence, and the sequence used for alignment. */
-    private inner class Reference(val features: List<FloatArray>) {
-        val aligned: List<FloatArray> = if (meanNormalization) meanNormalized(features) else features
+    private inner class Reference(val features: List<FloatArray>, rangeDb: Double) {
+        val aligned: List<FloatArray> = features.map { compressed(it, rangeDb) }.let { if (meanNormalization) meanNormalized(it) else it }
     }
 
     private data class ReferenceMatch(val confidence: Float, val distance: Float, val windowFrames: Int)
@@ -111,6 +119,8 @@ class TemplateKeywordDetector(
 
     // Sliding window of feature vectors
     private val slidingWindow = mutableListOf<FloatArray>()
+    // The same frames as stored (uncompressed): the stationary-sound check uses them, unchanged by the matching range
+    private val rawWindow = mutableListOf<FloatArray>()
     private val maxWindowFrames = 50 // Up to 2.5 seconds history
 
     // Enrolled samples (empty: the built-in default wake phrase is used)
@@ -123,7 +133,7 @@ class TemplateKeywordDetector(
     val noiseFloorDbfs: Float? get() = frontEnd.noiseFloorDbfs
 
     private val builtInReferences: List<Reference> by lazy {
-        builtInPhrase().map { Reference(it) }
+        builtInPhrase().map { Reference(it, FEATURE_RANGE_DB) }
     }
 
     /** Number of enrolled samples in use (0 = built-in default wake phrase). */
@@ -162,6 +172,7 @@ class TemplateKeywordDetector(
     override fun loadTemplates(templates: List<ByteArray>): Int {
         references = templates.mapNotNull { parseTemplate(it) }.take(MAX_REFERENCES)
         slidingWindow.clear()
+        rawWindow.clear()
         return references.size
     }
 
@@ -181,7 +192,7 @@ class TemplateKeywordDetector(
                 if (vec.any { it.isNaN() || it.isInfinite() }) return null
                 template.add(vec)
             }
-            return Reference(template)
+            return Reference(template, enrolledMatchRangeDb)
         } catch (_: Exception) {
             return null
         }
@@ -205,8 +216,9 @@ class TemplateKeywordDetector(
     @Synchronized
     fun recordTemplate(chunks: List<ShortArray>): Boolean {
         val features = extractPhraseFeatures(chunks, frontEndConfig) ?: return false
-        references = listOf(Reference(features))
+        references = listOf(Reference(features, enrolledMatchRangeDb))
         slidingWindow.clear()
+        rawWindow.clear()
         return true
     }
 
@@ -214,11 +226,13 @@ class TemplateKeywordDetector(
     override fun clearTemplate() {
         references = emptyList()
         slidingWindow.clear()
+        rawWindow.clear()
     }
 
     @Synchronized
     override fun resetWindow() {
         slidingWindow.clear()
+        rawWindow.clear()
     }
 
     @Synchronized
@@ -239,7 +253,11 @@ class TemplateKeywordDetector(
     @Synchronized
     override fun processFrame(frame: ShortArray, rms: Float, db: Float): KeywordMatchResult {
         // The front end always runs (noise floor, diagnostics)
-        appendBounded(slidingWindow, frontEnd.process(frame))
+        // The window holds features in the range of the active references (enrolled or built-in; loading new
+        // references clears it)
+        val features = frontEnd.process(frame)
+        appendBounded(rawWindow, features)
+        appendBounded(slidingWindow, compressed(features, if (references.isEmpty()) FEATURE_RANGE_DB else enrolledMatchRangeDb))
         val matches = activeReferences().mapNotNull { matchReference(it, slidingWindow) }
         if (matches.isEmpty()) return KeywordMatchResult(matched = false, confidence = 0f, distance = 1.0f)
 
@@ -274,13 +292,14 @@ class TemplateKeywordDetector(
         var candLen = minLen
         while (candLen <= maxLen) {
             val testSlice = window.subList(window.size - candLen, window.size)
+            val rawSlice = rawWindow.subList(rawWindow.size - candLen, rawWindow.size)
 
             // Dynamic acoustic trajectory verification:
             // Wake phrases have distinctive phonemic transitions (e.g. nasal -> vowel -> stop -> vowel).
             // Monotone/stationary sounds ("hah", breath, constant noise, single vowel) have near-zero spectral flux.
             var fluxSum = 0f
-            for (k in 1 until testSlice.size) {
-                fluxSum += euclideanDistance(testSlice[k], testSlice[k - 1])
+            for (k in 1 until rawSlice.size) {
+                fluxSum += euclideanDistance(rawSlice[k], rawSlice[k - 1])
             }
             val avgFlux = fluxSum / (testSlice.size - 1).coerceAtLeast(1)
             if (avgFlux >= 0.040f) { // otherwise: reject stationary sound/noise
@@ -310,6 +329,31 @@ class TemplateKeywordDetector(
             }
         }
         return best
+    }
+
+    /**
+     * The feature vector with its spectral shape limited to [rangeDb] below the loudest band. The stored
+     * shape values are (relative dB / 40 + ε) / L2 norm, so the relative levels are recovered exactly, floored, and
+     * the vector re-encoded the same way.
+     */
+    private fun compressed(v: FloatArray, rangeDb: Double): FloatArray {
+        if (rangeDb >= FEATURE_RANGE_DB) return v
+        var max = 0f
+        for (b in 0 until min(numBands, v.size)) max = maxOf(max, v[b])
+        if (max <= 0f) return v
+        val scale = max / (1.0 + EPS) // value = scale * (rel / 40 + eps)
+        val out = v.copyOf()
+        var sum = 0.0
+        for (b in 0 until min(numBands, v.size)) {
+            val rel = ((v[b] / scale - EPS) * FEATURE_RANGE_DB).coerceIn(0.0, FEATURE_RANGE_DB)
+            val floored = (rel - (FEATURE_RANGE_DB - rangeDb)).coerceAtLeast(0.0)
+            val value = floored / rangeDb + EPS
+            out[b] = value.toFloat()
+            sum += value * value
+        }
+        val norm = sqrt(sum).toFloat()
+        for (b in 0 until min(numBands, v.size)) out[b] /= norm
+        return out
     }
 
     /** [seq] with the mean of each of the first [numBands] (spectral shape) values subtracted; other values unchanged. */
@@ -424,6 +468,10 @@ class TemplateKeywordDetector(
         /** Maximum number of enrolled samples (references) of the wake phrase. */
         const val MAX_REFERENCES = 5
         const val DEFAULT_MEAN_NORMALIZATION = true
+        const val DEFAULT_ENROLLED_MATCH_RANGE_DB = 20.0
+        /** Range of the stored features (FrontEndConfig.dynamicRangeDb) and their offset (WakePhraseFrontEnd.FEATURE_EPSILON). */
+        private const val FEATURE_RANGE_DB = 40.0
+        private const val EPS = 0.01
         val DEFAULT_AGGREGATION = ReferenceAggregation.MAX
 
         fun serialize(features: List<FloatArray>): ByteArray {

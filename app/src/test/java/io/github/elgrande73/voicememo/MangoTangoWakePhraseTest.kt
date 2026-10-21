@@ -133,9 +133,9 @@ class MangoTangoWakePhraseTest {
         // Measured on the fixtures (see docs/WAKE_PHRASE_DETECTION.md, "Default wake phrase: Mango Tango")
         const val MEASURED_BUILT_IN_TP_AT_50 = 16 // of 60
         const val MEASURED_BUILT_IN_NEAR_MISS_FP_AT_50 = 1 // of 54
-        val MEASURED_OWN_VOICE_TP = mapOf(1 to 17, 3 to 22) // of 36
-        val MEASURED_OWN_VOICE_NEAR_MISS_FP = mapOf(1 to 8, 3 to 8) // of 54
-        const val MEASURED_CUSTOM_TP = 20 // of 24
-        val MEASURED_START_STOP = mapOf("built-in" to 8, "3 samples" to 12) // of 18
+        val MEASURED_OWN_VOICE_TP = mapOf(1 to 27, 3 to 29) // of 36
+        val MEASURED_OWN_VOICE_NEAR_MISS_FP = mapOf(1 to 3, 3 to 7) // of 54
+        const val MEASURED_CUSTOM_TP = 18 // of 24
+        val MEASURED_START_STOP = mapOf("built-in" to 8, "3 samples" to 16) // of 18
     }
 }

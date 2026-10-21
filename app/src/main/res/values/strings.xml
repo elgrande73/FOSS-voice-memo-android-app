@@ -3,8 +3,10 @@
     <string name="app_name">Voice Memo</string>
     <!-- Title shown at the top of the dashboard -->
     <string name="dashboard_title">Voice memo</string>
-    <!-- Optional accessibility service (Settings > Shortcuts) -->
-    <string name="accessibility_service_label">Voice Memo recording shortcuts</string>
-    <string name="accessibility_service_description">Lets the recording shortcuts you configured in Voice Memo (holding volume buttons, or a key on an external keyboard) start and stop a memo while another app or the lock screen is shown. Voice Memo only checks key presses for your shortcut; it does not read screen content, typed text or other apps. Shortcuts only work while the screen is on, and only start a memo while monitoring is running.</string>
     <string name="tile_label">Voice memo</string>
+    <!-- Home-screen widget and launcher shortcut -->
+    <string name="widget_record">Record memo</string>
+    <string name="widget_description">One tap to start or stop a voice memo</string>
+    <string name="shortcut_record_short">Record memo</string>
+    <string name="shortcut_record_long">Record a voice memo</string>
 </resources>

@@ -51,7 +51,7 @@ import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
 import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.settings.SettingsMigrator
 import io.github.elgrande73.voicememo.shortcuts.RecordingShortcutHandler
-import io.github.elgrande73.voicememo.shortcuts.RecordingTileService
+import io.github.elgrande73.voicememo.shortcuts.RecordingEntryPoints
 import io.github.elgrande73.voicememo.shortcuts.ShortcutSettings
 import io.github.elgrande73.voicememo.shortcuts.ToggleDebouncer
 import io.github.elgrande73.voicememo.transcription.Transcription
@@ -113,8 +113,16 @@ class AudioMonitoringService : Service() {
     companion object {
         /** Channel of earlier versions (silent, so hidden on most lock screens); deleted on start. */
         const val CHANNEL_ID = "voice_memo_monitoring_channel"
-        /** Ongoing notification with the recording controls; default importance (no sound) so it is shown on the lock screen. */
-        const val CONTROLS_CHANNEL_ID = "voice_memo_controls_channel"
+        /**
+         * Channel of versions before 2026-10: it forced lock-screen visibility to public, which overrode the
+         * per-notification visibility and so made the lock-screen setting ineffective. Deleted on start.
+         */
+        const val PREVIOUS_CONTROLS_CHANNEL_ID = "voice_memo_controls_channel"
+        /**
+         * Ongoing monitoring notification; default importance (no sound) so it is shown on the lock screen. No
+         * channel-level lock-screen override: each notification's own visibility decides (see buildForegroundNotification).
+         */
+        const val CONTROLS_CHANNEL_ID = "voice_memo_recording_controls"
         const val CHANNEL_NOTE_ID = "voice_memo_note_channel"
         const val NOTIFICATION_ID = 1001
         // Covers thread hand-off, AudioTrack output latency and room echo after the chime
@@ -132,6 +140,8 @@ class AudioMonitoringService : Service() {
         const val ACTION_RELOAD_TEMPLATE = "${BuildConfig.APPLICATION_ID}.ACTION_RELOAD_TEMPLATE"
         const val ACTION_UPDATE_MATCH_CONFIDENCE_THRESHOLD = "${BuildConfig.APPLICATION_ID}.ACTION_UPDATE_MATCH_CONFIDENCE_THRESHOLD"
         const val EXTRA_MATCH_CONFIDENCE_THRESHOLD_PERCENT = "matchConfidenceThresholdPercent"
+        /** Why monitoring is (re)started: a [MonitoringRequest] name. Absent = [MonitoringRequest.CONTINUOUS]. */
+        const val EXTRA_MONITORING_REQUEST = "monitoringRequest"
         /** Minimum wake-phrase level on the detector's scale (dBFS + 90); NaN = condition off. */
         const val EXTRA_WAKE_PHRASE_MIN_LEVEL_DB = "wakePhraseMinLevelDb"
 
@@ -183,6 +193,13 @@ class AudioMonitoringService : Service() {
         private val _isFallbackActive = MutableStateFlow(false)
         val isFallbackActive = _isFallbackActive.asStateFlow()
 
+        private val _oneMemoSession = MutableStateFlow(false)
+        /**
+         * True while monitoring runs only for one memo (started by Quick Memo, tile, widget or launcher shortcut while
+         * monitoring was off): it stops by itself once that memo is saved.
+         */
+        val oneMemoSession = _oneMemoSession.asStateFlow()
+
         private val _engineState = MutableStateFlow(MonitoringEngineState.STOPPED)
         /** Real state of the capture/detection engine (not just whether the service exists). */
         val engineState = _engineState.asStateFlow()
@@ -228,7 +245,14 @@ class AudioMonitoringService : Service() {
         // Ensure foreground notification is active immediately for FGS requirements
         ensureForegroundNotification()
 
-        if (intent == null) return START_STICKY
+        if (intent == null) {
+            // Restarted by the system after the process was killed: Android 11+ does not let a service restarted in
+            // the background use the microphone, and the settings came with the original start request. Stop instead
+            // of showing a monitoring notification while nothing is captured; tile and widget show "off".
+            Log.i("AudioService", "Restarted without a request: stopping (monitoring must be started from the app)")
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         when (intent.action) {
             ACTION_START_MANUAL_RECORDING -> {
@@ -262,6 +286,17 @@ class AudioMonitoringService : Service() {
                 applyMatchConfidenceThreshold(intent)
                 return START_STICKY
             }
+        }
+
+        // How monitoring is meant to run: only for one memo, continuously, or unchanged (settings re-applied)
+        when (MonitoringRequest.fromName(intent.getStringExtra(EXTRA_MONITORING_REQUEST))) {
+            // Only if monitoring was off: a memo started while monitoring already runs never ends it
+            MonitoringRequest.ONE_MEMO -> if (!_isServiceRunning.value) stopAfterMemo = true
+            MonitoringRequest.CONTINUOUS -> {
+                stopAfterMemo = false
+                oneMemoStopPending = false
+            }
+            MonitoringRequest.KEEP -> {}
         }
 
         // Parse configurations
@@ -324,13 +359,20 @@ class AudioMonitoringService : Service() {
     private fun startForegroundMonitoring() {
         ensureForegroundNotification()
         _isServiceRunning.value = true
-        RecordingTileService.requestUpdate(this)
+        RecordingEntryPoints.onStateChanged(this)
 
         try {
             wakeLock?.acquire(10 * 60 * 1000L) // 10 minutes rolling
         } catch (_: Exception) {}
 
-        startAudioCaptureLoop()
+        if (memoDetector.currentState == RecordingLifecycleState.RECORDING) {
+            // Restarting capture resets the detector and would discard the memo in progress (e.g. "Keep monitoring on"
+            // or a settings change during a memo): restart once the memo has been finalized
+            captureRestartPending = true
+            updateNotificationStatus(RecordingLifecycleState.RECORDING)
+        } else {
+            startAudioCaptureLoop()
+        }
     }
 
     private fun startAudioCaptureLoop() {
@@ -481,6 +523,8 @@ class AudioMonitoringService : Service() {
                     _currentSessionData.value = historyPoints.toList()
                 }
                 is MemoDetectionEvent.RecordingCompleted -> onRecordingCompleted(event)
+                // The stop phrase arrived after the memo had already ended on its own: confirm "stopped"
+                is MemoDetectionEvent.LateStopPhrase -> playFeedbackCue(FeedbackSoundPlayer.Cue.RECORDING_STOPPED)
                 else -> {}
             }
         }
@@ -611,7 +655,27 @@ class AudioMonitoringService : Service() {
         if (BuildConfig.DEBUG) {
             Log.d("AudioService", "Memo finished: reason=${event.stopReason} removedStopPhraseFrames=${event.removedStopPhraseFrames} durationMs=${event.durationMs}")
         }
-        saveCompletedVoiceNote(event)
+        val saving = saveCompletedVoiceNote(event)
+        if (stopAfterMemo) {
+            captureRestartPending = false
+            // Monitoring was started only for this memo: end it once the memo is saved and the stop chime has played
+            stopAfterMemo = false
+            oneMemoStopPending = true
+            serviceScope.launch {
+                saving.join()
+                delay(if (feedbackSoundsEnabled) feedbackSoundPlayer.cueDurationMs + FEEDBACK_MUTE_TAIL_MS else 0L)
+                withContext(Dispatchers.Main) {
+                    if (!oneMemoStopPending) return@withContext // monitoring was switched on meanwhile
+                    oneMemoStopPending = false
+                    if (memoDetector.currentState == RecordingLifecycleState.RECORDING) {
+                        // Another quick memo started in the meantime: monitoring ends after that one instead
+                        stopAfterMemo = true
+                    } else {
+                        stopSelf()
+                    }
+                }
+            }
+        }
     }
 
     private fun onRecordingStateChanged(state: RecordingLifecycleState) {
@@ -619,13 +683,18 @@ class AudioMonitoringService : Service() {
             wakePhraseReloadPending = false
             loadSavedKeywordTemplate()
         }
+        if (state != RecordingLifecycleState.RECORDING && captureRestartPending) {
+            captureRestartPending = false
+            // Settings that arrived during the memo take effect now (posted: this may run on the capture thread)
+            mainHandler.post { if (_isServiceRunning.value) startAudioCaptureLoop() }
+        }
         _currentRecordingState.value = state
         _isCurrentlyRecording.value = state == RecordingLifecycleState.RECORDING
         if (state != RecordingLifecycleState.RECORDING) _recordingDurationSeconds.value = 0
         updateNotificationStatus(state)
     }
 
-    private fun saveCompletedVoiceNote(event: MemoDetectionEvent.RecordingCompleted) {
+    private fun saveCompletedVoiceNote(event: MemoDetectionEvent.RecordingCompleted): Job =
         serviceScope.launch(Dispatchers.IO) {
             try {
                 val timestamp = System.currentTimeMillis()
@@ -682,12 +751,32 @@ class AudioMonitoringService : Service() {
                 ErrorLogger.log(this@AudioMonitoringService, "AudioService", "Error saving voice note", e)
             }
         }
-    }
 
     private fun applyMatchConfidenceThreshold(intent: Intent) {
         val percent = intent.getIntExtra(EXTRA_MATCH_CONFIDENCE_THRESHOLD_PERCENT, MatchConfidenceThreshold.DEFAULT_PERCENT)
         memoDetector.matchConfidenceThreshold = MatchConfidenceThreshold.toDetectorConfidence(percent)
     }
+
+    /** A monitoring (re)start arrived during a memo; capture restarts after the memo is finalized. */
+    @Volatile
+    private var captureRestartPending = false
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** Monitoring runs only for the current memo (see [oneMemoSession]); it stops after that memo is saved. */
+    @Volatile
+    private var stopAfterMemo = false
+        set(value) {
+            field = value
+            _oneMemoSession.value = value || oneMemoStopPending
+        }
+
+    /** The one memo was saved; the service stops after the stop chime unless monitoring is switched on meanwhile. */
+    @Volatile
+    private var oneMemoStopPending = false
+        set(value) {
+            field = value
+            _oneMemoSession.value = value || stopAfterMemo
+        }
 
     /** Wake-phrase settings changed during a memo; applied when it ends (see ACTION_RELOAD_TEMPLATE). */
     @Volatile
@@ -765,14 +854,14 @@ class AudioMonitoringService : Service() {
                 "Monitoring and recording controls",
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Monitoring status with a Start/Stop memo button, also on the lock screen. Never makes a sound."
+                description = "Monitoring status, with a Start/Stop memo button if recording controls are on. Never makes a sound."
                 setSound(null, null)
                 enableVibration(false)
                 setShowBadge(false)
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
             notificationManager.createNotificationChannel(serviceChannel)
             notificationManager.deleteNotificationChannel(CHANNEL_ID)
+            notificationManager.deleteNotificationChannel(PREVIOUS_CONTROLS_CHANNEL_ID)
 
             val noteChannel = NotificationChannel(
                 CHANNEL_NOTE_ID,
@@ -796,17 +885,11 @@ class AudioMonitoringService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
         )
 
-        val lockScreenControls = ShortcutSettings.lockScreenControlsEnabled(
+        // "Recording controls in the notification and on the lock screen" (Settings): read on every rebuild, and the
+        // notification is rebuilt when the setting changes, so it applies at once
+        val recordingControls = ShortcutSettings.lockScreenControlsEnabled(
             getSharedPreferences(PreferenceKeys.PREFS_NAME, Context.MODE_PRIVATE)
         )
-        val action = if (recording) {
-            NotificationCompat.Action.Builder(R.drawable.ic_stop_memo, "Stop memo", servicePendingIntent(ACTION_STOP_MANUAL_RECORDING, 10))
-        } else {
-            NotificationCompat.Action.Builder(R.drawable.ic_record_memo, "Start memo", servicePendingIntent(ACTION_START_MANUAL_RECORDING, 11))
-        }
-            // Android 12+: with lock-screen controls off, the action asks for the device to be unlocked first
-            .setAuthenticationRequired(!lockScreenControls)
-            .build()
 
         val builder = NotificationCompat.Builder(this, CONTROLS_CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
@@ -819,11 +902,17 @@ class AudioMonitoringService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .addAction(action)
-        if (lockScreenControls) {
+        if (recordingControls) {
+            val action = if (recording) {
+                NotificationCompat.Action.Builder(R.drawable.ic_stop_memo, "Stop memo", servicePendingIntent(ACTION_STOP_MANUAL_RECORDING, 10))
+            } else {
+                NotificationCompat.Action.Builder(R.drawable.ic_record_memo, "Start memo", servicePendingIntent(ACTION_START_MANUAL_RECORDING, 11))
+            }
+            builder.addAction(action.build())
             // Only the status and the Start/Stop button: nothing private is shown on the lock screen
             builder.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         } else {
+            // No Start/Stop button at all (controls off): status only; on the lock screen just the app name
             builder.setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .setPublicVersion(
                     NotificationCompat.Builder(this, CONTROLS_CHANNEL_ID)
@@ -853,7 +942,7 @@ class AudioMonitoringService : Service() {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             notificationManager?.notify(NOTIFICATION_ID, notification)
         } catch (_: Exception) {}
-        RecordingTileService.requestUpdate(this)
+        RecordingEntryPoints.onStateChanged(this)
     }
 
     private fun showNoteSavedNotification(title: String, durationSec: Double) {
@@ -884,9 +973,10 @@ class AudioMonitoringService : Service() {
     }
 
     override fun onDestroy() {
+        _oneMemoSession.value = false
         _engineState.value = MonitoringEngineState.STOPPING
         _isServiceRunning.value = false
-        RecordingTileService.requestUpdate(this)
+        RecordingEntryPoints.onStateChanged(this)
         _liveKeywordConfidence.value = 0f
         _liveLevelDbfs.value = null
         _currentRecordingState.value = RecordingLifecycleState.IDLE
@@ -919,3 +1009,16 @@ class AudioMonitoringService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 }
 
+/** Why monitoring is started (extra [AudioMonitoringService.EXTRA_MONITORING_REQUEST]). */
+enum class MonitoringRequest {
+    /** The user switched monitoring on: it stays on. */
+    CONTINUOUS,
+    /** Quick Memo, tile, widget or launcher shortcut while monitoring was off: monitoring ends with that memo. */
+    ONE_MEMO,
+    /** Settings re-applied to the running service: keep the current mode. */
+    KEEP;
+
+    companion object {
+        fun fromName(name: String?): MonitoringRequest = entries.firstOrNull { it.name == name } ?: CONTINUOUS
+    }
+}
