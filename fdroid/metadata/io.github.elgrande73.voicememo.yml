@@ -4,6 +4,8 @@
 Categories:
   - Multimedia
 License: Apache-2.0
+# MAINTAINER: decide with the reviewers whether an anti-feature applies to the optional, user-started download of the
+# MIT-licensed Whisper base model from Hugging Face (e.g. "AntiFeatures: [NonFreeNet]"); see docs/FDROID.md.
 AuthorName: elgrande73
 SourceCode: https://github.com/elgrande73/FOSS-voice-memo-android-app
 IssueTracker: https://github.com/elgrande73/FOSS-voice-memo-android-app/issues

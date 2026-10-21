@@ -25,7 +25,7 @@ set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 add_subdirectory(${WHISPER_DIR} whisper EXCLUDE_FROM_ALL)
 
 add_library(vmwhisper SHARED voicememo_whisper.cpp)
-target_link_libraries(vmwhisper PRIVATE whisper ggml log android)
+target_link_libraries(vmwhisper PRIVATE whisper ggml log)
 target_compile_options(vmwhisper PRIVATE -O2 -fvisibility=hidden)
 # 16 KB page alignment (Android 15+ devices)
 target_link_options(vmwhisper PRIVATE "-Wl,-z,max-page-size=16384")

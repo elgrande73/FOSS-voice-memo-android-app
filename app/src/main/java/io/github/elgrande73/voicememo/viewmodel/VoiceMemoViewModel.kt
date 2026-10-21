@@ -56,6 +56,9 @@ import io.github.elgrande73.voicememo.playback.MemoPlaybackSequencer
 import io.github.elgrande73.voicememo.playback.PlaybackMode
 import io.github.elgrande73.voicememo.playback.PlaybackCue
 import io.github.elgrande73.voicememo.settings.MatchConfidenceThreshold
+import io.github.elgrande73.voicememo.transcription.ModelDownloadState
+import io.github.elgrande73.voicememo.transcription.ModelDownloads
+import io.github.elgrande73.voicememo.transcription.ModelSource
 import io.github.elgrande73.voicememo.transcription.SpeechModelStore
 import io.github.elgrande73.voicememo.transcription.Transcription
 import io.github.elgrande73.voicememo.transcription.TranscriptionJobState
@@ -1365,7 +1368,7 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
     private val _speechModels = MutableStateFlow<List<SpeechModelSummary>>(emptyList())
     val speechModels: StateFlow<List<SpeechModelSummary>> = _speechModels.asStateFlow()
 
-    private val _activeSpeechModelId = MutableStateFlow<String>(prefs.getString(SpeechModelStore.PREF_ACTIVE_MODEL, null) ?: SpeechModelStore.BUNDLED_ID)
+    private val _activeSpeechModelId = MutableStateFlow<String>(prefs.getString(SpeechModelStore.PREF_ACTIVE_MODEL, null) ?: ModelSource.WHISPER_BASE.id)
     val activeSpeechModelId: StateFlow<String> = _activeSpeechModelId.asStateFlow()
 
     private val _modelMessage = MutableStateFlow<String?>(null)
@@ -1410,16 +1413,54 @@ class VoiceMemoViewModel(application: Application) : AndroidViewModel(applicatio
         prefs.edit().putString(PreferenceKeys.TRANSCRIPTION_QUALITY, quality.name).apply()
     }
 
+    init {
+        // Declared after the model store: reflect an installed or finished download in the model list
+        viewModelScope.launch(Dispatchers.IO) {
+            ModelDownloads.refresh(context)
+            ModelDownloads.state.collect { state ->
+                if (state == ModelDownloadState.Ready) {
+                    refreshSpeechModels()
+                    // Memos that failed only because the model was missing are transcribed now
+                    transcriptionManager.jobs.value
+                        .filter { (_, job) -> (job as? TranscriptionJobState.Failed)?.modelMissing == true }
+                        .keys.forEach { transcriptionManager.enqueue(it) }
+                }
+            }
+        }
+    }
+
+    /** Download of the Whisper base model (Settings); the app contains no speech model. */
+    val modelDownloadState: StateFlow<ModelDownloadState> = ModelDownloads.state
+
+    /** Starts the download (user action only). A running download is not started twice. */
+    fun downloadSpeechModel() {
+        _modelMessage.value = null
+        ModelDownloads.start(context)
+    }
+
+    fun cancelSpeechModelDownload() = ModelDownloads.cancel(context)
+
+    /**
+     * Removes the downloaded model. Queued and running transcriptions are cancelled first (their memos keep their
+     * previous text); transcripts and recordings are not touched.
+     */
+    fun removeDownloadedSpeechModel() {
+        if (ModelDownloads.isRunning) return
+        transcriptionManager.jobs.value.keys.forEach { transcriptionManager.cancel(it) }
+        viewModelScope.launch(Dispatchers.IO) {
+            transcriptionManager.releaseModel()
+            val removed = modelStore.removeDownloaded()
+            ModelDownloads.refresh(context)
+            _modelMessage.value = if (removed) "Speech model removed. Your transcripts and recordings are kept." else null
+            refreshSpeechModels()
+        }
+    }
+
     fun refreshSpeechModels() {
         viewModelScope.launch(Dispatchers.IO) {
-            val list = mutableListOf<SpeechModelSummary>()
-            list += SpeechModelSummary(
-                SpeechModelStore.BUNDLED_ID, SpeechModelStore.BUNDLED_NAME,
-                "Whisper base, multilingual, ${SpeechModelStore.BUNDLED_SIZE / 1_000_000} MB", bundled = true
-            )
-            modelStore.importedModels().forEach { list += SpeechModelSummary(it.id, it.displayName, it.description, bundled = false) }
+            val list = modelStore.installedModels().map { SpeechModelSummary(it.id, it.displayName, it.description, downloaded = it.downloaded) }
             _speechModels.value = list
-            _activeSpeechModelId.value = modelStore.activeModelId.takeIf { id -> list.any { it.id == id } } ?: SpeechModelStore.BUNDLED_ID
+            _activeSpeechModelId.value = modelStore.activeModelOrNull()?.id ?: ModelSource.WHISPER_BASE.id
         }
     }
 
@@ -1550,4 +1591,4 @@ private fun WakePhraseSample.toSummary() = WakePhraseSampleSummary(
 )
 
 /** A speech-to-text model as shown in Settings. */
-data class SpeechModelSummary(val id: String, val name: String, val description: String, val bundled: Boolean)
+data class SpeechModelSummary(val id: String, val name: String, val description: String, val downloaded: Boolean)

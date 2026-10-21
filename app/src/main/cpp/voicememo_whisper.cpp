@@ -2,8 +2,6 @@
 // Audio never leaves the device: samples come from a local WAV file and the text is returned to the app.
 #include <jni.h>
 #ifdef __ANDROID__
-#include <android/asset_manager.h>
-#include <android/asset_manager_jni.h>
 #include <android/log.h>
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, "VoiceMemoWhisper", __VA_ARGS__)
 #else
@@ -47,28 +45,6 @@ whisper_context_params context_params() {
     return params;
 }
 
-#ifdef __ANDROID__
-// Reads the bundled model directly from the (uncompressed) APK asset, so it is not stored a second time
-size_t asset_read(void *ctx, void *output, size_t size) {
-    auto *asset = static_cast<AAsset *>(ctx);
-    size_t done = 0;
-    while (done < size) {
-        int n = AAsset_read(asset, static_cast<char *>(output) + done, size - done);
-        if (n <= 0) break;
-        done += static_cast<size_t>(n);
-    }
-    return done;
-}
-
-bool asset_eof(void *ctx) {
-    return AAsset_getRemainingLength64(static_cast<AAsset *>(ctx)) <= 0;
-}
-
-void asset_close(void *ctx) {
-    AAsset_close(static_cast<AAsset *>(ctx));
-}
-#endif
-
 std::string to_string(JNIEnv *env, jstring s) {
     if (s == nullptr) return {};
     const char *chars = env->GetStringUTFChars(s, nullptr);
@@ -95,26 +71,6 @@ Java_io_github_elgrande73_voicememo_transcription_WhisperNative_systemInfo(JNIEn
 JNIEXPORT jlong JNICALL
 Java_io_github_elgrande73_voicememo_transcription_WhisperNative_init(JNIEnv *env, jobject, jstring modelPath) {
     return wrap(whisper_init_from_file_with_params(to_string(env, modelPath).c_str(), context_params()));
-}
-
-JNIEXPORT jlong JNICALL
-Java_io_github_elgrande73_voicememo_transcription_WhisperNative_initFromAsset(
-        JNIEnv *env, jobject, jobject assetManager, jstring assetPath) {
-#ifdef __ANDROID__
-    AAssetManager *manager = AAssetManager_fromJava(env, assetManager);
-    if (manager == nullptr) return 0;
-    AAsset *asset = AAssetManager_open(manager, to_string(env, assetPath).c_str(), AASSET_MODE_STREAMING);
-    if (asset == nullptr) return 0;
-    whisper_model_loader loader = {};
-    loader.context = asset;
-    loader.read = asset_read;
-    loader.eof = asset_eof;
-    loader.close = asset_close;
-    return wrap(whisper_init_with_params(&loader, context_params()));
-#else
-    (void) env; (void) assetManager; (void) assetPath;
-    return 0;
-#endif
 }
 
 JNIEXPORT void JNICALL

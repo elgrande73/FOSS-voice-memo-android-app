@@ -39,7 +39,7 @@ data class TranscriptionSettings(
 data class TranscriptResult(val text: String, val language: String, val modelId: String, val processingMs: Long)
 
 class TranscriptionException(val kind: Kind, message: String) : Exception(message) {
-    enum class Kind { NOT_AVAILABLE, MODEL, AUDIO, CANCELLED, FAILED }
+    enum class Kind { NOT_AVAILABLE, MODEL, MODEL_MISSING, AUDIO, CANCELLED, FAILED }
 }
 
 /** Engine-independent pre- and post-processing of transcripts. */
@@ -116,16 +116,14 @@ class WhisperTranscriber(
         }
         val model = try {
             modelProvider()
+        } catch (e: SpeechModelMissingException) {
+            throw TranscriptionException(TranscriptionException.Kind.MODEL_MISSING, SpeechModelMissingException.MISSING_MESSAGE)
         } catch (e: Exception) {
             throw TranscriptionException(TranscriptionException.Kind.MODEL, e.message ?: "The speech model could not be prepared.")
         }
         if (handle == 0L || loadedModelId != model.id) {
             release()
-            handle = when {
-                model.assetPath != null -> WhisperNative.initFromAsset(context.assets, model.assetPath)
-                model.file != null -> WhisperNative.init(model.file.absolutePath)
-                else -> 0L
-            }
+            handle = WhisperNative.init(model.file.absolutePath)
             if (handle == 0L) {
                 throw TranscriptionException(TranscriptionException.Kind.MODEL, "The speech model could not be loaded (not enough memory, or a damaged file).")
             }

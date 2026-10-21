@@ -11,6 +11,8 @@ import io.github.elgrande73.voicememo.settings.PreferenceKeys
 import io.github.elgrande73.voicememo.transcription.CancelToken
 import io.github.elgrande73.voicememo.transcription.GgmlModelInfo
 import io.github.elgrande73.voicememo.transcription.SpeechModelStore
+import io.github.elgrande73.voicememo.transcription.SpeechModelMissingException
+import io.github.elgrande73.voicememo.transcription.ModelSource
 import io.github.elgrande73.voicememo.transcription.SpeechTranscriber
 import io.github.elgrande73.voicememo.transcription.TranscriptResult
 import io.github.elgrande73.voicememo.transcription.Transcription
@@ -94,7 +96,12 @@ class TranscriptionTest {
         override fun release() { releases.incrementAndGet() }
     }
 
-    private fun manager(engine: SpeechTranscriber, idleUnloadMs: Long = 60_000, timeoutMs: Long? = null) = TranscriptionManager(
+    private fun manager(
+        engine: SpeechTranscriber,
+        idleUnloadMs: Long = 60_000,
+        timeoutMs: Long? = null,
+        worker: kotlinx.coroutines.CoroutineDispatcher = this.worker
+    ) = TranscriptionManager(
         dao = db.voiceNoteDao(), transcriberFactory = { engine }, settings = { TranscriptionSettings() },
         scope = CoroutineScope(SupervisorJob()), worker = worker, idleUnloadMs = idleUnloadMs,
         timeoutMs = { s -> timeoutMs ?: TranscriptionManager.MIN_TIMEOUT_MS }
@@ -244,7 +251,7 @@ class TranscriptionTest {
         var calls = 0
         val engine = FakeEngine { _, _ ->
             calls++
-            if (calls == 1) throw UnsatisfiedLinkError("No implementation found for initFromAsset")
+            if (calls == 1) throw UnsatisfiedLinkError("No implementation found for init")
             TranscriptResult("second ok", "en", "m", 1)
         }
         val m = manager(engine)
@@ -273,14 +280,24 @@ class TranscriptionTest {
     @Test
     fun queuedStateIsStoredAndResumedAfterRestart() {
         val id = insert(speechWav())
-        val first = manager(blockingEngine(maxMs = 300))
+        // The first "process" hangs in the engine and never writes again (as if it had been killed)
+        val first = manager(blockingEngine(maxMs = 10_000))
         first.enqueue(id)
         waitFor { note(id)?.transcriptionStatus == TranscriptionStatus.PENDING }
-        // "Process death": a new manager finds the memo still queued and finishes it
-        val restarted = manager(FakeEngine { _, _ -> TranscriptResult("after restart", "en", "m", 1) })
-        restarted.resumePending()
-        waitFor { note(id)?.transcriptionStatus == TranscriptionStatus.COMPLETED }
+        // "Process death": a new manager (own worker, like a new process) finds the memo still queued and finishes it
+        val secondExecutor = Executors.newSingleThreadExecutor()
+        try {
+            val restarted = manager(FakeEngine { _, _ -> TranscriptResult("after restart", "en", "m", 1) }, worker = secondExecutor.asCoroutineDispatcher())
+            restarted.resumePending()
+            waitFor { note(id)?.transcriptionStatus == TranscriptionStatus.COMPLETED }
+            assertEquals("after restart", note(id)!!.transcriptionText)
+        } finally {
+            first.cancel(id) // release the hung test engine; a cancel never changes a completed memo
+            secondExecutor.shutdownNow()
+        }
+        waitFor { first.jobs.value.isEmpty() }
         assertEquals("after restart", note(id)!!.transcriptionText)
+        assertEquals(TranscriptionStatus.COMPLETED, note(id)!!.transcriptionStatus)
     }
 
     @Test
@@ -373,15 +390,51 @@ class TranscriptionTest {
     }
 
     @Test
-    fun bundledModelIsTheRecordedFileAndIsReadInPlace() {
-        val model = store().bundledModel()
-        assertEquals("base", model.info.sizeName)
-        assertTrue(model.info.multilingual)
-        assertNull("not copied to storage", model.file)
-        // The asset shipped in the APK is exactly the file documented in scripts/whisper-model/README.md
-        val sha = app.assets.open(SpeechModelStore.BUNDLED_ASSET_PATH).use { SpeechModelStore.sha256(it) }
-        assertEquals(SpeechModelStore.BUNDLED_SHA256, sha)
-        assertEquals(SpeechModelStore.BUNDLED_SIZE, app.assets.openFd(SpeechModelStore.BUNDLED_ASSET_PATH).use { it.length })
+    fun withoutAModelTranscriptionFailsAtOnceWithTheDownloadHint() {
+        val s = store()
+        assertNull(s.activeModelOrNull())
+        assertTrue(runCatching { s.activeModel() }.exceptionOrNull() is SpeechModelMissingException)
+        // The manager ends the job at once with an actionable state; after the download a retry works
+        val id = insert(speechWav())
+        var installed = false
+        val engine = FakeEngine { _, _ ->
+            if (!installed) throw TranscriptionException(TranscriptionException.Kind.MODEL_MISSING, SpeechModelMissingException.MISSING_MESSAGE)
+            TranscriptResult("now it works", "en", "m", 1)
+        }
+        val m = manager(engine)
+        m.enqueue(id)
+        waitFor { m.jobs.value[id] is TranscriptionJobState.Failed }
+        val failed = m.jobs.value[id] as TranscriptionJobState.Failed
+        assertTrue(failed.modelMissing)
+        assertTrue(failed.message.contains("Download Whisper base"))
+        assertEquals(TranscriptionStatus.FAILED, note(id)!!.transcriptionStatus)
+        installed = true
+        m.enqueue(id)
+        waitFor { note(id)?.transcriptionStatus == TranscriptionStatus.COMPLETED }
+        assertEquals("now it works", note(id)!!.transcriptionText)
+    }
+
+    @Test
+    fun aDownloadedModelIsUsedAfterRegistrationAndRemovalKeepsEverythingElse() {
+        val s = store()
+        val dir = s.downloadDirectory.apply { mkdirs() }
+        val file = File(dir, ModelSource.WHISPER_BASE.fileName).apply { writeBytes(fakeBase()) }
+        assertNull("not registered yet (e.g. a download that is still being checked)", s.downloadedModel())
+        s.registerDownload(file, SpeechModelStore.sha256(file))
+        assertEquals(ModelSource.WHISPER_BASE.id, s.activeModel().id)
+        assertTrue(s.activeModel().downloaded)
+        // A truncated file is never used
+        file.writeBytes(fakeBase().copyOf(100))
+        assertNull(s.downloadedModel())
+        file.writeBytes(fakeBase())
+        assertEquals(ModelSource.WHISPER_BASE.id, s.activeModel().id)
+        // Removing it leaves imported models and all other data alone
+        val imported = s.import(fakeGgml(4).inputStream(), "My tiny", 4096) { true } as SpeechModelStore.ImportResult.Imported
+        val unrelated = File(app.filesDir, "memos/keep.wav").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
+        assertTrue(s.removeDownloaded())
+        assertNull(s.downloadedModel())
+        assertEquals(imported.model.id, s.activeModel().id)
+        assertTrue(unrelated.exists())
     }
 
     @Test
@@ -390,7 +443,7 @@ class TranscriptionTest {
         assertTrue(s.import("not a model".byteInputStream(), "x", 11) { true } is SpeechModelStore.ImportResult.Rejected)
         assertTrue(s.import(fakeGgml(1).inputStream(), "broken", 4096) { false } is SpeechModelStore.ImportResult.Rejected)
         assertTrue(s.importedModels().isEmpty())
-        assertEquals(SpeechModelStore.BUNDLED_ID, s.activeModel().id)
+        assertNull(s.activeModelOrNull())
         // No partial files are left behind
         assertTrue(File(app.noBackupFilesDir, "${SpeechModelStore.DIRECTORY_NAME}/imported").listFiles()!!.isEmpty())
 
@@ -398,13 +451,18 @@ class TranscriptionTest {
         assertEquals("tiny", ok.model.info.sizeName)
         assertTrue(s.import(fakeGgml(2).inputStream(), "again", 4096) { true } is SpeechModelStore.ImportResult.Rejected)
         assertEquals(listOf("My tiny"), s.importedModels().map { it.displayName })
-        // Selecting it does not delete anything; removing it falls back to the included model
         s.activeModelId = ok.model.id
         assertEquals(ok.model.id, s.activeModel().id)
         assertTrue(s.delete(ok.model.id))
-        assertEquals(SpeechModelStore.BUNDLED_ID, s.activeModel().id)
-        assertFalse(s.delete(SpeechModelStore.BUNDLED_ID))
-        assertEquals(SpeechModelStore.BUNDLED_ID, s.bundledModel().id)
+        assertNull(s.activeModelOrNull())
+    }
+
+    /** A file with a Whisper base (multilingual) header. */
+    private fun fakeBase(): ByteArray {
+        val b = java.nio.ByteBuffer.allocate(4096).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        b.putInt(0x67676d6c)
+        intArrayOf(51865, 1500, 512, 8, 6, 448, 512, 8, 6, 80, 8).forEach { b.putInt(it) }
+        return b.array()
     }
 
     @Test

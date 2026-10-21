@@ -3,6 +3,8 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Only for the speech model download the user starts in Settings (see docs/TRANSCRIPTION.md) -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- Transcription runs in a foreground service while memos are queued (Android 10–14 / 15+ service types) -->
@@ -16,6 +18,7 @@
 
     <application
         android:allowBackup="true"
+        android:usesCleartextTraffic="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
@@ -27,6 +30,10 @@
         <service
             android:name=".transcription.TranscriptionService"
             android:foregroundServiceType="dataSync|mediaProcessing"
+            android:exported="false" />
+        <service
+            android:name=".transcription.ModelDownloadService"
+            android:foregroundServiceType="dataSync"
             android:exported="false" />
 
         <service

@@ -14,8 +14,8 @@ the app has been accepted by F-Droid. Inclusion is decided by the F-Droid review
 | Build plugins | Android Gradle Plugin, Kotlin, Compose compiler, KSP (Room), Roborazzi (tests only), Foojay toolchain resolver (settings plugin; only downloads a JDK if a toolchain is requested, none is). | ✅ (Foojay: see risks) |
 | Build | `./gradlew assembleRelease` from source with the Android SDK, **NDK r28c (28.2.13676358)** and CMake 3.31.6; the git submodule `third_party/whisper.cpp` (MIT, pinned to v1.9.5) must be checked out (`submodules: true`). No credentials, API keys, `.env` files or prebuilt native libraries. Dependency metadata is excluded from the APK/AAB (`dependenciesInfo`). | ✅ (verify on the F-Droid build server) |
 | Native code | whisper.cpp/ggml compiled from source for arm64-v8a, armeabi-v7a and x86_64 (`app/src/main/cpp`). 16 KB page alignment. | ✅ |
-| Bundled model | `app/src/main/assets/models/ggml-base-q5_0.bin` (55 MB, OpenAI Whisper base weights, MIT). Not built during the app build; it is a data file reproducible byte for byte with `scripts/whisper-model/build-bundled-model.sh` from a public GitHub release asset (all checksums pinned). F-Droid reviewers may ask for it to be built in the recipe instead (needs Python, ~200 MB download). | ⚠️ review |
-| Network / tracking | No `INTERNET` permission, no networking code, no analytics, no ads, no runtime downloads of code, models or assets. Extra speech models can only be imported from a file the user selects. | ✅ |
+| Speech model | Not in the APK or the repository. The user downloads OpenAI Whisper base (MIT) as whisper.cpp's `ggml-base.bin` (142 MiB) from the whisper.cpp project on Hugging Face with *Settings → Download Whisper Base model*; it is verified against the SHA-1 published in the pinned whisper.cpp submodule before use. | ⚠️ review |
+| Network / tracking | `INTERNET` permission **only** for that model download, which runs only after an explicit user action (HTTPS, no cleartext; no other networking code, no analytics, no ads, no downloads of code). Recording, wake phrase, playback and transcription with an installed model work offline. Extra models can also be imported from a file. | ⚠️ reviewers decide (possible *NonFreeNet* anti-feature because the file is hosted on Hugging Face) |
 | Assets | Launcher icon: original artwork (`artwork/icon`), Apache-2.0. Chimes: synthesized at runtime, no audio files. The previous icon bitmap (`img_app_icon.jpg`, unknown provenance) was removed. | ✅ |
 | Test fixtures | `app/src/test/resources/audio`: synthetic speech generated with eSpeak NG (GPL-3.0-or-later tool, used offline once; not a build dependency and not packaged into the APK). Regeneration script included. | ✅ (reviewers may check) |
 | Audio processing | Noise suppression, noise-floor estimation and wake-phrase detection are implemented in Kotlin on platform APIs. Speech-to-text runs locally with whisper.cpp (see `docs/TRANSCRIPTION.md`). | ✅ |
@@ -37,7 +37,7 @@ the app has been accepted by F-Droid. Inclusion is decided by the F-Droid review
 4. **Screenshots**: add phone screenshots to `fastlane/metadata/android/en-US/images/phoneScreenshots/`.
 5. **Submit** the metadata as a merge request to fdroiddata and run `fdroid lint` / `fdroid build` there (or with
    `fdroidserver` locally). These checks were not run in this repository.
-6. **Old app**: decide what happens to the Ciao Linda listing (`com.aistudio.ciaolinda`), e.g. mark it as superseded.
+6. **Old app**: decide what happens to the listing of the previous application ID (`com.aistudio.ciaolinda`), e.g. mark it as superseded.
    Users must install Voice Memo separately; their old data does not migrate automatically (see README).
 
 ## Remaining risks
@@ -47,10 +47,11 @@ the app has been accepted by F-Droid. Inclusion is decided by the F-Droid review
   the maintainer's agreement.
 - **Gradle wrapper**: `gradle/wrapper/gradle-wrapper.jar` is a binary; F-Droid's `gradle: yes` uses its own Gradle and
   ignores it. The wrapper download is pinned with `distributionSha256Sum`.
-- **Bundled model file**: a 55 MB binary data file in the repository (see the table). Its licence (MIT) and provenance
-  are documented in `THIRD_PARTY_NOTICES.md` and `docs/TRANSCRIPTION.md`.
-- **APK size**: about 68 MB (release, all three ABIs). Per-ABI splits would reduce downloads; not configured yet.
+- **Model download host**: Hugging Face (whisper.cpp's official files). F-Droid may prefer a different host or flag the
+  download; the source URL and checksum are constants in `ModelDownloader.kt` (`ModelSource.WHISPER_BASE`). The git
+  history still contains the formerly bundled 55 MB model file.
+- **APK size**: 12.8 MB (release, unsigned, all three ABIs), measured; the model download adds 142 MiB of app storage.
 - **Default wake phrase quality**: the built-in "Mango Tango" reference is made from synthetic speech (eSpeak NG
-  features, no audio) and recognises only some voices; the older "Ciao Linda" one (kept for existing installations) is
-  synthesized from tones. Recording the phrase in one's own voice (Settings → Wake Phrase) is recommended. Detection accuracy
+  features, no audio) and recognises only some voices. Recording the phrase in one's own voice (Settings → Wake Phrase)
+  is recommended. Detection accuracy
   and its limitations are documented in `docs/WAKE_PHRASE_DETECTION.md`.

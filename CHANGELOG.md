@@ -3,19 +3,28 @@
 ## Unreleased — Voice Memo 1.0 (versionCode 1)
 
 First release under the new name **Voice Memo** and the new application ID `io.github.elgrande73.voicememo`
-(previously **Ciao Linda**, `com.aistudio.ciaolinda`). Android installs it as a separate app; data of the old app is
-not accessible to it (see README, "New application identity").
+(previously `com.aistudio.ciaolinda`). Android installs it as a separate app; data of the old app is not accessible
+to it (see README, "New application identity").
 
-### Added (wake phrase, detection model, history)
-- New default wake phrase **"Mango Tango"** for new installations, with a built-in reference made from synthetic
-  speech. Existing installations keep "Ciao Linda"; both can be chosen under Settings → Wake Phrase. Recorded samples
-  are unchanged and still take precedence. The previous built-in "Ciao Linda" reference never matched spoken
-  "Ciao Linda" in the fixtures (score 0.00); the new one detects 16 of 60 held-out synthetic voices at 50 % with no
-  false triggers on conversation (`docs/WAKE_PHRASE_DETECTION.md`, section 15).
-- Settings → Wake-Word Detection Model: *Standard* (default, unchanged) or *Speech-checked*, which confirms each
-  utterance with the bundled offline Whisper model (no download). It works without recorded samples and for typed
-  custom phrases, falls back to Standard with a visible reason, and switches only between memos. Measured trade-off:
-  more voices recognised without samples (27/60 vs 16/60) but more near misses (9/48 vs 0/48); see section 16.
+### Changed (since pre-release v0.0.2)
+- **Smaller app, model downloaded on request:** the speech model is no longer inside the app. *Settings → On-device
+  transcription → Download Whisper Base model* downloads OpenAI Whisper base (MIT, 142 MiB, whisper.cpp's official
+  file) once, with progress, Cancel, resume after interruptions, checksum and test load before use, and a Remove
+  action. Release APK: 12.8 MB instead of 68.1 MB (measured, unsigned, all ABIs). The `INTERNET` permission is used
+  only for this download; everything else works offline. Without a model, transcription fails at once with a
+  *Download speech model* action instead of waiting; memos that failed for that reason are transcribed after the
+  download. Imported models keep working. Existing transcripts and recordings are unchanged.
+- **One wake phrase, one detector:** "Mango Tango" is the only built-in wake phrase (the earlier built-in phrase and
+  its selector were removed; its reference never matched real speech in the fixtures). Recorded samples of any phrase
+  keep working and take precedence. The experimental speech-checked detection model was removed; template matching is
+  the only detector again. Settings migration v4 drops the removed settings and shows upgraded installations a
+  one-time notice. Wake-phrase measurements were redone on a new "Mango Tango" fixture set
+  (`docs/WAKE_PHRASE_DETECTION.md`).
+
+### Added (wake phrase, history)
+- Default wake phrase **"Mango Tango"** with a built-in reference made from synthetic speech of five voices: detects
+  16 of 60 held-out synthetic voices at 50 % with no false triggers on conversation; recording the phrase in one's own
+  voice is recommended (22–25 of 36) (`docs/WAKE_PHRASE_DETECTION.md`, section 15).
 - History: *Manual* filter next to *Wake Phrase* (combinable; Today/Favorites narrow further); playback mode
   *Autoplay* (default, as before) or *Single*, remembered; the list scrolls to keep the playing memo and its button
   visible in Autoplay.
@@ -31,11 +40,10 @@ not accessible to it (see README, "New application identity").
   explicit states (waiting, transcribing n %, failed with Retry), and resumes queued memos after a restart.
 
 ### Added (offline speech-to-text and audio level)
-- On-device transcription of saved memos with whisper.cpp (built from source) and the bundled multilingual OpenAI
-  Whisper "base" model (55 MB, MIT): transcribe, cancel, retry, edit and delete transcripts in History; optional
-  automatic transcription of new memos (off by default); language and quality settings; optional import of other
-  whisper.cpp model files (validated and test-loaded before use). No download, no network permission.
-  See `docs/TRANSCRIPTION.md`.
+- On-device transcription of saved memos with whisper.cpp (built from source) and the multilingual OpenAI Whisper
+  "base" model (MIT; downloaded from Settings, see above): transcribe, cancel, retry, edit and delete transcripts in
+  History; optional automatic transcription of new memos (off by default); language and quality settings; optional
+  import of other whisper.cpp model files (validated and test-loaded before use). See `docs/TRANSCRIPTION.md`.
 - Optional *Minimum audio level* (dBFS) for the wake phrase, measured on the spoken phrase and applied identically to
   starting and stopping. New installations: on, −50 dBFS; existing installations keep their previous level.
 
@@ -51,7 +59,7 @@ not accessible to it (see README, "New application identity").
 - Levels are shown in dBFS (digital level) instead of an uncalibrated "dB" scale.
 - The device's system speech recogniser is no longer used (it listened to the microphone instead of transcribing the
   saved memo and could be proprietary or online).
-- The app now contains native code for arm64-v8a, armeabi-v7a and x86_64 only; the release APK is about 68 MB.
+- The app contains native code for arm64-v8a, armeabi-v7a and x86_64 only; the release APK is 12.8 MB (measured; without the speech model).
 
 ### Added (recording controls)
 - Large round Quick Memo / Stop Memo button at the bottom centre of the dashboard (96 dp, distinct colour, symbol and

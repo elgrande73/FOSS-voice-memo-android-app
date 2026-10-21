@@ -58,69 +58,87 @@ data class GgmlModelInfo(
     }
 }
 
-/** A speech-to-text model available on this device: the bundled one (an APK asset) or an imported file. */
+/** A speech-to-text model on this device: the downloaded Whisper base model or a file the user imported. */
 data class SpeechModel(
     val id: String,
     val displayName: String,
-    /** Path inside the APK's assets for the bundled model, otherwise null. */
-    val assetPath: String?,
-    /** Model file for imported models, otherwise null. */
-    val file: File?,
+    val file: File,
     val sizeBytes: Long,
     val sha256: String,
-    val bundled: Boolean,
+    /** True for the model downloaded from Settings ([ModelSource.WHISPER_BASE]). */
+    val downloaded: Boolean,
     val info: GgmlModelInfo
 ) {
     val description: String
         get() = "Whisper ${info.sizeName}, ${if (info.multilingual) "multilingual" else "English only"}, ${sizeBytes / 1_000_000} MB"
 }
 
-/**
- * Speech models on the device. The default model ships uncompressed inside the APK and is read from there directly
- * (no second copy; its integrity is covered by the APK signature, and its SHA-256 is checked by a unit test). Further
- * whisper.cpp models can be imported from a file the user selects;
- * they are validated (header, checksum recorded, test load) before they can be used, and a failed import never
- * changes the working model. Nothing is downloaded by the app and models are excluded from backups.
- */
-/** InputStream.readNBytes is API 33+; this works on all supported versions. */
-private fun InputStream.readNBytesCompat(n: Int): ByteArray {
-    val out = ByteArray(n)
-    var done = 0
-    while (done < n) {
-        val r = read(out, done, n - done)
-        if (r < 0) break
-        done += r
+/** No speech model is installed: transcription needs the model download (Settings) first. */
+class SpeechModelMissingException : IOException(MISSING_MESSAGE) {
+    companion object {
+        const val MISSING_MESSAGE = "No speech model is installed. Download Whisper base in Settings → Speech-to-Text."
     }
-    return out.copyOf(done)
 }
 
+/**
+ * Speech models on the device, in `noBackupFilesDir/speech_models` (app-private, excluded from backups):
+ * - `downloaded/`: Whisper base, downloaded on the user's request from Settings ([ModelDownloader]) and verified before
+ *   use; it stays until the user removes it (survives restarts and app updates).
+ * - `imported/`: further whisper.cpp models the user imported from a file; validated (header, checksum recorded, test
+ *   load) before use. A failed import never changes the working model.
+ * The app contains no model: without one, transcription reports [SpeechModelMissingException].
+ */
 class SpeechModelStore(
     private val context: Context,
     private val prefs: SharedPreferences,
     private val directory: File = File(context.noBackupFilesDir, DIRECTORY_NAME)
 ) {
     private val importedDirectory = File(directory, "imported")
+    /** Where [ModelSource.WHISPER_BASE] is downloaded to. */
+    val downloadDirectory = File(directory, "downloaded")
 
     sealed interface ImportResult {
         data class Imported(val model: SpeechModel) : ImportResult
         data class Rejected(val reason: String) : ImportResult
     }
 
-    private var bundled: SpeechModel? = null
-
-    /** The bundled model (read from the APK assets). */
-    @Synchronized
-    fun bundledModel(): SpeechModel {
-        bundled?.let { return it }
-        val header = File.createTempFile("model-header", ".bin", context.cacheDir)
-        try {
-            context.assets.open(BUNDLED_ASSET_PATH).use { input -> header.writeBytes(input.readNBytesCompat(64)) }
-            val info = GgmlModelInfo.read(header) ?: throw IOException("Bundled speech model is unreadable")
-            return SpeechModel(BUNDLED_ID, BUNDLED_NAME, BUNDLED_ASSET_PATH, null, BUNDLED_SIZE, BUNDLED_SHA256, bundled = true, info = info)
-                .also { bundled = it }
-        } finally {
-            header.delete()
+    /** The downloaded Whisper base model, or null if it is not (completely) installed. */
+    fun downloadedModel(): SpeechModel? {
+        val source = ModelSource.WHISPER_BASE
+        val meta = File(downloadDirectory, META_FILE)
+        val file = File(downloadDirectory, source.fileName)
+        if (!meta.isFile || !file.isFile) return null
+        return try {
+            val json = JSONObject(meta.readText())
+            if (file.length() != json.getLong("size")) return null
+            val info = GgmlModelInfo.read(file) ?: return null
+            SpeechModel(source.id, source.displayName, file, file.length(), json.getString("sha256"), true, info)
+        } catch (e: Exception) {
+            Log.w(TAG, "Ignoring unreadable download metadata", e)
+            null
         }
+    }
+
+    /** Records a model the downloader verified and installed; from now on it can be used. */
+    @Synchronized
+    fun registerDownload(file: File, sha256: String) {
+        File(downloadDirectory, META_FILE).writeText(
+            JSONObject().put("id", ModelSource.WHISPER_BASE.id).put("file", file.name).put("size", file.length())
+                .put("sha256", sha256).put("sha1", ModelSource.WHISPER_BASE.sha1).put("url", ModelSource.WHISPER_BASE.url)
+                .put("downloadedAt", System.currentTimeMillis()).toString()
+        )
+    }
+
+    /**
+     * Removes the downloaded model (and any partial download). Transcripts and recordings are not affected. The caller
+     * makes sure no transcription is using it (TranscriptionManager.releaseModel).
+     */
+    @Synchronized
+    fun removeDownloaded(): Boolean {
+        val existed = downloadedModel() != null
+        File(downloadDirectory, META_FILE).delete()
+        downloadDirectory.listFiles()?.forEach { it.delete() }
+        return existed
     }
 
     /** Imported models (metadata files without a matching, intact model file are ignored). */
@@ -132,7 +150,7 @@ class SpeechModelStore(
                 val file = File(importedDirectory, json.getString("file"))
                 val info = GgmlModelInfo.read(file) ?: return@mapNotNull null
                 if (file.length() != json.getLong("size")) return@mapNotNull null
-                SpeechModel(json.getString("id"), json.getString("name"), null, file, file.length(), json.getString("sha256"), false, info)
+                SpeechModel(json.getString("id"), json.getString("name"), file, file.length(), json.getString("sha256"), false, info)
             } catch (e: Exception) {
                 Log.w(TAG, "Ignoring unreadable model metadata ${meta.name}", e)
                 null
@@ -140,16 +158,21 @@ class SpeechModelStore(
         }.sortedBy { it.displayName.lowercase() }
     }
 
+    /** Every installed model: the downloaded one first, then imported ones. */
+    fun installedModels(): List<SpeechModel> = listOfNotNull(downloadedModel()) + importedModels()
+
     var activeModelId: String
-        get() = prefs.getString(PREF_ACTIVE_MODEL, BUNDLED_ID) ?: BUNDLED_ID
+        get() = prefs.getString(PREF_ACTIVE_MODEL, ModelSource.WHISPER_BASE.id) ?: ModelSource.WHISPER_BASE.id
         set(value) { prefs.edit().putString(PREF_ACTIVE_MODEL, value).apply() }
 
-    /** The selected model, or the bundled one if the selection is missing or no longer valid. */
-    fun activeModel(): SpeechModel {
-        val id = activeModelId
-        if (id != BUNDLED_ID) importedModels().firstOrNull { it.id == id }?.let { return it }
-        return bundledModel()
+    /** The selected model, or the first installed one if the selection is missing; null if no model is installed. */
+    fun activeModelOrNull(): SpeechModel? {
+        val installed = installedModels()
+        return installed.firstOrNull { it.id == activeModelId } ?: installed.firstOrNull()
     }
+
+    /** Like [activeModelOrNull], but reports a missing model as [SpeechModelMissingException]. */
+    fun activeModel(): SpeechModel = activeModelOrNull() ?: throw SpeechModelMissingException()
 
     /**
      * Copies [input] to a temporary file, validates it and only then makes it available. [verifyLoad] performs a test
@@ -180,7 +203,7 @@ class SpeechModelStore(
             val info = GgmlModelInfo.read(temp)
                 ?: return ImportResult.Rejected("This is not a whisper.cpp model (ggml .bin file).")
             val sha = digest.digest().joinToString("") { "%02x".format(it) }
-            if (sha == BUNDLED_SHA256 || importedModels().any { it.sha256 == sha }) {
+            if (installedModels().any { it.sha256 == sha }) {
                 return ImportResult.Rejected("This model is already installed.")
             }
             if (!verifyLoad(temp)) return ImportResult.Rejected("The model could not be loaded (damaged file, or not enough memory).")
@@ -192,7 +215,7 @@ class SpeechModelStore(
                 JSONObject().put("id", id).put("name", name).put("file", target.name).put("size", target.length())
                     .put("sha256", sha).put("importedAt", System.currentTimeMillis()).toString()
             )
-            return ImportResult.Imported(SpeechModel(id, name, null, target, target.length(), sha, false, info))
+            return ImportResult.Imported(SpeechModel(id, name, target, target.length(), sha, false, info))
         } catch (e: IOException) {
             Log.w(TAG, "Model import failed", e)
             return ImportResult.Rejected("The file could not be read.")
@@ -201,27 +224,20 @@ class SpeechModelStore(
         }
     }
 
-    /** Removes an imported model; the bundled one cannot be removed. Falls back to the bundled model if it was active. */
+    /** Removes an imported model. The downloaded model is removed with [removeDownloaded]. */
     @Synchronized
     fun delete(id: String): Boolean {
-        if (id == BUNDLED_ID) return false
         val model = importedModels().firstOrNull { it.id == id } ?: return false
-        if (activeModelId == id) activeModelId = BUNDLED_ID
+        if (activeModelId == id) activeModelId = ModelSource.WHISPER_BASE.id
         File(importedDirectory, "$id.json").delete()
-        return model.file?.delete() ?: false
+        return model.file.delete()
     }
 
     companion object {
         private const val TAG = "SpeechModelStore"
         const val DIRECTORY_NAME = "speech_models"
         const val PREF_ACTIVE_MODEL = "transcriptionModelId"
-
-        const val BUNDLED_ID = "bundled-whisper-base-q5_0"
-        const val BUNDLED_NAME = "Whisper base (included)"
-        const val BUNDLED_ASSET_PATH = "models/ggml-base-q5_0.bin"
-        /** See scripts/whisper-model/README.md for how this file is reproduced. */
-        const val BUNDLED_SHA256 = "1dfdc5f732fa9be0107f46803c6b25c02b625c80b72a89541f23568bec00bea5"
-        const val BUNDLED_SIZE = 55_295_433L
+        private const val META_FILE = "model.json"
 
         const val MAX_IMPORT_BYTES = 1_700_000_000L
         private const val FREE_SPACE_MARGIN = 200_000_000L

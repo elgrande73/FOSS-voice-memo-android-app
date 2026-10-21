@@ -44,8 +44,6 @@ object WhisperNative {
     external fun systemInfo(): String
     /** Returns a handle, or 0 if the model could not be loaded (invalid file, not enough memory). */
     external fun init(modelPath: String): Long
-    /** Loads a model stored uncompressed in the APK's assets (no copy on disk); 0 on failure. */
-    external fun initFromAsset(assetManager: android.content.res.AssetManager, assetPath: String): Long
     external fun free(handle: Long)
     external fun requestAbort(handle: Long)
     /** Progress of the running transcription in percent (whisper.cpp's progress callback). */

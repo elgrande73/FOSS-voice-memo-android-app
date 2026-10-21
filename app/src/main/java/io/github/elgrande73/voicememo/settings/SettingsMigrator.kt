@@ -19,10 +19,6 @@ object PreferenceKeys {
     const val WAKE_PHRASE_MIN_LEVEL_DBFS = "wakePhraseMinLevelDbfs"
     /** History playback mode (PlaybackMode.id); absent means the default. */
     const val HISTORY_PLAYBACK_MODE = "historyPlaybackMode"
-    /** Wake-word detection backend (WakeWordModel.id); absent means Standard. */
-    const val WAKE_WORD_MODEL = "wakeWordModel"
-    /** Words of the user's recorded wake phrase (needed by the speech check); absent means not entered. */
-    const val RECORDED_WAKE_PHRASE_TEXT = "recordedWakePhraseText"
     /** True until the user dismissed the notice that the built-in wake phrase changed (set by migration v4). */
     const val WAKE_PHRASE_CHANGED_NOTICE = "wakePhraseChangedNotice"
     /** Loudness-only activation threshold, VAD dB scale (dBFS + 90). Key predates the versioned settings. */

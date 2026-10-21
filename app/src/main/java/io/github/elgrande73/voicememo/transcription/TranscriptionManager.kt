@@ -26,7 +26,7 @@ sealed interface TranscriptionJobState {
     /** Running; [progress] in percent as reported by the engine (0 until it reports). */
     data class Running(val progress: Int = 0) : TranscriptionJobState
     /** The last attempt failed in this session; the database holds [TranscriptionStatus.FAILED]. */
-    data class Failed(val message: String) : TranscriptionJobState
+    data class Failed(val message: String, val modelMissing: Boolean = false) : TranscriptionJobState
 }
 
 /**
@@ -192,7 +192,7 @@ class TranscriptionManager(
                 null
             } else {
                 markFailed(noteId)
-                TranscriptionJobState.Failed(e.message ?: "Transcription failed.")
+                TranscriptionJobState.Failed(e.message ?: "Transcription failed.", modelMissing = e.kind == TranscriptionException.Kind.MODEL_MISSING)
             }
         } catch (e: OutOfMemoryError) {
             releaseQuietly()

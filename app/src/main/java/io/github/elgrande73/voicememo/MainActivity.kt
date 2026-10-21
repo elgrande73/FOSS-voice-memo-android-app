@@ -43,6 +43,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import io.github.elgrande73.voicememo.memo.MemoSource
+import io.github.elgrande73.voicememo.transcription.ModelDownloadState
+import io.github.elgrande73.voicememo.transcription.ModelSource
 import io.github.elgrande73.voicememo.playback.PlaybackMode
 import io.github.elgrande73.voicememo.ui.PlayingMemoAutoScroll
 import androidx.compose.foundation.lazy.items
@@ -86,6 +88,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -979,7 +982,9 @@ fun TranscriptSection(
     onTranscribe: () -> Unit,
     onCancel: () -> Unit,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    /** Shown when the transcription failed because no speech model is installed. */
+    onDownloadModel: () -> Unit = {}
 ) {
     val transcript = note.transcriptionText
     Column(modifier = Modifier.fillMaxWidth().testTag("transcript_section_${note.id}")) {
@@ -1033,6 +1038,11 @@ fun TranscriptSection(
                         }
                     )
                 }
+                if ((job as? TranscriptionJobState.Failed)?.modelMissing == true) {
+                    TextButton(onClick = onDownloadModel, modifier = Modifier.testTag("transcript_download_model_${note.id}")) {
+                        Text("Download speech model")
+                    }
+                }
                 if (transcript != null) {
                     TextButton(onClick = onEdit, modifier = Modifier.testTag("transcript_edit_${note.id}")) { Text("Edit") }
                     TextButton(onClick = onDelete, modifier = Modifier.testTag("transcript_delete_${note.id}")) { Text("Delete Text") }
@@ -1059,6 +1069,7 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
     val activeModel by viewModel.activeSpeechModelId.collectAsState()
     val modelMessage by viewModel.modelMessage.collectAsState()
     val importing by viewModel.modelImportRunning.collectAsState()
+    val downloadState by viewModel.modelDownloadState.collectAsState()
     var languageMenu by remember { mutableStateOf(false) }
     var showLicenses by remember { mutableStateOf(false) }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -1074,8 +1085,9 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
         Column(modifier = Modifier.padding(16.dp)) {
             Text(text = "Speech-to-Text (on this device)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(
-                text = "Memos are transcribed on the phone with the included Whisper model; no audio or text leaves the device " +
-                    "and no internet connection is used. Tap Transcribe on a memo in History.",
+                text = "Memos are transcribed on the phone with the Whisper speech model; no audio or text leaves the device. " +
+                    "The model is not part of the app: download it once below (the only time the app uses the internet). " +
+                    "After that, transcription works offline. Tap Transcribe on a memo in History.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1129,6 +1141,13 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
 
             Spacer(modifier = Modifier.height(8.dp))
             Text(text = "Speech model", fontWeight = FontWeight.SemiBold)
+            SpeechModelDownloadSection(
+                state = downloadState,
+                onDownload = { viewModel.downloadSpeechModel() },
+                onCancel = { viewModel.cancelSpeechModelDownload() },
+                onRemove = { viewModel.removeDownloadedSpeechModel() }
+            )
+            if (models.size > 1) Text(text = "Model used for transcription", style = MaterialTheme.typography.labelLarge)
             models.forEach { model ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -1139,7 +1158,7 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
                         Text(model.name, style = MaterialTheme.typography.bodyMedium)
                         Text(model.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    if (!model.bundled) {
+                    if (!model.downloaded) {
                         TextButton(onClick = { viewModel.deleteSpeechModel(model.id) }) { Text("Remove") }
                     }
                 }
@@ -1151,8 +1170,7 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
             ) { Text(if (importing) "Checking model…" else "Import Model File…") }
             Text(
                 text = "Optional: larger whisper.cpp models (ggml .bin, e.g. \"small\") are more accurate but slower and need " +
-                    "more memory; \"tiny\" is faster. Download one on a computer or in a browser, then import the file here. " +
-                    "The included model always stays available.",
+                    "more memory; \"tiny\" is faster. Download one on a computer or in a browser, then import the file here.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1183,6 +1201,68 @@ fun TranscriptionSettingsCard(viewModel: VoiceMemoViewModel, autoTranscribe: Boo
                 )
             },
             confirmButton = { TextButton(onClick = { showLicenses = false }) { Text("Close") } }
+        )
+    }
+}
+
+/**
+ * Download of the Whisper base model: what it is, its size and storage, progress with Cancel, validation, ready with a
+ * Remove action (confirmed), and failures with Retry.
+ */
+@Composable
+fun SpeechModelDownloadSection(state: ModelDownloadState, onDownload: () -> Unit, onCancel: () -> Unit, onRemove: () -> Unit) {
+    var confirmRemove by remember { mutableStateOf(false) }
+    val sizeMb = ModelSource.WHISPER_BASE.approxBytes / 1_000_000
+    Column(modifier = Modifier.fillMaxWidth().testTag("speech_model_download"), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        val status = when (state) {
+            ModelDownloadState.Missing -> "Not installed. Transcription needs the Whisper base model: a one-time download of about " +
+                "$sizeMb MB (Wi-Fi recommended), stored on this device and kept until you remove it. Recording and wake-phrase " +
+                "detection do not need it."
+            is ModelDownloadState.Downloading -> "Downloading… ${state.downloadedBytes / 1_000_000} of ${state.totalBytes / 1_000_000} MB (${state.percent}%)"
+            ModelDownloadState.Validating -> "Checking the download (checksum)…"
+            ModelDownloadState.Initializing -> "Preparing the model…"
+            ModelDownloadState.Ready -> "Whisper base is installed (about $sizeMb MB on this device). Transcription works offline."
+            is ModelDownloadState.Failed -> state.message
+        }
+        Text(
+            status,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (state is ModelDownloadState.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .semantics { liveRegion = LiveRegionMode.Polite }
+                .testTag("speech_model_download_status")
+        )
+        when (state) {
+            is ModelDownloadState.Downloading -> {
+                LinearProgressIndicator(progress = { state.percent / 100f }, modifier = Modifier.fillMaxWidth())
+                OutlinedButton(onClick = onCancel, modifier = Modifier.testTag("cancel_model_download")) { Text("Cancel download") }
+            }
+            ModelDownloadState.Validating, ModelDownloadState.Initializing -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            ModelDownloadState.Ready -> TextButton(onClick = { confirmRemove = true }, modifier = Modifier.testTag("remove_speech_model")) {
+                Text("Remove Whisper base model")
+            }
+            ModelDownloadState.Missing -> Button(onClick = onDownload, modifier = Modifier.testTag("download_speech_model")) {
+                Text("Download Whisper Base model ($sizeMb MB)")
+            }
+            is ModelDownloadState.Failed -> if (state.retryable) {
+                Button(onClick = onDownload, modifier = Modifier.testTag("download_speech_model")) { Text("Retry download") }
+            }
+        }
+    }
+    if (confirmRemove) {
+        AlertDialog(
+            onDismissRequest = { confirmRemove = false },
+            title = { Text("Remove the speech model?") },
+            text = {
+                Text(
+                    "This frees about $sizeMb MB. Transcription stops working until you download the model again; " +
+                        "running transcriptions are cancelled. Your transcripts and recordings are kept."
+                )
+            },
+            confirmButton = {
+                Button(onClick = { confirmRemove = false; onRemove() }, modifier = Modifier.testTag("confirm_remove_speech_model")) { Text("Remove") }
+            },
+            dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("Cancel") } }
         )
     }
 }
@@ -1702,7 +1782,8 @@ fun HistoryScreen(viewModel: VoiceMemoViewModel) {
                                 onTranscribe = { viewModel.transcribeNote(note) },
                                 onCancel = { viewModel.cancelTranscription(note) },
                                 onEdit = { noteToEditTranscript = note; transcriptDraft = note.transcriptionText ?: "" },
-                                onDelete = { viewModel.deleteTranscript(note) }
+                                onDelete = { viewModel.deleteTranscript(note) },
+                                onDownloadModel = { viewModel.downloadSpeechModel() }
                             )
 
                             Spacer(modifier = Modifier.height(12.dp))
