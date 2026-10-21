@@ -624,15 +624,26 @@ fun DashboardScreen(
             }
 
             // Monitoring control (the record button is at the bottom of the screen)
+            val oneMemoSession by AudioMonitoringService.oneMemoSession.collectAsState()
+            if (isServiceRunning && oneMemoSession) {
+                Text(
+                    text = "Monitoring is on only for this quick memo and stops when it is saved.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("one_memo_session_hint")
+                )
+            }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
+                // While monitoring runs only for a quick memo, the button keeps it on instead of stopping it
+                val monitoringOn = isServiceRunning && !oneMemoSession
                 Button(
-                    onClick = { viewModel.setMonitoringEnabledByUser(!isServiceRunning) },
+                    onClick = { viewModel.setMonitoringEnabledByUser(!monitoringOn) },
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isServiceRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        containerColor = if (monitoringOn) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                     ),
                     modifier = Modifier
                         .weight(1f)
@@ -640,7 +651,11 @@ fun DashboardScreen(
                         .testTag("toggle_monitoring_button")
                 ) {
                     Text(
-                        text = if (isServiceRunning) "Stop Monitoring" else "Start Monitoring",
+                        text = when {
+                            monitoringOn -> "Stop Monitoring"
+                            isServiceRunning -> "Keep Monitoring On"
+                            else -> "Start Monitoring"
+                        },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )

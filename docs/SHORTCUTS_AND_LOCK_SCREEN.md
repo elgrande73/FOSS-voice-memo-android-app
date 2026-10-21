@@ -26,7 +26,17 @@ shortcuts to other apps. Their settings are dropped by settings migration v5; no
 remains. No root, Shizuku or proprietary service is used. Tile and widget are protected by `BIND_QUICK_SETTINGS_TILE`
 and the system widget host; the static shortcut targets the app's own launcher activity.
 
-## 2. Quick Settings tile "Voice memo" (`RecordingTileService`)
+## 2. Monitoring started by a quick memo
+
+Quick Memo (dashboard), and the tile, widget and launcher shortcut while monitoring is off, start monitoring **only for
+that memo** (`MonitoringRequest.ONE_MEMO`): once the memo is saved, whatever ended it, the service stops by itself after
+the stop chime. If monitoring was already on, it stays on after the memo. While such a memo runs, the dashboard shows
+"Monitoring is on only for this quick memo…" and the monitoring button reads **Keep Monitoring On**, which turns it into
+normal monitoring (`CONTINUOUS`) without interrupting the memo. Settings changed during the memo keep the mode (`KEEP`)
+and take effect when the memo ends (restarting capture would have discarded the memo). If monitoring ran only for the
+memo, a phrase recording in Settings does not restore it afterwards. Tests: `OneMemoMonitoringTest`.
+
+## 3. Quick Settings tile "Voice memo" (`RecordingTileService`)
 
 - Add it: pull down Quick Settings, tap the edit (pencil) button and drag the tile in. Adding or refreshing the tile
   never records; only a tap does.
@@ -37,7 +47,7 @@ and the system widget host; the static shortcut targets the app's own launcher a
 - Tap while monitoring is off: opens the app (after unlocking, on the lock screen), which starts the memo; Android 14+
   uses `startActivityAndCollapse(PendingIntent)`, older versions the Intent variant.
 
-## 3. Home-screen widget (`RecordingWidgetProvider`)
+## 4. Home-screen widget (`RecordingWidgetProvider`)
 
 - One large button (at least 48 dp high, TalkBack description "Starts a memo" / "Stops the memo being recorded" /
   "Opens Voice Memo and starts a memo"). Original artwork; no images.
@@ -47,14 +57,14 @@ and the system widget host; the static shortcut targets the app's own launcher a
   process was killed, the next system update shows the real state ("Record memo", monitoring off).
 - A stale widget toggle while monitoring has stopped records nothing in the background; the widget is redrawn instead.
 
-## 4. Launcher shortcut "Record memo" (`res/xml/shortcuts.xml`)
+## 5. Launcher shortcut "Record memo" (`res/xml/shortcuts.xml`)
 
 Opens Voice Memo and starts a memo (a memo already being recorded is kept). Without the microphone permission, Android's
 permission dialog is shown first and the memo starts once it is granted; if it is denied, a message explains why
 nothing is recorded. The request is handled once: rotating the screen or recreating the activity does not start
 another memo.
 
-## 5. Keyboard shortcut (off by default)
+## 6. Keyboard shortcut (off by default)
 
 - **Capture:** *Set Shortcut* waits for a key combination; Back or Esc cancels. Modifier keys alone are ignored while the
   user builds the combination.
@@ -67,7 +77,7 @@ another memo.
 - **Stored keys:** `keyboardShortcutEnabled`, `keyboardShortcutKeyCode`, `keyboardShortcutModifiers` (bit mask Ctrl=1,
   Alt=2, Shift=4, Meta=8). Corrupt values fall back to "not set".
 
-## 6. Recording controls in the notification and on the lock screen (on by default)
+## 7. Recording controls in the notification and on the lock screen (on by default)
 
 Setting key `lockScreenControlsEnabled` (unchanged, so saved choices are kept).
 
@@ -95,13 +105,13 @@ running. Manufacturer battery optimisation can still stop background services; s
 service stops itself (it may not reclaim the microphone from the background) instead of showing a monitoring
 notification while nothing is captured; tile and widget then show monitoring as off.
 
-## 7. Dashboard button
+## 8. Dashboard button
 
 - **Look:** a 96 dp round button at the bottom centre of the dashboard, on an opaque bar above the navigation bar.
 - **States:** start is primary colour with a dot and "Quick Memo"; stop is error colour with a square and "Stop Memo".
   TalkBack reads "Start quick memo" or "Stop memo and save", plus the state.
 
-## 8. Verification
+## 9. Verification
 
 **Unit and Robolectric tests (build host):**
 - `RecordingShortcutHandlerTest`: keyboard rules, repeats, debounce, volume keys never consumed, validation.
@@ -109,6 +119,8 @@ notification while nothing is captured; tile and widget then show monitoring as 
 - `ShortcutSettingsTest`, `SettingsMigratorTest` (v5 drops the volume-button settings, keeps the keyboard shortcut).
 - `LockScreenControlsTest`: channel without override, button present/absent, immediate effect during a memo, restart
   without a request.
+- `OneMemoMonitoringTest`: monitoring started by a quick memo stops after it; monitoring that was on stays on; keeping
+  it on during the memo keeps the memo; settings re-applied during the memo keep the mode.
 - `RecordingEntryPointsTest`: tile and widget states, placing/refreshing never records, stale widget toggle, record
   intent starts once through the service (and not again after recreation), permission prompt, launcher shortcut.
 

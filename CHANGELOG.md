@@ -7,6 +7,10 @@ First release under the new name **Voice Memo** and the new application ID `io.g
 to it (see README, "New application identity").
 
 ### Changed (since pre-release v0.0.2)
+- Quick Memo no longer leaves monitoring on: if monitoring was off, it runs only for the quick memo and stops once the
+  memo is saved (also when started from the tile, widget or launcher shortcut). If monitoring was already on, it stays
+  on. During such a memo the dashboard offers *Keep Monitoring On*. Settings changed during a memo no longer restart
+  capture (which could discard the memo); they apply when the memo ends.
 - **Much faster transcription.** Debug builds compiled the speech engine without optimisation (over a minute for a
   4 s memo on a phone); the native code is now always built with `-O3` (build host: 34.0 s → 1.5 s for the same 4 s
   memo; release builds −O2 → −O3: 2.2 s → 1.5 s). With automatic language detection the first audio window is no
